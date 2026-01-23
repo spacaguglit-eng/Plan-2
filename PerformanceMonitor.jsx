@@ -6,21 +6,17 @@ export const useRenderTime = (componentName, onRenderComplete, isVisible = true)
     const startTimeRef = useRef(Date.now());
     const renderCountRef = useRef(0);
     const mountTimeRef = useRef(Date.now());
-    const wasVisibleRef = useRef(isVisible);
     
     renderCountRef.current++;
     
     useEffect(() => {
         const renderTime = Date.now() - startTimeRef.current;
         const timeSinceMount = Date.now() - mountTimeRef.current;
-        
-        // Считаем переключением, если:
-        // 1. Компонент стал видимым (isVisible = true)
-        // 2. Ранее был невидимым (wasVisibleRef.current = false)
-        // 3. Прошло меньше 100мс с момента монтирования (свежий монтаж = переключение)
-        const isTabSwitch = !wasVisibleRef.current && isVisible && timeSinceMount < 100;
-        
-        wasVisibleRef.current = isVisible;
+
+        // В текущей схеме вкладки размонтируются и монтируются заново при переключении.
+        // Поэтому «переключение вкладки» = первый commit после mount (когда компонент видим).
+        // timeSinceMount оставляем как дополнительную страховку от редких повторных монтирований.
+        const isTabSwitch = isVisible && renderCountRef.current === 1 && timeSinceMount < 1000;
         
         if (isVisible && onRenderComplete) {
             onRenderComplete({

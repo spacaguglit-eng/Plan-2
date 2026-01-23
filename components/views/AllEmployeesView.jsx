@@ -3,16 +3,16 @@ import { Users, Search, Edit3, Check, X } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const AllEmployeesView = () => {
     const {
         workerRegistry,
         factData,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('all_employees', logPerformance, viewMode === 'all_employees');
+    useRenderTime('all_employees', logPerformanceMetric, viewMode === 'all_employees');
 
     const [allEmployees, setAllEmployees] = useState({});
     const [search, setSearch] = useState('');

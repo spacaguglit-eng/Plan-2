@@ -3,6 +3,7 @@ import { LayoutGrid, Search, Edit3, GraduationCap } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { MatrixAssignmentModal } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const DistributionView = () => {
     const {
@@ -10,11 +11,10 @@ const DistributionView = () => {
         workerRegistry,
         floaters,
         handleMatrixAssignment,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('employees_roster', logPerformance, viewMode === 'employees_roster');
+    useRenderTime('employees_roster', logPerformanceMetric, viewMode === 'employees_roster');
 
     const [filter, setFilter] = useState('');
     const [editingCell, setEditingCell] = useState(null);

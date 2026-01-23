@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const VerificationView = () => {
     const {
@@ -13,11 +14,10 @@ const VerificationView = () => {
         setFactData,
         factDates,
         setFactDates,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('verification', logPerformance, viewMode === 'verification');
+    useRenderTime('verification', logPerformanceMetric, viewMode === 'verification');
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');
     const [isLoading, setIsLoading] = useState(false);

@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const TimesheetView = () => {
     const {
@@ -19,11 +20,10 @@ const TimesheetView = () => {
         setViewMode,
         setTargetScrollBrigadeId,
         factData,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('chess', logPerformance, viewMode === 'chess');
+    useRenderTime('chess', logPerformanceMetric, viewMode === 'chess');
 
     const chessTableData = useMemo(() => {
         const tableData = calculateChessTable();

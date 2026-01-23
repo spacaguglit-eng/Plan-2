@@ -3,6 +3,7 @@ import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Lo
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
+import { usePerformanceMetrics } from './performanceStore';
 
 // Import view components
 import DashboardView from './components/views/DashboardView';
@@ -14,6 +15,8 @@ import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 
 export default function App() {
+    const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
+
     const {
         step,
         setStep,
@@ -33,9 +36,7 @@ export default function App() {
         lineTemplates,
         syncStatus,
         rawTables,
-        setRawTables,
-        performanceMetrics,
-        clearPerformanceMetrics
+        setRawTables
     } = useData();
 
     // Scroll to target brigade when targetScrollBrigadeId changes

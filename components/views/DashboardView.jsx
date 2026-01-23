@@ -3,6 +3,7 @@ import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquar
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const DashboardView = () => {
     const {
@@ -24,11 +25,10 @@ const DashboardView = () => {
         isGlobalFill,
         setIsGlobalFill,
         draggedWorker,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('dashboard', logPerformance, viewMode === 'dashboard');
+    useRenderTime('dashboard', logPerformanceMetric, viewMode === 'dashboard');
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;

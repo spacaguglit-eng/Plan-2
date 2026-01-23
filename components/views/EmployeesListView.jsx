@@ -2,16 +2,16 @@ import React, { useState, useMemo } from 'react';
 import { Users, Search, Plus, SlidersHorizontal, ChevronUp, ChevronDown, ArrowUpDown, Edit3, GraduationCap, X } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { useRenderTime } from '../../PerformanceMonitor';
+import { logPerformanceMetric } from '../../performanceStore';
 
 const EmployeesListView = () => {
     const {
         workerRegistry,
         setEditingWorker,
-        logPerformance,
         viewMode
     } = useData();
 
-    useRenderTime('employees_list', logPerformance, viewMode === 'employees_list');
+    useRenderTime('employees_list', logPerformanceMetric, viewMode === 'employees_list');
 
     const [search, setSearch] = useState('');
     const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
