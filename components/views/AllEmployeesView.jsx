@@ -2,12 +2,16 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Users, Search, Edit3, Check, X } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
+import { useRenderTime } from '../../PerformanceMonitor';
 
 const AllEmployeesView = () => {
     const {
         workerRegistry,
-        factData
+        factData,
+        logPerformance
     } = useData();
+
+    useRenderTime('all_employees', logPerformance);
 
     const [allEmployees, setAllEmployees] = useState({});
     const [search, setSearch] = useState('');

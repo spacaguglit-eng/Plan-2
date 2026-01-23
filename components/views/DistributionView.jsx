@@ -2,14 +2,18 @@ import React, { useState } from 'react';
 import { LayoutGrid, Search, Edit3, GraduationCap } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { MatrixAssignmentModal } from '../../UIComponents';
+import { useRenderTime } from '../../PerformanceMonitor';
 
 const DistributionView = () => {
     const {
         lineTemplates,
         workerRegistry,
         floaters,
-        handleMatrixAssignment
+        handleMatrixAssignment,
+        logPerformance
     } = useData();
+
+    useRenderTime('employees_roster', logPerformance);
 
     const [filter, setFilter] = useState('');
     const [editingCell, setEditingCell] = useState(null);

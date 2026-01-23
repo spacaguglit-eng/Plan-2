@@ -3,6 +3,7 @@ import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, C
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
+import { useRenderTime } from '../../PerformanceMonitor';
 
 const VerificationView = () => {
     const {
@@ -11,8 +12,11 @@ const VerificationView = () => {
         factData,
         setFactData,
         factDates,
-        setFactDates
+        setFactDates,
+        logPerformance
     } = useData();
+
+    useRenderTime('verification', logPerformance);
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');
     const [isLoading, setIsLoading] = useState(false);

@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
+import { PerformanceView } from './PerformanceMonitor';
 
 // Import view components
 import DashboardView from './components/views/DashboardView';
@@ -32,7 +33,8 @@ export default function App() {
         lineTemplates,
         syncStatus,
         rawTables,
-        setRawTables
+        setRawTables,
+        performanceMetrics
     } = useData();
 
     // Scroll to target brigade when targetScrollBrigadeId changes
@@ -56,6 +58,8 @@ export default function App() {
                 return <AllEmployeesView />;
             case 'verification':
                 return <VerificationView />;
+            case 'performance':
+                return <PerformanceView performanceMetrics={performanceMetrics} />;
             default:
                 return null;
         }
@@ -171,6 +175,18 @@ export default function App() {
                                             }`}
                                         >
                                             <Users size={16} /> Все сотрудники
+                                        </button>
+                                    </div>
+
+                                    {/* Performance Monitoring Menu Item */}
+                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={() => setViewMode('performance')}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                                viewMode === 'performance' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            <Activity size={16} /> Мониторинг
                                         </button>
                                     </div>
                                 </div>

@@ -2,6 +2,7 @@ import React from 'react';
 import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
+import { useRenderTime } from '../../PerformanceMonitor';
 
 const DashboardView = () => {
     const {
@@ -22,8 +23,11 @@ const DashboardView = () => {
         handleAutoFillFloaters,
         isGlobalFill,
         setIsGlobalFill,
-        draggedWorker
+        draggedWorker,
+        logPerformance
     } = useData();
+
+    useRenderTime('dashboard', logPerformance);
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;

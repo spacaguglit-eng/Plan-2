@@ -48,6 +48,9 @@ export const DataProvider = ({ children }) => {
     const [rvModalData, setRvModalData] = useState(null);
     const [editingWorker, setEditingWorker] = useState(null);
 
+    // Performance Monitoring
+    const [performanceMetrics, setPerformanceMetrics] = useState({});
+
     // Chess Table Filters (Global needed for export functions)
     const [chessFilterShift, setChessFilterShift] = useState('all');
     const [chessSearch, setChessSearch] = useState('');
@@ -1133,6 +1136,15 @@ export const DataProvider = ({ children }) => {
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
     };
 
+    const logPerformance = useCallback((metric) => {
+        setPerformanceMetrics(prev => {
+            const componentName = metric.componentName;
+            const existing = prev[componentName] || [];
+            const updated = [...existing, metric].slice(-50); // Последние 50 записей
+            return { ...prev, [componentName]: updated };
+        });
+    }, []);
+
     const value = {
         // State
         file, loading, restoring, error, syncStatus,
@@ -1166,7 +1178,8 @@ export const DataProvider = ({ children }) => {
         globalWorkSchedule,
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
-        calculateChessTable, exportChessTableToExcel
+        calculateChessTable, exportChessTableToExcel,
+        performanceMetrics, logPerformance
     };
 
     return (
