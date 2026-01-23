@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -13,6 +13,7 @@ import TimesheetView from './components/views/TimesheetView';
 import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
+import PlansView from './components/views/PlansView';
 
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
@@ -36,8 +37,12 @@ export default function App() {
         lineTemplates,
         syncStatus,
         rawTables,
-        setRawTables
+        setRawTables,
+        savedPlans,
+        currentPlanId
     } = useData();
+
+    const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
 
     // Scroll to target brigade when targetScrollBrigadeId changes
     useEffect(() => {
@@ -78,6 +83,9 @@ export default function App() {
                                 <div>
                                     <h1 className="text-xl font-bold text-slate-800">Планировщик</h1>
                                     <p className="text-xs text-slate-500 hidden sm:block">План/Факт</p>
+                                    {activePlanName && (
+                                        <p className="text-[11px] text-slate-400">Активный план: {activePlanName}</p>
+                                    )}
                                 </div>
                             </div>
                             <div className="flex items-center gap-3">
@@ -171,6 +179,18 @@ export default function App() {
                                             <Activity size={16} /> Мониторинг
                                         </button>
                                     </div>
+
+                                    {/* Plans Menu Item */}
+                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={() => setViewMode('plans')}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                                viewMode === 'plans' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            <FolderOpen size={16} /> Планы
+                                        </button>
+                                    </div>
                                 </div>
                                 {viewMode === 'dashboard' && (
                                     <CustomDateSelector
@@ -199,6 +219,7 @@ export default function App() {
                         {viewMode === 'all_employees' && <AllEmployeesView />}
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
+                        {viewMode === 'plans' && <PlansView />}
                     </div>
                 </>
             )}

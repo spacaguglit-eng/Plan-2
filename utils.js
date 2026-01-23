@@ -11,7 +11,9 @@ export const STORAGE_KEYS = {
     SCHEDULE_DATES: 'plan_schedule_dates',
     FACT_DATA: 'plan_fact_data',
     FACT_DATES: 'plan_fact_dates',
-    ALL_EMPLOYEES: 'plan_all_employees'
+    ALL_EMPLOYEES: 'plan_all_employees',
+    SAVED_PLANS: 'plan_saved_plans',
+    CURRENT_PLAN_ID: 'plan_current_plan_id'
 };
 
 // --- LOCAL STORAGE HELPERS ---

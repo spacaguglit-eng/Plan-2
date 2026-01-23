@@ -32,6 +32,10 @@ export const DataProvider = ({ children }) => {
     const [scheduleDates, setScheduleDates] = useState([]);
     const [planHashes, setPlanHashes] = useState({});
 
+    // Multi-plan management
+    const [savedPlans, setSavedPlans] = useState([]);
+    const [currentPlanId, setCurrentPlanId] = useState(null);
+
     const [lineTemplates, setLineTemplates] = useState({});
     const [floaters, setFloaters] = useState({ day: [], night: [] });
     const [workerRegistry, setWorkerRegistry] = useState({});
@@ -67,62 +71,124 @@ export const DataProvider = ({ children }) => {
 
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
+    const isLoadingPlanRef = useRef(false);
 
-    const TARGET_CONFIG = [
+    const TARGET_CONFIG = useMemo(() => ([
         { tableName: 'Сводная_По_Людям', expectedSheet: 'Расписание по сменам', type: 'demand' },
         { tableName: 'Люд', expectedSheet: 'Справочник', type: 'roster' }
-    ];
+    ]), []);
+
+    const generatePlanId = () => `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const restoreDemandDates = (demandTable) => {
+        if (!Array.isArray(demandTable)) return demandTable;
+        return demandTable.map((row, i) => {
+            if (i === 0) return row;
+            const dateVal = row[11];
+            if (dateVal && typeof dateVal === 'string') {
+                const d = new Date(dateVal);
+                if (!isNaN(d.getTime())) row[11] = d;
+            }
+            return row;
+        });
+    };
+
+    const serializeWorkerRegistry = (registry) => {
+        const out = {};
+        Object.entries(registry || {}).forEach(([key, value]) => {
+            out[key] = { ...value, competencies: Array.from(value?.competencies || []) };
+        });
+        return out;
+    };
+
+    const hydrateWorkerRegistry = (registry) => {
+        const restored = {};
+        Object.entries(registry || {}).forEach(([key, value]) => {
+            restored[key] = {
+                ...value,
+                competencies: value?.competencies ? new Set(value.competencies) : new Set()
+            };
+        });
+        return restored;
+    };
+
+    const buildPlanSnapshot = useCallback(() => ({
+        rawTables,
+        scheduleDates,
+        planHashes,
+        lineTemplates,
+        floaters,
+        workerRegistry: serializeWorkerRegistry(workerRegistry),
+        manualAssignments
+    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments]);
+
+    const applyPlanData = (planData) => {
+        if (!planData) return;
+        const nextRaw = { ...(planData.rawTables || {}) };
+        if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
+
+        setRawTables(nextRaw);
+        setScheduleDates(planData.scheduleDates || []);
+        setPlanHashes(planData.planHashes || {});
+        setLineTemplates(planData.lineTemplates || {});
+        setFloaters(planData.floaters || { day: [], night: [] });
+        setWorkerRegistry(hydrateWorkerRegistry(planData.workerRegistry || {}));
+        setManualAssignments(planData.manualAssignments || {});
+        if (planData.scheduleDates?.length > 0) {
+            setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
+        }
+        setStep('dashboard');
+    };
 
     // --- EFFECT: LOAD FROM LOCAL STORAGE ---
     useEffect(() => {
         const restoreData = () => {
             setRestoring(true);
             try {
-                const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
-                if (Object.keys(savedAssignments).length > 0) setManualAssignments(savedAssignments);
-
-                const savedHashes = loadFromLocalStorage(STORAGE_KEYS.PLAN_HASHES, {});
-                if (Object.keys(savedHashes).length > 0) setPlanHashes(savedHashes);
-
-                const savedTables = loadFromLocalStorage(STORAGE_KEYS.RAW_TABLES, {});
-                if (savedTables.demand && savedTables.roster) {
-                    if (savedTables.demand) {
-                        savedTables.demand = savedTables.demand.map((row, i) => {
-                            if (i === 0) return row;
-                            const dateVal = row[11];
-                            if (dateVal && typeof dateVal === 'string') {
-                                const d = new Date(dateVal);
-                                if (!isNaN(d.getTime())) row[11] = d;
-                            }
-                            return row;
-                        });
+                const storedPlans = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
+                const storedCurrentPlanId = loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null);
+                if (Array.isArray(storedPlans) && storedPlans.length > 0) {
+                    setSavedPlans(storedPlans);
+                    const preferredId = storedCurrentPlanId || storedPlans.find(p => p.type === 'Operational')?.id || storedPlans[0].id;
+                    setCurrentPlanId(preferredId);
+                    const selectedPlan = storedPlans.find(p => p.id === preferredId);
+                    if (selectedPlan?.data) {
+                        isLoadingPlanRef.current = true;
+                        applyPlanData(selectedPlan.data);
+                        isLoadingPlanRef.current = false;
                     }
-                    setRawTables(savedTables);
-                    // Note: analyzeData relies on state setters, so we call it here
-                    analyzeData(savedTables.demand, savedTables.roster);
-                    setStep('dashboard');
-                }
+                } else {
+                    const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
+                    if (Object.keys(savedAssignments).length > 0) setManualAssignments(savedAssignments);
 
-                const savedTemplates = loadFromLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, {});
-                const savedRegistry = loadFromLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, {});
-                const savedFloaters = loadFromLocalStorage(STORAGE_KEYS.FLOATERS, { day: [], night: [] });
-                const savedDates = loadFromLocalStorage(STORAGE_KEYS.SCHEDULE_DATES, []);
+                    const savedHashes = loadFromLocalStorage(STORAGE_KEYS.PLAN_HASHES, {});
+                    if (Object.keys(savedHashes).length > 0) setPlanHashes(savedHashes);
 
-                if (Object.keys(savedTemplates).length > 0) setLineTemplates(savedTemplates);
-                if (Object.keys(savedRegistry).length > 0) {
-                    const restoredRegistry = {};
-                    Object.entries(savedRegistry).forEach(([key, value]) => {
-                        restoredRegistry[key] = {
-                            ...value,
-                            competencies: value.competencies ? new Set(value.competencies) : new Set()
-                        };
-                    });
-                    setWorkerRegistry(restoredRegistry);
-                }
-                if (savedFloaters.day.length > 0 || savedFloaters.night.length > 0) setFloaters(savedFloaters);
-                if (savedDates.length > 0) {
-                    setScheduleDates(savedDates);
-                    if (savedDates.length > 0 && !selectedDate) setSelectedDate(savedDates[0]);
+                    const savedTables = loadFromLocalStorage(STORAGE_KEYS.RAW_TABLES, {});
+                    if (savedTables.demand && savedTables.roster) {
+                        if (savedTables.demand) {
+                            savedTables.demand = restoreDemandDates(savedTables.demand);
+                        }
+                        setRawTables(savedTables);
+                        // Note: analyzeData relies on state setters, so we call it here
+                        analyzeData(savedTables.demand, savedTables.roster);
+                        setStep('dashboard');
+                    }
+
+                    const savedTemplates = loadFromLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, {});
+                    const savedRegistry = loadFromLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, {});
+                    const savedFloaters = loadFromLocalStorage(STORAGE_KEYS.FLOATERS, { day: [], night: [] });
+                    const savedDates = loadFromLocalStorage(STORAGE_KEYS.SCHEDULE_DATES, []);
+
+                    if (Object.keys(savedTemplates).length > 0) setLineTemplates(savedTemplates);
+                    if (Object.keys(savedRegistry).length > 0) {
+                        setWorkerRegistry(hydrateWorkerRegistry(savedRegistry));
+                    }
+                    if (savedFloaters.day.length > 0 || savedFloaters.night.length > 0) setFloaters(savedFloaters);
+                    if (savedDates.length > 0) {
+                        setScheduleDates(savedDates);
+                        if (savedDates.length > 0 && !selectedDate) setSelectedDate(savedDates[0]);
+                    }
                 }
 
                 const savedFactData = loadFromLocalStorage(STORAGE_KEYS.FACT_DATA, null);
@@ -139,6 +205,14 @@ export const DataProvider = ({ children }) => {
         restoreData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        saveToLocalStorage(STORAGE_KEYS.SAVED_PLANS, savedPlans);
+    }, [savedPlans]);
+
+    useEffect(() => {
+        saveToLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
+    }, [currentPlanId]);
 
     // --- LOGIC FUNCTIONS ---
 
@@ -324,7 +398,7 @@ export const DataProvider = ({ children }) => {
         return { templates };
     };
 
-    const analyzeData = (demandData, rosterData) => {
+    const analyzeDataPure = useCallback((demandData, rosterData) => {
         const rawDates = demandData.slice(1).map(row => {
             let val = row[11];
             if (val instanceof Date) return val;
@@ -337,10 +411,6 @@ export const DataProvider = ({ children }) => {
 
         const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
         const sortedStringDates = uniqueTimestamps.map(ts => new Date(ts).toLocaleDateString('ru-RU'));
-
-        setScheduleDates(sortedStringDates);
-        saveToLocalStorage(STORAGE_KEYS.SCHEDULE_DATES, sortedStringDates);
-        if (sortedStringDates.length > 0) setSelectedDate(prev => sortedStringDates.includes(prev) ? prev : sortedStringDates[0]);
 
         const templates = {};
         const floaterMap = { day: new Map(), night: new Map() };
@@ -402,17 +472,60 @@ export const DataProvider = ({ children }) => {
             }
         });
 
+        return {
+            scheduleDates: sortedStringDates,
+            lineTemplates: templates,
+            floaters: { day: Array.from(floaterMap.day.values()), night: Array.from(floaterMap.night.values()) },
+            workerRegistry: registry
+        };
+    }, []);
+
+    const analyzeData = (demandData, rosterData) => {
+        const result = analyzeDataPure(demandData, rosterData);
+        const { scheduleDates: sortedStringDates, lineTemplates: templates, floaters: nextFloaters, workerRegistry: registry } = result;
+
+        setScheduleDates(sortedStringDates);
+        saveToLocalStorage(STORAGE_KEYS.SCHEDULE_DATES, sortedStringDates);
+        if (sortedStringDates.length > 0) setSelectedDate(prev => sortedStringDates.includes(prev) ? prev : sortedStringDates[0]);
+
         setLineTemplates(templates);
-        setFloaters({ day: Array.from(floaterMap.day.values()), night: Array.from(floaterMap.night.values()) });
+        setFloaters(nextFloaters);
         setWorkerRegistry(registry);
 
         saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, templates);
-        saveToLocalStorage(STORAGE_KEYS.FLOATERS, { day: Array.from(floaterMap.day.values()), night: Array.from(floaterMap.night.values()) });
+        saveToLocalStorage(STORAGE_KEYS.FLOATERS, nextFloaters);
         const registryForStorage = {};
         Object.entries(registry).forEach(([key, value]) => {
             registryForStorage[key] = { ...value, competencies: Array.from(value.competencies || []) };
         });
         saveToLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
+    };
+
+    const buildPlanHashes = (demandData, templates) => {
+        const newHashes = {};
+        const headers = demandData[0];
+        demandData.slice(1).forEach(row => {
+            let d = row[11];
+            let dateStr = '';
+            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
+            else if (typeof d === 'string') {
+                const dateTry = new Date(d);
+                if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
+                else return;
+            } else return;
+
+            const shiftNum = extractShiftNumber(cleanVal(row[14]));
+            const shiftType = cleanVal(row[13]);
+            if (!shiftNum) return;
+
+            const activeLines = [];
+            for (let i = 15; i <= 26; i++) {
+                if ((parseInt(row[i]) || 0) > 0) activeLines.push(cleanVal(headers[i]));
+            }
+            const hash = generateShiftHash(dateStr, shiftNum, shiftType, activeLines, templates);
+            newHashes[`${dateStr}_${shiftNum}`] = hash;
+        });
+        return newHashes;
     };
 
     const processExcelFile = async (selectedFile) => {
@@ -435,31 +548,8 @@ export const DataProvider = ({ children }) => {
                 if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
 
                 const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
-                const newHashes = {};
                 const demandData = loadedData['demand'];
-                const headers = demandData[0];
-
-                demandData.slice(1).forEach(row => {
-                    let d = row[11];
-                    let dateStr = '';
-                    if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
-                    else if (typeof d === 'string') {
-                        const dateTry = new Date(d);
-                        if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
-                        else return;
-                    } else return;
-
-                    const shiftNum = extractShiftNumber(cleanVal(row[14]));
-                    const shiftType = cleanVal(row[13]);
-                    if (!shiftNum) return;
-
-                    const activeLines = [];
-                    for (let i = 15; i <= 26; i++) {
-                        if ((parseInt(row[i]) || 0) > 0) activeLines.push(cleanVal(headers[i]));
-                    }
-                    const hash = generateShiftHash(dateStr, shiftNum, shiftType, activeLines, newTemplates);
-                    newHashes[`${dateStr}_${shiftNum}`] = hash;
-                });
+                const newHashes = buildPlanHashes(demandData, newTemplates);
 
                 const oldHashes = planHashes;
                 const keptAssignments = {};
@@ -495,10 +585,176 @@ export const DataProvider = ({ children }) => {
                 debouncedSaveToLocal(keptAssignments);
                 setStep('dashboard');
 
+                if (!currentPlanId) {
+                    const createdAt = new Date().toISOString();
+                    const name = selectedFile?.name || 'Новый план';
+                    const nextPlan = {
+                        id: generatePlanId(),
+                        name,
+                        createdAt,
+                        type: 'Operational',
+                        data: buildPlanSnapshot()
+                    };
+                    setSavedPlans(prev => {
+                        const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
+                        return [...cleared, nextPlan];
+                    });
+                    setCurrentPlanId(nextPlan.id);
+                }
+
             } catch (err) { setError(err.message); } finally { setLoading(false); }
         };
         reader.readAsArrayBuffer(selectedFile);
     };
+
+    const parseExcelToPlanData = useCallback(async (selectedFile) => {
+        if (!selectedFile) return null;
+        const data = await selectedFile.arrayBuffer();
+        const workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellDates: true });
+        const loadedData = {};
+        TARGET_CONFIG.forEach(target => {
+            const sheetName = workbook.SheetNames.find(s => s.toLowerCase().includes(target.expectedSheet.toLowerCase().split('.')[0]));
+            if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 });
+        });
+        if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
+
+        const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
+        const newHashes = buildPlanHashes(loadedData['demand'], newTemplates);
+        const analysis = analyzeDataPure(loadedData['demand'], loadedData['roster']);
+
+        return {
+            rawTables: loadedData,
+            planHashes: newHashes,
+            scheduleDates: analysis.scheduleDates,
+            lineTemplates: analysis.lineTemplates,
+            floaters: analysis.floaters,
+            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
+            manualAssignments: {}
+        };
+    }, [TARGET_CONFIG, buildPlanHashes, analyzeDataPure]);
+
+    const normalizePlanData = (planData) => ({
+        rawTables: planData.rawTables || {},
+        scheduleDates: planData.scheduleDates || [],
+        planHashes: planData.planHashes || {},
+        lineTemplates: planData.lineTemplates || {},
+        floaters: planData.floaters || { day: [], night: [] },
+        workerRegistry: planData.workerRegistry || {},
+        manualAssignments: planData.manualAssignments || {}
+    });
+
+    const addPlan = useCallback((plan) => {
+        setSavedPlans(prev => {
+            const cleared = plan.type ? prev.map(p => (p.type === plan.type ? { ...p, type: null } : p)) : prev;
+            return [...cleared, plan];
+        });
+    }, []);
+
+    const saveCurrentAsNewPlan = useCallback((name) => {
+        const createdAt = new Date().toISOString();
+        const plan = {
+            id: generatePlanId(),
+            name: name || `План ${createdAt.slice(0, 10)}`,
+            createdAt,
+            type: 'Operational',
+            data: buildPlanSnapshot()
+        };
+        setSavedPlans(prev => {
+            const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
+            return [...cleared, plan];
+        });
+        setCurrentPlanId(plan.id);
+    }, [buildPlanSnapshot]);
+
+    const loadPlan = useCallback((planId) => {
+        const plan = savedPlans.find(p => p.id === planId);
+        if (!plan?.data) return;
+        isLoadingPlanRef.current = true;
+        applyPlanData(plan.data);
+        setCurrentPlanId(plan.id);
+        setTimeout(() => {
+            isLoadingPlanRef.current = false;
+        }, 0);
+    }, [savedPlans]);
+
+    const setPlanType = useCallback((planId, type) => {
+        setSavedPlans(prev => prev.map(plan => {
+            if (plan.id === planId) return { ...plan, type };
+            if (type && plan.type === type) return { ...plan, type: null };
+            return plan;
+        }));
+    }, []);
+
+    const deletePlan = useCallback((planId) => {
+        setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
+        if (currentPlanId === planId) {
+            setCurrentPlanId(null);
+            setRawTables({});
+            setScheduleDates([]);
+            setPlanHashes({});
+            setLineTemplates({});
+            setFloaters({ day: [], night: [] });
+            setWorkerRegistry({});
+            setManualAssignments({});
+            setSelectedDate('');
+            setStep('upload');
+        }
+    }, [currentPlanId]);
+
+    const importPlanFromJson = useCallback((jsonData, defaultName) => {
+        const createdAt = new Date().toISOString();
+        const hasData = jsonData && typeof jsonData === 'object' && jsonData.data;
+        const planData = hasData ? jsonData.data : jsonData;
+        const plan = {
+            id: jsonData?.id || generatePlanId(),
+            name: jsonData?.name || defaultName || `План ${createdAt.slice(0, 10)}`,
+            createdAt: jsonData?.createdAt || createdAt,
+            type: jsonData?.type || null,
+            data: normalizePlanData(planData)
+        };
+        addPlan(plan);
+        return plan.id;
+    }, [addPlan]);
+
+    const importPlanFromExcelFile = useCallback(async (file, nameOverride) => {
+        const planData = await parseExcelToPlanData(file);
+        const createdAt = new Date().toISOString();
+        const plan = {
+            id: generatePlanId(),
+            name: nameOverride || file?.name || `План ${createdAt.slice(0, 10)}`,
+            createdAt,
+            type: null,
+            data: planData
+        };
+        addPlan(plan);
+        return plan.id;
+    }, [addPlan]);
+
+    useEffect(() => {
+        if (!currentPlanId) return;
+        if (isLoadingPlanRef.current) return;
+        setSavedPlans(prev => {
+            const idx = prev.findIndex(p => p.id === currentPlanId);
+            if (idx === -1) return prev;
+            const next = [...prev];
+            next[idx] = {
+                ...next[idx],
+                data: buildPlanSnapshot(),
+                updatedAt: new Date().toISOString()
+            };
+            return next;
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        currentPlanId,
+        rawTables,
+        scheduleDates,
+        planHashes,
+        lineTemplates,
+        floaters,
+        workerRegistry,
+        manualAssignments
+    ]);
 
     const handleDragStart = useCallback((e, worker) => {
         const availability = checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
@@ -1327,6 +1583,7 @@ export const DataProvider = ({ children }) => {
         // State
         file, loading, restoring, error, syncStatus,
         rawTables, scheduleDates, planHashes,
+        savedPlans, currentPlanId,
         lineTemplates, floaters, workerRegistry,
         step, setStep, viewMode, setViewMode, selectedDate, setSelectedDate,
         manualAssignments, setManualAssignments,
@@ -1348,6 +1605,13 @@ export const DataProvider = ({ children }) => {
         
         // Functions
         processExcelFile,
+        parseExcelToPlanData,
+        saveCurrentAsNewPlan,
+        loadPlan,
+        setPlanType,
+        deletePlan,
+        importPlanFromJson,
+        importPlanFromExcelFile,
         updateAssignments,
         handleMatrixAssignment,
         handleWorkerEditSave, 
@@ -1363,6 +1627,7 @@ export const DataProvider = ({ children }) => {
         // ТОЛЬКО состояние, НЕ setState функции!
         file, loading, restoring, error, syncStatus,
         rawTables, scheduleDates, planHashes,
+        savedPlans, currentPlanId,
         lineTemplates, floaters, workerRegistry,
         step, viewMode, selectedDate,
         manualAssignments,
@@ -1378,6 +1643,13 @@ export const DataProvider = ({ children }) => {
         chessDisplayLimit,
         chessTableWorkerStatus,
         // Только мемоизированные функции
+        parseExcelToPlanData,
+        saveCurrentAsNewPlan,
+        loadPlan,
+        setPlanType,
+        deletePlan,
+        importPlanFromJson,
+        importPlanFromExcelFile,
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,
