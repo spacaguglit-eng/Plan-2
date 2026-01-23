@@ -156,38 +156,62 @@ export const DataProvider = ({ children }) => {
                         isLoadingPlanRef.current = true;
                         applyPlanData(selectedPlan.data);
                         isLoadingPlanRef.current = false;
+                    } else {
+                        // Есть планы, но нет данных в выбранном - переходим в менеджер планов
+                        setStep('dashboard');
+                        setViewMode('plans');
                     }
                 } else {
-                    const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
-                    if (Object.keys(savedAssignments).length > 0) setManualAssignments(savedAssignments);
-
-                    const savedHashes = loadFromLocalStorage(STORAGE_KEYS.PLAN_HASHES, {});
-                    if (Object.keys(savedHashes).length > 0) setPlanHashes(savedHashes);
-
+                    // Нет планов - проверяем старые данные для миграции
                     const savedTables = loadFromLocalStorage(STORAGE_KEYS.RAW_TABLES, {});
                     if (savedTables.demand && savedTables.roster) {
+                        // Миграция старых данных в план
                         if (savedTables.demand) {
                             savedTables.demand = restoreDemandDates(savedTables.demand);
                         }
                         setRawTables(savedTables);
-                        // Note: analyzeData relies on state setters, so we call it here
-                        analyzeData(savedTables.demand, savedTables.roster);
+                        
+                        const analysis = analyzeDataPure(savedTables.demand, savedTables.roster);
+                        const { templates: preTemplates } = preAnalyzeRoster(savedTables.roster);
+                        const newHashes = buildPlanHashes(savedTables.demand, preTemplates);
+                        
+                        setScheduleDates(analysis.scheduleDates);
+                        setLineTemplates(analysis.lineTemplates);
+                        setFloaters(analysis.floaters);
+                        setWorkerRegistry(hydrateWorkerRegistry(serializeWorkerRegistry(analysis.workerRegistry)));
+                        setPlanHashes(newHashes);
+                        
+                        const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
+                        setManualAssignments(savedAssignments);
+                        
+                        if (analysis.scheduleDates.length > 0) {
+                            setSelectedDate(analysis.scheduleDates[0]);
+                        }
+                        
+                        // Создаём план из мигрированных данных
+                        const createdAt = new Date().toISOString();
+                        const migratedPlan = {
+                            id: generatePlanId(),
+                            name: `Миграция ${createdAt.slice(0, 10)}`,
+                            createdAt,
+                            type: 'Operational',
+                            data: {
+                                rawTables: savedTables,
+                                scheduleDates: analysis.scheduleDates,
+                                planHashes: newHashes,
+                                lineTemplates: analysis.lineTemplates,
+                                floaters: analysis.floaters,
+                                workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
+                                manualAssignments: savedAssignments
+                            }
+                        };
+                        setSavedPlans([migratedPlan]);
+                        setCurrentPlanId(migratedPlan.id);
                         setStep('dashboard');
-                    }
-
-                    const savedTemplates = loadFromLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, {});
-                    const savedRegistry = loadFromLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, {});
-                    const savedFloaters = loadFromLocalStorage(STORAGE_KEYS.FLOATERS, { day: [], night: [] });
-                    const savedDates = loadFromLocalStorage(STORAGE_KEYS.SCHEDULE_DATES, []);
-
-                    if (Object.keys(savedTemplates).length > 0) setLineTemplates(savedTemplates);
-                    if (Object.keys(savedRegistry).length > 0) {
-                        setWorkerRegistry(hydrateWorkerRegistry(savedRegistry));
-                    }
-                    if (savedFloaters.day.length > 0 || savedFloaters.night.length > 0) setFloaters(savedFloaters);
-                    if (savedDates.length > 0) {
-                        setScheduleDates(savedDates);
-                        if (savedDates.length > 0 && !selectedDate) setSelectedDate(savedDates[0]);
+                    } else {
+                        // Нет планов и нет данных - переходим в менеджер планов
+                        setStep('dashboard');
+                        setViewMode('plans');
                     }
                 }
 
@@ -633,7 +657,7 @@ export const DataProvider = ({ children }) => {
         };
     }, [TARGET_CONFIG, buildPlanHashes, analyzeDataPure]);
 
-    const normalizePlanData = (planData) => ({
+    const normalizePlanData = useCallback((planData) => ({
         rawTables: planData.rawTables || {},
         scheduleDates: planData.scheduleDates || [],
         planHashes: planData.planHashes || {},
@@ -641,7 +665,198 @@ export const DataProvider = ({ children }) => {
         floaters: planData.floaters || { day: [], night: [] },
         workerRegistry: planData.workerRegistry || {},
         manualAssignments: planData.manualAssignments || {}
-    });
+    }), []);
+
+    const buildPlanSlots = useCallback((planData) => {
+        const normalized = normalizePlanData(planData || {});
+        const demandData = normalized.rawTables?.demand;
+        const templates = normalized.lineTemplates || {};
+        const assignments = normalized.manualAssignments || {};
+
+        if (!Array.isArray(demandData) || demandData.length === 0) {
+            return { slots: [], slotMap: new Map() };
+        }
+
+        const headers = Array.isArray(demandData[0]) ? demandData[0] : [];
+        const slots = [];
+
+        const splitNames = (val) => {
+            if (!val) return [];
+            return String(val)
+                .split(/[,;\n/]+/)
+                .map(s => s.trim())
+                .filter(s => s.length > 1);
+        };
+
+        demandData.slice(1).forEach(row => {
+            if (!row) return;
+            let d = row[11];
+            let dateStr = '';
+            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
+            else if (typeof d === 'string') {
+                const dateTry = new Date(d);
+                if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
+                else dateStr = cleanVal(d);
+            }
+            if (!dateStr || dateStr.length < 5) return;
+
+            const shiftNum = extractShiftNumber(cleanVal(row[14]));
+            if (!shiftNum) return;
+
+            const activeLines = [];
+            for (let i = 15; i <= 26; i++) {
+                if ((parseInt(row[i]) || 0) > 0) {
+                    const headerName = cleanVal(headers[i]);
+                    if (headerName) activeLines.push(headerName);
+                }
+            }
+
+            activeLines.forEach(activeLineName => {
+                const templateName = Object.keys(templates).find(t => isLineMatch(activeLineName, t));
+                const positions = templateName ? templates[templateName] : [];
+                positions.forEach(pos => {
+                    const assignedNamesList = splitNames(pos?.roster?.[shiftNum]);
+                    const totalSlots = Math.max(parseInt(pos?.count) || 1, assignedNamesList.length);
+
+                    for (let i = 0; i < totalSlots; i++) {
+                        const slotId = `${dateStr}_${shiftNum}_${activeLineName}_${pos.role}_${i}`;
+                        const baseName = assignedNamesList[i] || null;
+                        const manual = assignments[slotId];
+                        let name = baseName;
+                        let assignmentType = null;
+                        let source = baseName ? 'roster' : 'vacancy';
+
+                        if (manual) {
+                            if (manual.type === 'vacancy') {
+                                name = null;
+                                source = 'manualVacancy';
+                            } else {
+                                name = manual.name || baseName;
+                                assignmentType = manual.type || null;
+                                source = 'manual';
+                            }
+                        }
+
+                        slots.push({
+                            slotId,
+                            date: dateStr,
+                            shiftId: String(shiftNum),
+                            lineName: templateName || activeLineName,
+                            role: pos.role,
+                            index: i,
+                            assignedName: name,
+                            assignedNorm: name ? normalizeName(name) : '',
+                            assignmentType,
+                            source
+                        });
+                    }
+                });
+            });
+        });
+
+        return { slots, slotMap: new Map(slots.map(s => [s.slotId, s])) };
+    }, [normalizePlanData]);
+
+    const comparePlanSnapshots = useCallback((masterPlan, operationalPlan) => {
+        const master = normalizePlanData(masterPlan || {});
+        const operational = normalizePlanData(operationalPlan || {});
+
+        const masterSlots = buildPlanSlots(master);
+        const operationalSlots = buildPlanSlots(operational);
+
+        const slotIds = new Set([
+            ...masterSlots.slots.map(s => s.slotId),
+            ...operationalSlots.slots.map(s => s.slotId)
+        ]);
+
+        // Сначала собираем все изменения без учёта moved
+        const tempAdded = [];
+        const tempLost = [];
+        const replaced = [];
+        const unchangedSlotIds = new Set();
+
+        slotIds.forEach(slotId => {
+            const slotA = masterSlots.slotMap.get(slotId);
+            const slotB = operationalSlots.slotMap.get(slotId);
+            
+            // Если слота нет в одном из планов - пропускаем (структурное изменение)
+            if (!slotA || !slotB) return;
+
+            const nameA = slotA.assignedNorm;
+            const nameB = slotB.assignedNorm;
+            
+            // Если ничего не изменилось
+            if (nameA === nameB) {
+                unchangedSlotIds.add(slotId);
+                return;
+            }
+
+            // Замена (оба не пустые, но разные люди)
+            if (nameA && nameB) {
+                replaced.push({
+                    ...slotB,
+                    fromName: slotA.assignedName,
+                    toName: slotB.assignedName
+                });
+                return;
+            }
+
+            // Потеря (был человек, стал пусто)
+            if (nameA && !nameB) {
+                tempLost.push({ ...slotA, name: slotA.assignedName });
+                return;
+            }
+
+            // Добавление (было пусто, стал человек)
+            if (!nameA && nameB) {
+                tempAdded.push({ ...slotB, name: slotB.assignedName });
+                return;
+            }
+        });
+
+        // Теперь определяем moved: если человек исчез из одного слота и появился в другом той же смены
+        const moved = [];
+        const movedSlotIds = new Set();
+        const usedLostIndices = new Set();
+        const usedAddedIndices = new Set();
+
+        tempLost.forEach((lostSlot, lostIdx) => {
+            if (usedLostIndices.has(lostIdx)) return;
+
+            // Ищем добавление того же человека в той же смене
+            const dateShiftKey = `${lostSlot.date}_${lostSlot.shiftId}`;
+            const lostNameNorm = lostSlot.assignedNorm;
+
+            tempAdded.forEach((addedSlot, addedIdx) => {
+                if (usedAddedIndices.has(addedIdx)) return;
+                if (movedSlotIds.has(lostSlot.slotId) || movedSlotIds.has(addedSlot.slotId)) return;
+
+                const addedDateShiftKey = `${addedSlot.date}_${addedSlot.shiftId}`;
+                const addedNameNorm = addedSlot.assignedNorm;
+
+                // Проверяем: тот же человек, та же смена, но разные слоты
+                if (lostNameNorm === addedNameNorm && dateShiftKey === addedDateShiftKey && lostSlot.slotId !== addedSlot.slotId) {
+                    moved.push({
+                        name: lostSlot.name,
+                        from: lostSlot,
+                        to: addedSlot
+                    });
+                    movedSlotIds.add(lostSlot.slotId);
+                    movedSlotIds.add(addedSlot.slotId);
+                    usedLostIndices.add(lostIdx);
+                    usedAddedIndices.add(addedIdx);
+                }
+            });
+        });
+
+        // Остальные lost и added, которые не стали moved
+        const added = tempAdded.filter((_, idx) => !usedAddedIndices.has(idx));
+        const lost = tempLost.filter((_, idx) => !usedLostIndices.has(idx));
+
+        return {
+            changes: { moved, added, lost, replaced }
+        };
+    }, [buildPlanSlots, normalizePlanData]);
 
     const addPlan = useCallback((plan) => {
         setSavedPlans(prev => {
@@ -1613,6 +1828,7 @@ export const DataProvider = ({ children }) => {
         importPlanFromJson,
         importPlanFromExcelFile,
         updateAssignments,
+        comparePlanSnapshots,
         handleMatrixAssignment,
         handleWorkerEditSave, 
         handleWorkerDelete,
@@ -1650,6 +1866,7 @@ export const DataProvider = ({ children }) => {
         deletePlan,
         importPlanFromJson,
         importPlanFromExcelFile,
+        comparePlanSnapshots,
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,
