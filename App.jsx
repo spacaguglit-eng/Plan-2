@@ -34,7 +34,8 @@ export default function App() {
         syncStatus,
         rawTables,
         setRawTables,
-        performanceMetrics
+        performanceMetrics,
+        clearPerformanceMetrics
     } = useData();
 
     // Scroll to target brigade when targetScrollBrigadeId changes
@@ -44,26 +45,6 @@ export default function App() {
         }
     }, [viewMode, selectedDate]);
 
-    const renderContent = () => {
-        switch (viewMode) {
-            case 'dashboard':
-                return <div className="h-full overflow-y-auto pr-2"><DashboardView /></div>;
-            case 'chess':
-                return <TimesheetView />;
-            case 'employees_list':
-                return <EmployeesListView />;
-            case 'employees_roster':
-                return <DistributionView />;
-            case 'all_employees':
-                return <AllEmployeesView />;
-            case 'verification':
-                return <VerificationView />;
-            case 'performance':
-                return <PerformanceView performanceMetrics={performanceMetrics} />;
-            default:
-                return null;
-        }
-    };
 
     const handleNewFile = () => {
         setStep('upload');
@@ -210,7 +191,13 @@ export default function App() {
                         </div>
                     </div>
                     <div className="flex-1 overflow-hidden p-4 sm:p-6 w-full max-w-[1800px] mx-auto">
-                        {renderContent()}
+                        {viewMode === 'dashboard' && <div className="h-full overflow-y-auto pr-2"><DashboardView /></div>}
+                        {viewMode === 'chess' && <TimesheetView />}
+                        {viewMode === 'employees_list' && <EmployeesListView />}
+                        {viewMode === 'employees_roster' && <DistributionView />}
+                        {viewMode === 'all_employees' && <AllEmployeesView />}
+                        {viewMode === 'verification' && <VerificationView />}
+                        {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                     </div>
                 </>
             )}

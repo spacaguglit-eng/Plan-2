@@ -19,10 +19,11 @@ const TimesheetView = () => {
         setViewMode,
         setTargetScrollBrigadeId,
         factData,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('chess', logPerformance);
+    useRenderTime('chess', logPerformance, viewMode === 'chess');
 
     const chessTableData = useMemo(() => {
         const tableData = calculateChessTable();
@@ -366,4 +367,4 @@ const TimesheetView = () => {
     );
 };
 
-export default TimesheetView;
+export default React.memo(TimesheetView);

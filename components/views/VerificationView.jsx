@@ -13,10 +13,11 @@ const VerificationView = () => {
         setFactData,
         factDates,
         setFactDates,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('verification', logPerformance);
+    useRenderTime('verification', logPerformance, viewMode === 'verification');
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');
     const [isLoading, setIsLoading] = useState(false);
@@ -787,4 +788,4 @@ const VerificationView = () => {
     );
 };
 
-export default VerificationView;
+export default React.memo(VerificationView);

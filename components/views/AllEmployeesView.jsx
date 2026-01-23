@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Users, Search, Edit3, Check, X } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
@@ -8,10 +8,11 @@ const AllEmployeesView = () => {
     const {
         workerRegistry,
         factData,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('all_employees', logPerformance);
+    useRenderTime('all_employees', logPerformance, viewMode === 'all_employees');
 
     const [allEmployees, setAllEmployees] = useState({});
     const [search, setSearch] = useState('');
@@ -28,8 +29,23 @@ const AllEmployeesView = () => {
         setAllEmployees(saved);
     }, []);
 
+    // Оптимизация: отслеживаем предыдущие значения для предотвращения ненужных обновлений
+    const prevWorkerRegistryRef = useRef(workerRegistry);
+    const prevFactDataRef = useRef(factData);
+
     // Синхронизируем данные из workerRegistry и factData
     useEffect(() => {
+        // Проверяем, действительно ли изменились данные
+        const workerRegistryChanged = prevWorkerRegistryRef.current !== workerRegistry;
+        const factDataChanged = prevFactDataRef.current !== factData;
+        
+        if (!workerRegistryChanged && !factDataChanged) {
+            return; // Нет изменений, пропускаем обновление
+        }
+        
+        prevWorkerRegistryRef.current = workerRegistry;
+        prevFactDataRef.current = factData;
+        
         setAllEmployees(prev => {
             const updated = { ...prev };
             let changed = false;
@@ -265,4 +281,4 @@ const AllEmployeesView = () => {
     );
 };
 
-export default AllEmployeesView;
+export default React.memo(AllEmployeesView);

@@ -7,10 +7,11 @@ const EmployeesListView = () => {
     const {
         workerRegistry,
         setEditingWorker,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('employees_list', logPerformance);
+    useRenderTime('employees_list', logPerformance, viewMode === 'employees_list');
 
     const [search, setSearch] = useState('');
     const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
@@ -241,4 +242,4 @@ const EmployeesListView = () => {
     );
 };
 
-export default EmployeesListView;
+export default React.memo(EmployeesListView);

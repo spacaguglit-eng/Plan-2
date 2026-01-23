@@ -10,10 +10,11 @@ const DistributionView = () => {
         workerRegistry,
         floaters,
         handleMatrixAssignment,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('employees_roster', logPerformance);
+    useRenderTime('employees_roster', logPerformance, viewMode === 'employees_roster');
 
     const [filter, setFilter] = useState('');
     const [editingCell, setEditingCell] = useState(null);
@@ -172,4 +173,4 @@ const DistributionView = () => {
     );
 };
 
-export default DistributionView;
+export default React.memo(DistributionView);

@@ -1,40 +1,45 @@
 import React, { useEffect, useRef } from 'react';
-import { Activity, TrendingUp, TrendingDown, Zap, Clock } from 'lucide-react';
+import { Activity, TrendingUp, TrendingDown, Zap, Clock, Eye, RefreshCw, Trash2 } from 'lucide-react';
 
 // Hook для измерения времени рендера компонента
-export const useRenderTime = (componentName, onRenderComplete) => {
-    const startTimeRef = useRef(null);
+export const useRenderTime = (componentName, onRenderComplete, isVisible = true) => {
+    const startTimeRef = useRef(Date.now());
+    const renderCountRef = useRef(0);
     const mountTimeRef = useRef(Date.now());
-
+    const wasVisibleRef = useRef(isVisible);
+    
+    renderCountRef.current++;
+    
     useEffect(() => {
+        const renderTime = Date.now() - startTimeRef.current;
+        const timeSinceMount = Date.now() - mountTimeRef.current;
+        
+        // Считаем переключением, если:
+        // 1. Компонент стал видимым (isVisible = true)
+        // 2. Ранее был невидимым (wasVisibleRef.current = false)
+        // 3. Прошло меньше 100мс с момента монтирования (свежий монтаж = переключение)
+        const isTabSwitch = !wasVisibleRef.current && isVisible && timeSinceMount < 100;
+        
+        wasVisibleRef.current = isVisible;
+        
+        if (isVisible && onRenderComplete) {
+            onRenderComplete({
+                componentName,
+                renderTime,
+                renderCount: renderCountRef.current,
+                timestamp: Date.now(),
+                isTabSwitch,
+                isVisible
+            });
+        }
         startTimeRef.current = Date.now();
     });
-
-    useEffect(() => {
-        if (startTimeRef.current) {
-            const renderTime = Date.now() - startTimeRef.current;
-            const totalTime = Date.now() - mountTimeRef.current;
-
-            if (onRenderComplete) {
-                onRenderComplete({
-                    componentName,
-                    renderTime,
-                    totalTime,
-                    timestamp: Date.now()
-                });
-            }
-        }
-    });
-
-    return {
-        startRender: () => {
-            startTimeRef.current = Date.now();
-        }
-    };
+    
+    return { renderCount: renderCountRef.current };
 };
 
 // Компонент для отображения метрик производительности
-export const PerformanceView = ({ performanceMetrics }) => {
+export const PerformanceView = ({ performanceMetrics, clearPerformanceMetrics }) => {
     const getAverageTime = (metrics) => {
         if (!metrics || metrics.length === 0) return 0;
         const sum = metrics.reduce((acc, m) => acc + m.renderTime, 0);
@@ -60,6 +65,33 @@ export const PerformanceView = ({ performanceMetrics }) => {
         return metrics ? metrics.length : 0;
     };
 
+    const getTabSwitchCount = (metrics) => {
+        if (!metrics || metrics.length === 0) return 0;
+        return metrics.filter(m => m.isTabSwitch).length;
+    };
+
+    const getAverageTabSwitchTime = (metrics) => {
+        if (!metrics || metrics.length === 0) return 0;
+        const tabSwitches = metrics.filter(m => m.isTabSwitch);
+        if (tabSwitches.length === 0) return 0;
+        const sum = tabSwitches.reduce((acc, m) => acc + m.renderTime, 0);
+        return (sum / tabSwitches.length).toFixed(2);
+    };
+
+    const getTotalRenderCount = (metrics) => {
+        if (!metrics || metrics.length === 0) return 0;
+        return metrics[metrics.length - 1]?.renderCount || metrics.length;
+    };
+
+    const getRecentActivity = (metrics) => {
+        if (!metrics || metrics.length === 0) return 'Нет данных';
+        const lastMetric = metrics[metrics.length - 1];
+        const timeSince = Date.now() - lastMetric.timestamp;
+        if (timeSince < 5000) return 'Только что';
+        if (timeSince < 60000) return `${Math.floor(timeSince / 1000)} сек назад`;
+        return `${Math.floor(timeSince / 60000)} мин назад`;
+    };
+
     const getPerformanceColor = (time) => {
         if (time < 50) return 'text-green-600';
         if (time < 200) return 'text-yellow-600';
@@ -77,7 +109,7 @@ export const PerformanceView = ({ performanceMetrics }) => {
         { key: 'chess', label: 'Табель' },
         { key: 'employees_list', label: 'Список сотрудников' },
         { key: 'employees_roster', label: 'Распределение' },
-        { key: 'tables', label: 'База данных' },
+        { key: 'all_employees', label: 'Все сотрудники' },
         { key: 'verification', label: 'Сверка' }
     ];
 
@@ -88,10 +120,23 @@ export const PerformanceView = ({ performanceMetrics }) => {
                     <div className="bg-purple-100 p-3 rounded-lg">
                         <Zap className="text-purple-600" size={24} />
                     </div>
-                    <div>
+                    <div className="flex-1">
                         <h2 className="text-2xl font-bold text-slate-800">Мониторинг производительности</h2>
                         <p className="text-slate-500 text-sm">Анализ скорости рендеринга вкладок приложения</p>
                     </div>
+                    {clearPerformanceMetrics && (
+                        <button
+                            onClick={() => {
+                                if (confirm('Очистить все метрики производительности?')) {
+                                    clearPerformanceMetrics();
+                                }
+                            }}
+                            className="px-4 py-2 bg-red-50 text-red-600 rounded-lg font-medium hover:bg-red-100 transition-colors border border-red-200 flex items-center gap-2"
+                        >
+                            <Trash2 size={16} />
+                            Очистить метрики
+                        </button>
+                    )}
                 </div>
 
                 <div className="grid grid-cols-1 gap-4">
@@ -125,7 +170,7 @@ export const PerformanceView = ({ performanceMetrics }) => {
                                 </div>
 
                                 {renderCount > 0 ? (
-                                    <div className="grid grid-cols-3 gap-4 pt-4 border-t border-slate-200">
+                                    <div className="grid grid-cols-4 gap-4 pt-4 border-t border-slate-200">
                                         <div className="text-center">
                                             <div className="flex items-center justify-center gap-1 mb-1">
                                                 <Clock size={14} className="text-slate-400" />
@@ -137,20 +182,34 @@ export const PerformanceView = ({ performanceMetrics }) => {
                                         </div>
                                         <div className="text-center">
                                             <div className="flex items-center justify-center gap-1 mb-1">
-                                                <TrendingDown size={14} className="text-green-500" />
-                                                <p className="text-xs text-slate-500 font-medium">Минимум</p>
+                                                <Eye size={14} className="text-purple-500" />
+                                                <p className="text-xs text-slate-500 font-medium">Переключений</p>
                                             </div>
-                                            <p className="text-lg font-semibold text-green-600">
-                                                {minTime} мс
+                                            <p className="text-lg font-semibold text-purple-600">
+                                                {getTabSwitchCount(metrics)}
+                                            </p>
+                                            {getTabSwitchCount(metrics) > 0 && (
+                                                <p className="text-[10px] text-slate-400">
+                                                    ~{getAverageTabSwitchTime(metrics)} мс
+                                                </p>
+                                            )}
+                                        </div>
+                                        <div className="text-center">
+                                            <div className="flex items-center justify-center gap-1 mb-1">
+                                                <RefreshCw size={14} className="text-blue-500" />
+                                                <p className="text-xs text-slate-500 font-medium">Всего рендеров</p>
+                                            </div>
+                                            <p className="text-lg font-semibold text-blue-600">
+                                                {getTotalRenderCount(metrics)}
                                             </p>
                                         </div>
                                         <div className="text-center">
                                             <div className="flex items-center justify-center gap-1 mb-1">
-                                                <TrendingUp size={14} className="text-red-500" />
-                                                <p className="text-xs text-slate-500 font-medium">Максимум</p>
+                                                <Activity size={14} className="text-slate-400" />
+                                                <p className="text-xs text-slate-500 font-medium">Активность</p>
                                             </div>
-                                            <p className="text-lg font-semibold text-red-600">
-                                                {maxTime} мс
+                                            <p className="text-xs font-medium text-slate-600">
+                                                {getRecentActivity(metrics)}
                                             </p>
                                         </div>
                                     </div>
@@ -166,19 +225,24 @@ export const PerformanceView = ({ performanceMetrics }) => {
                                         <p className="text-xs text-slate-500 mb-2 font-medium">История рендеров (последние {Math.min(20, metrics.length)})</p>
                                         <div className="flex items-end gap-1 h-16">
                                             {metrics.slice(-20).map((metric, idx) => {
-                                                const height = Math.min((metric.renderTime / maxTime) * 100, 100);
+                                                const maxTimeNum = parseFloat(maxTime) || 1;
+                                                const height = Math.min((metric.renderTime / maxTimeNum) * 100, 100);
                                                 const color = metric.renderTime < 50
                                                     ? 'bg-green-400'
                                                     : metric.renderTime < 200
                                                     ? 'bg-yellow-400'
                                                     : 'bg-red-400';
+                                                
+                                                // Специальная подсветка для смены вкладок
+                                                const isTabSwitch = metric.isTabSwitch;
+                                                const borderClass = isTabSwitch ? 'ring-2 ring-purple-500' : '';
 
                                                 return (
                                                     <div
                                                         key={idx}
-                                                        className={`flex-1 ${color} rounded-t transition-all hover:opacity-70`}
+                                                        className={`flex-1 ${color} rounded-t transition-all hover:opacity-70 ${borderClass}`}
                                                         style={{ height: `${height}%` }}
-                                                        title={`Рендер ${idx + 1}: ${metric.renderTime.toFixed(2)} мс`}
+                                                        title={`Рендер ${metric.renderCount || idx + 1}: ${metric.renderTime.toFixed(2)} мс${isTabSwitch ? ' (смена вкладки)' : ''}`}
                                                     />
                                                 );
                                             })}

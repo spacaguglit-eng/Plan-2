@@ -160,12 +160,12 @@ export const DataProvider = ({ children }) => {
         }
     }, 1000), []);
 
-    const updateAssignments = (newAssignments) => {
+    const updateAssignments = useCallback((newAssignments) => {
         setManualAssignments(newAssignments);
         debouncedSaveToLocal(newAssignments);
-    };
+    }, [debouncedSaveToLocal]);
 
-    const handleMatrixAssignment = (targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
+    const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
         setLineTemplates(prev => {
             const newTemplates = { ...prev };
             Object.keys(newTemplates).forEach(lineKey => {
@@ -219,9 +219,9 @@ export const DataProvider = ({ children }) => {
             saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, newTemplates);
             return newTemplates;
         });
-    };
+    }, []);
 
-    const handleWorkerEditSave = ({ oldName, newName, competencies, status }) => {
+    const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status }) => {
         setWorkerRegistry(prev => {
             const next = { ...prev };
             if (oldName && oldName !== newName) {
@@ -260,9 +260,9 @@ export const DataProvider = ({ children }) => {
             return next;
         });
         setEditingWorker(null);
-    };
+    }, []);
 
-    const handleWorkerDelete = (name) => {
+    const handleWorkerDelete = useCallback((name) => {
         setWorkerRegistry(prev => {
             const next = { ...prev };
             delete next[name];
@@ -291,7 +291,7 @@ export const DataProvider = ({ children }) => {
             saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, newLt);
             return newLt;
         });
-    };
+    }, []);
 
     const generateShiftHash = (dateStr, shiftNum, shiftType, activeLines, templates) => {
         const linesFingerprint = activeLines.sort().map(lineName => {
@@ -496,7 +496,7 @@ export const DataProvider = ({ children }) => {
         reader.readAsArrayBuffer(selectedFile);
     };
 
-    const handleDragStart = (e, worker) => {
+    const handleDragStart = useCallback((e, worker) => {
         const availability = checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
         if (!availability.available) {
             e.preventDefault();
@@ -505,22 +505,22 @@ export const DataProvider = ({ children }) => {
         }
         setDraggedWorker(worker);
         e.dataTransfer.effectAllowed = 'move';
-    };
+    }, [selectedDate, workerRegistry]);
 
-    const handleDragOver = (e) => {
+    const handleDragOver = useCallback((e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-    };
+    }, []);
 
-    const handleDrop = (e, targetSlotId) => {
+    const handleDrop = useCallback((e, targetSlotId) => {
         e.preventDefault();
         if (!draggedWorker) return;
         const assignmentEntry = { ...draggedWorker, originalId: draggedWorker.id, id: `assigned_${targetSlotId}_${Date.now()}` };
         updateAssignments({ ...manualAssignments, [targetSlotId]: assignmentEntry });
         setDraggedWorker(null);
-    };
+    }, [draggedWorker, manualAssignments, updateAssignments]);
 
-    const handleAssignRv = (worker, slotId) => {
+    const handleAssignRv = useCallback((worker, slotId) => {
         const assignmentEntry = {
             name: worker.name,
             role: worker.mainRole,
@@ -532,14 +532,14 @@ export const DataProvider = ({ children }) => {
         };
         updateAssignments({ ...manualAssignments, [slotId]: assignmentEntry });
         setRvModalData(null);
-    };
+    }, [manualAssignments, updateAssignments]);
 
-    const handleRemoveAssignment = (slotId) => {
+    const handleRemoveAssignment = useCallback((slotId) => {
         const newAssignments = { ...manualAssignments };
         if (newAssignments[slotId]) delete newAssignments[slotId];
         else newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
         updateAssignments(newAssignments);
-    };
+    }, [manualAssignments, updateAssignments]);
 
     const getShiftsForDate = useCallback((targetDate) => {
         if (!targetDate || !rawTables['demand']) return [];
@@ -720,7 +720,7 @@ export const DataProvider = ({ children }) => {
         return schedule;
     }, [scheduleDates, getShiftsForDate]);
 
-    const handleAutoFillFloaters = (targetShift, isGlobal) => {
+    const handleAutoFillFloaters = useCallback((targetShift, isGlobal) => {
         let newAssignments = { ...manualAssignments };
         const datesToProcess = isGlobal ? scheduleDates : [selectedDate];
         datesToProcess.forEach(date => {
@@ -748,7 +748,7 @@ export const DataProvider = ({ children }) => {
             });
         });
         updateAssignments(newAssignments);
-    };
+    }, [manualAssignments, scheduleDates, selectedDate, getShiftsForDate, updateAssignments]);
 
     const calculateChessTable = useCallback(() => {
         if (!rawTables['demand'] || !rawTables['roster']) return null;
@@ -1129,12 +1129,12 @@ export const DataProvider = ({ children }) => {
         XLSX.writeFile(wb, fileName);
     };
 
-    const exportChessTableToExcel = async () => {
+    const exportChessTableToExcel = useCallback(async () => {
         const tableData = calculateChessTable();
         if (!tableData) { alert('Нет данных для экспорта'); return; }
         try { await exportWithExcelJS(tableData); } 
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
-    };
+    }, [calculateChessTable]);
 
     const logPerformance = useCallback((metric) => {
         setPerformanceMetrics(prev => {
@@ -1145,7 +1145,11 @@ export const DataProvider = ({ children }) => {
         });
     }, []);
 
-    const value = {
+    const clearPerformanceMetrics = useCallback(() => {
+        setPerformanceMetrics({});
+    }, []);
+
+    const value = useMemo(() => ({
         // State
         file, loading, restoring, error, syncStatus,
         rawTables, scheduleDates, planHashes,
@@ -1179,8 +1183,35 @@ export const DataProvider = ({ children }) => {
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         calculateChessTable, exportChessTableToExcel,
-        performanceMetrics, logPerformance
-    };
+        performanceMetrics, logPerformance, clearPerformanceMetrics
+    }), [
+        // ТОЛЬКО состояние, НЕ setState функции!
+        file, loading, restoring, error, syncStatus,
+        rawTables, scheduleDates, planHashes,
+        lineTemplates, floaters, workerRegistry,
+        step, viewMode, selectedDate,
+        manualAssignments,
+        factData, factDates,
+        targetScrollBrigadeId,
+        draggedWorker,
+        updateReport,
+        rvModalData,
+        editingWorker,
+        chessFilterShift,
+        chessSearch,
+        isGlobalFill,
+        chessDisplayLimit,
+        // Только мемоизированные функции
+        getShiftsForDate,
+        calculateDailyStats,
+        globalWorkSchedule,
+        calculateChessTable,
+        logPerformance,
+        clearPerformanceMetrics,
+        performanceMetrics
+        // ❌ УБРАНЫ: все немемоизированные функции
+        // ❌ УБРАНЫ: все setState
+    ]);
 
     return (
         <DataContext.Provider value={value}>

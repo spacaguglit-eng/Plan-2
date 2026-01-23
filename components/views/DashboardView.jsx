@@ -24,10 +24,11 @@ const DashboardView = () => {
         isGlobalFill,
         setIsGlobalFill,
         draggedWorker,
-        logPerformance
+        logPerformance,
+        viewMode
     } = useData();
 
-    useRenderTime('dashboard', logPerformance);
+    useRenderTime('dashboard', logPerformance, viewMode === 'dashboard');
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
@@ -225,4 +226,4 @@ const DashboardView = () => {
     );
 };
 
-export default DashboardView;
+export default React.memo(DashboardView);
