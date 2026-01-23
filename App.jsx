@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -14,9 +14,11 @@ import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
+import PinModal from './components/common/PinModal';
 
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
+    const [isPinModalOpen, setIsPinModalOpen] = useState(false);
 
     const {
         step,
@@ -39,7 +41,9 @@ export default function App() {
         rawTables,
         setRawTables,
         savedPlans,
-        currentPlanId
+        currentPlanId,
+        isLocked,
+        unlockWithCode
     } = useData();
 
     const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
@@ -60,6 +64,11 @@ export default function App() {
     return (
         <div className="h-screen bg-slate-100 font-sans text-slate-800 flex flex-col overflow-hidden">
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
+            <PinModal
+                isOpen={isPinModalOpen}
+                onClose={() => setIsPinModalOpen(false)}
+                onSuccess={() => unlockWithCode('1234')}
+            />
             {editingWorker && (
                 <EditWorkerModal
                     worker={editingWorker === 'new' ? null : editingWorker}
@@ -106,6 +115,22 @@ export default function App() {
                                         </div>
                                     )}
                                 </div>
+                                <button
+                                    onClick={() => {
+                                        if (isLocked) {
+                                            setIsPinModalOpen(true);
+                                        }
+                                    }}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                                        isLocked
+                                            ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                                            : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                    }`}
+                                    title={isLocked ? 'Мастер-план защищен' : 'Редактирование разрешено'}
+                                >
+                                    {isLocked ? <Lock size={14} /> : <Unlock size={14} />}
+                                    {isLocked ? 'Мастер (Защищено)' : 'Редактирование'}
+                                </button>
                                 <div className="bg-slate-100 p-1 rounded-lg flex border border-slate-200">
                                     <button
                                         onClick={() => setViewMode('dashboard')}

@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
+import { useNotification } from '../components/common/Toast.jsx';
 import {
     STORAGE_KEYS,
     saveToLocalStorage,
@@ -33,8 +34,9 @@ export const DataProvider = ({ children }) => {
     const [planHashes, setPlanHashes] = useState({});
 
     // Multi-plan management
-    const [savedPlans, setSavedPlans] = useState([]);
-    const [currentPlanId, setCurrentPlanId] = useState(null);
+    const [savedPlans, setSavedPlans] = useState(() => loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []));
+    const [currentPlanId, setCurrentPlanId] = useState(() => loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null));
+    const [isLocked, setIsLocked] = useState(false);
 
     const [lineTemplates, setLineTemplates] = useState({});
     const [floaters, setFloaters] = useState({ day: [], night: [] });
@@ -69,6 +71,8 @@ export const DataProvider = ({ children }) => {
     const [factData, setFactData] = useState(null);
     const [factDates, setFactDates] = useState([]);
 
+    const { notify } = useNotification();
+
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
@@ -77,6 +81,14 @@ export const DataProvider = ({ children }) => {
         { tableName: 'Сводная_По_Людям', expectedSheet: 'Расписание по сменам', type: 'demand' },
         { tableName: 'Люд', expectedSheet: 'Справочник', type: 'roster' }
     ]), []);
+
+    const unlockWithCode = useCallback((code) => {
+        if (code === '1234') {
+            setIsLocked(false);
+            return true;
+        }
+        return false;
+    }, []);
 
     const generatePlanId = () => `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -231,12 +243,19 @@ export const DataProvider = ({ children }) => {
     }, []);
 
     useEffect(() => {
+        if (restoring) return;
         saveToLocalStorage(STORAGE_KEYS.SAVED_PLANS, savedPlans);
-    }, [savedPlans]);
+    }, [savedPlans, restoring]);
 
     useEffect(() => {
+        if (restoring) return;
         saveToLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
-    }, [currentPlanId]);
+    }, [currentPlanId, restoring]);
+
+    useEffect(() => {
+        const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
+        setIsLocked(activePlan?.type === 'Master');
+    }, [currentPlanId, savedPlans]);
 
     // --- LOGIC FUNCTIONS ---
 
@@ -263,11 +282,23 @@ export const DataProvider = ({ children }) => {
     }, 1000), []);
 
     const updateAssignments = useCallback((newAssignments) => {
+        if (isLocked) {
+            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
+            return;
+        }
+        if (viewMode !== 'dashboard') {
+            notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
+            return;
+        }
         setManualAssignments(newAssignments);
         debouncedSaveToLocal(newAssignments);
-    }, [debouncedSaveToLocal]);
+    }, [debouncedSaveToLocal, isLocked, viewMode]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
+        if (isLocked) {
+            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
+            return;
+        }
         setLineTemplates(prev => {
             const newTemplates = { ...prev };
             Object.keys(newTemplates).forEach(lineKey => {
@@ -321,7 +352,7 @@ export const DataProvider = ({ children }) => {
             saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, newTemplates);
             return newTemplates;
         });
-    }, []);
+    }, [isLocked]);
 
     const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status }) => {
         setWorkerRegistry(prev => {
@@ -972,15 +1003,23 @@ export const DataProvider = ({ children }) => {
     ]);
 
     const handleDragStart = useCallback((e, worker) => {
+        if (isLocked) {
+            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
+            return;
+        }
+        if (viewMode !== 'dashboard') {
+            notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
+            return;
+        }
         const availability = checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
         if (!availability.available) {
             e.preventDefault();
-            alert(`❌ ${worker.name} недоступен: ${availability.reason}`);
+            notify({ type: 'error', message: `${worker.name} недоступен: ${availability.reason}` });
             return;
         }
         setDraggedWorker(worker);
         e.dataTransfer.effectAllowed = 'move';
-    }, [selectedDate, workerRegistry]);
+    }, [selectedDate, workerRegistry, isLocked, viewMode]);
 
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
@@ -1785,20 +1824,21 @@ export const DataProvider = ({ children }) => {
 
     const exportChessTableToExcel = useCallback(async () => {
         if (USE_CHESS_WORKER && chessTableWorkerStatus.status === 'calculating') {
-            alert('Идёт расчёт табеля, подождите несколько секунд.');
+            notify({ type: 'info', message: 'Идёт расчёт табеля, подождите несколько секунд.' });
             return;
         }
         const tableData = calculateChessTable();
-        if (!tableData) { alert('Нет данных для экспорта'); return; }
+        if (!tableData) { notify({ type: 'error', message: 'Нет данных для экспорта' }); return; }
         try { await exportWithExcelJS(tableData); } 
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
-    }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable]);
+    }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify]);
 
     const value = useMemo(() => ({
         // State
         file, loading, restoring, error, syncStatus,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
+        isLocked,
         lineTemplates, floaters, workerRegistry,
         step, setStep, viewMode, setViewMode, selectedDate, setSelectedDate,
         manualAssignments, setManualAssignments,
@@ -1838,12 +1878,14 @@ export const DataProvider = ({ children }) => {
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         calculateChessTable, exportChessTableToExcel,
+        unlockWithCode
         // Performance metrics are stored outside of Context to avoid app-wide render storms.
     }), [
         // ТОЛЬКО состояние, НЕ setState функции!
         file, loading, restoring, error, syncStatus,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
+        isLocked,
         lineTemplates, floaters, workerRegistry,
         step, viewMode, selectedDate,
         manualAssignments,
@@ -1871,7 +1913,8 @@ export const DataProvider = ({ children }) => {
         calculateDailyStats,
         globalWorkSchedule,
         calculateChessTable,
-        exportChessTableToExcel
+        exportChessTableToExcel,
+        unlockWithCode
         // ❌ УБРАНЫ: все немемоизированные функции
         // ❌ УБРАНЫ: все setState
     ]);
