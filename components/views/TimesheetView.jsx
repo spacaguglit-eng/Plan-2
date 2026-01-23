@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { useRenderTime } from '../../PerformanceMonitor';
@@ -14,6 +14,7 @@ const TimesheetView = () => {
         chessDisplayLimit,
         setChessDisplayLimit,
         exportChessTableToExcel,
+        chessTableWorkerStatus,
         workerRegistry,
         selectedDate,
         setSelectedDate,
@@ -24,6 +25,31 @@ const TimesheetView = () => {
     } = useData();
 
     useRenderTime('chess', logPerformanceMetric, viewMode === 'chess');
+
+    const ROW_HEIGHT_PX = 40;
+    const OVERSCAN_ROWS = 12;
+    const scrollRef = useRef(null);
+    const [scrollTop, setScrollTop] = useState(0);
+    const [viewportHeight, setViewportHeight] = useState(600);
+
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+
+        // ResizeObserver may be unavailable in some environments
+        if (typeof ResizeObserver === 'undefined') {
+            setViewportHeight(el.clientHeight || 600);
+            return;
+        }
+
+        const ro = new ResizeObserver(() => {
+            setViewportHeight(el.clientHeight || 600);
+        });
+        ro.observe(el);
+        setViewportHeight(el.clientHeight || 600);
+
+        return () => ro.disconnect();
+    }, []);
 
     const chessTableData = useMemo(() => {
         const tableData = calculateChessTable();
@@ -44,6 +70,22 @@ const TimesheetView = () => {
         
         return { dates, workers, filteredWorkers };
     }, [calculateChessTable, chessSearch, chessFilterShift]);
+
+    const dates = chessTableData?.dates || [];
+    const filteredWorkers = chessTableData?.filteredWorkers || [];
+
+    // "True virtualization": always compute window even if data is empty
+    const visibleWorkers = useMemo(() => filteredWorkers.slice(0, chessDisplayLimit), [filteredWorkers, chessDisplayLimit]);
+    const hasMore = filteredWorkers.length > chessDisplayLimit;
+
+    const virtual = useMemo(() => {
+        const total = visibleWorkers.length;
+        const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT_PX) - OVERSCAN_ROWS);
+        const end = Math.min(total, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT_PX) + OVERSCAN_ROWS);
+        const paddingTop = start * ROW_HEIGHT_PX;
+        const paddingBottom = Math.max(0, (total - end) * ROW_HEIGHT_PX);
+        return { start, end, paddingTop, paddingBottom };
+    }, [visibleWorkers.length, scrollTop, viewportHeight]);
 
     const exportToJSON = () => {
         const tableData = calculateChessTable();
@@ -175,15 +217,17 @@ const TimesheetView = () => {
         window.URL.revokeObjectURL(url);
     };
 
-    if (!chessTableData || chessTableData.dates.length === 0) {
+    if (chessTableWorkerStatus?.status === 'error' && dates.length === 0) {
+        return <div className="p-10 text-center text-red-500">Ошибка расчёта табеля: {chessTableWorkerStatus.error || 'неизвестная ошибка'}</div>;
+    }
+
+    if (chessTableWorkerStatus?.status === 'calculating' && dates.length === 0) {
+        return <div className="p-10 text-center text-slate-500">Идёт расчёт табеля…</div>;
+    }
+
+    if (dates.length === 0) {
         return <div className="p-10 text-center text-slate-400">Нет данных для расчета</div>;
     }
-    
-    const { dates, filteredWorkers } = chessTableData;
-    
-    // Виртуализация: показываем только срез данных
-    const visibleWorkers = filteredWorkers.slice(0, chessDisplayLimit);
-    const hasMore = filteredWorkers.length > chessDisplayLimit;
 
     return (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full max-h-[calc(100vh-140px)]">
@@ -220,7 +264,7 @@ const TimesheetView = () => {
                     </div>
                     <div className="relative">
                         <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                        <select value={chessFilterShift} onChange={(e) => setChessFilterShift(e.target.value)} className="pl-9 pr-8 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:border-blue-300 transition-colors">
+                        <select value={chessFilterShift} onChange={(e) => setChessFilterShift(e.target.value)} className="appearance-none pl-9 pr-8 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:border-blue-300 transition-colors">
                             <option value="all">Все смены</option>
                             <option value="1">Бригада 1</option>
                             <option value="2">Бригада 2</option>
@@ -257,7 +301,11 @@ const TimesheetView = () => {
                     )}
                 </div>
             </div>
-            <div className="overflow-auto flex-1">
+            <div
+                ref={scrollRef}
+                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                className="overflow-auto flex-1"
+            >
                 <table className="w-full text-xs text-left text-slate-500 border-collapse">
                     <thead className="bg-slate-100 text-slate-700 sticky top-0 z-40 shadow-sm">
                         <tr>
@@ -276,8 +324,13 @@ const TimesheetView = () => {
                         </tr>
                     </thead>
                     <tbody>
-                        {visibleWorkers.map((w, i) => (
-                            <tr key={i} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
+                        {virtual.paddingTop > 0 && (
+                            <tr>
+                                <td colSpan={dates.length + 3} style={{ height: virtual.paddingTop, padding: 0, border: 0 }} />
+                            </tr>
+                        )}
+                        {visibleWorkers.slice(virtual.start, virtual.end).map((w, i) => (
+                            <tr key={`${virtual.start + i}-${w.name}`} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
                                 <td className="px-4 py-2 font-medium text-slate-900 sticky left-0 bg-white border-r border-slate-100 z-20 whitespace-nowrap group-hover:bg-slate-50 shadow-[2px_0_4px_rgba(0,0,0,0.05)]" title={workerRegistry[w.name]?.competencies.size > 0 ? `Компетенции: ${Array.from(workerRegistry[w.name].competencies).join(', ')}` : ''}>
                                     {w.name} {workerRegistry[w.name]?.competencies.size > 0 && <GraduationCap size={10} className="inline text-blue-400 ml-1" />}
                                 </td>
@@ -344,6 +397,11 @@ const TimesheetView = () => {
                                 })}
                             </tr>
                         ))}
+                        {virtual.paddingBottom > 0 && (
+                            <tr>
+                                <td colSpan={dates.length + 3} style={{ height: virtual.paddingBottom, padding: 0, border: 0 }} />
+                            </tr>
+                        )}
                         {hasMore && (
                             <tr>
                                 <td colSpan={dates.length + 3} className="px-6 py-4 text-center bg-slate-50">

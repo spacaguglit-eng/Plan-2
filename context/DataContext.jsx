@@ -54,6 +54,13 @@ export const DataProvider = ({ children }) => {
     const [isGlobalFill, setIsGlobalFill] = useState(false);
     const [chessDisplayLimit, setChessDisplayLimit] = useState(50);
 
+    // Chess Table (Worker offload)
+    const USE_CHESS_WORKER = true;
+    const [chessTableWorkerResult, setChessTableWorkerResult] = useState(null);
+    const [chessTableWorkerStatus, setChessTableWorkerStatus] = useState({ status: 'idle', error: null, requestId: 0 });
+    const chessTableWorkerRef = useRef(null);
+    const chessTableWorkerReqIdRef = useRef(0);
+
     // Verification (SCUD)
     const [factData, setFactData] = useState(null);
     const [factDates, setFactDates] = useState([]);
@@ -538,11 +545,12 @@ export const DataProvider = ({ children }) => {
         updateAssignments(newAssignments);
     }, [manualAssignments, updateAssignments]);
 
-    const getShiftsForDate = useCallback((targetDate) => {
-        if (!targetDate || !rawTables['demand']) return [];
-        const data = rawTables['demand'];
-        const headers = data[0];
-        const brigadesMap = {};
+    // --- DEMAND INDEX (by date) ---
+    const demandIndex = useMemo(() => {
+        const res = { headers: [], brigadesByDate: new Map() };
+        if (!rawTables?.demand) return res;
+        const data = rawTables.demand;
+        res.headers = Array.isArray(data[0]) ? data[0] : [];
 
         data.slice(1).forEach(row => {
             let d = row[11];
@@ -553,35 +561,59 @@ export const DataProvider = ({ children }) => {
                 if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
                 else dateStr = cleanVal(d);
             }
-            if (dateStr !== targetDate) return;
+            if (!dateStr || dateStr.length < 5) return;
 
             const shiftType = cleanVal(row[13]);
             const brigadeRaw = cleanVal(row[14]);
             const shiftNum = extractShiftNumber(brigadeRaw);
             if (!shiftNum) return;
 
+            if (!res.brigadesByDate.has(dateStr)) res.brigadesByDate.set(dateStr, {});
+            const brigadesMap = res.brigadesByDate.get(dateStr);
+
             if (!brigadesMap[shiftNum]) brigadesMap[shiftNum] = { id: shiftNum, name: brigadeRaw, type: shiftType, activeLines: [] };
 
             for (let i = 15; i <= 26; i++) {
-                const lineHeader = cleanVal(headers[i]);
+                const lineHeader = cleanVal(res.headers[i]);
                 if (lineHeader && (parseInt(row[i]) || 0) > 0 && !brigadesMap[shiftNum].activeLines.includes(lineHeader)) {
                     brigadesMap[shiftNum].activeLines.push(lineHeader);
                 }
             }
         });
 
+        return res;
+    }, [rawTables]);
+
+    const buildShiftsFromBrigadesMap = useCallback((targetDate, brigadesMap, availabilityCache) => {
+        if (!brigadesMap) return [];
+
+        const getAvailabilityCached = (name) => {
+            const k = `${name}|${targetDate}`;
+            if (availabilityCache.has(k)) return availabilityCache.get(k);
+            const v = checkWorkerAvailability(name, targetDate, workerRegistry);
+            availabilityCache.set(k, v);
+            return v;
+        };
+
         return Object.values(brigadesMap).map(brigade => {
             const shiftTypeLower = brigade.type ? brigade.type.toLowerCase() : '';
             const lineTasks = [];
-            let allShiftWorkers = [];
+
+            const allShiftWorkers = [];
+            const workersById = new Map();
+            const workersByNameHomeLine = new Map();
 
             Object.keys(lineTemplates).forEach(lKey => {
                 lineTemplates[lKey].forEach(pos => {
                     const rawNames = pos.roster && pos.roster[brigade.id];
-                    if (rawNames) {
-                        rawNames.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1).forEach(name => {
-                            const avail = checkWorkerAvailability(name, targetDate, workerRegistry);
-                            allShiftWorkers.push({
+                    if (!rawNames) return;
+                    rawNames
+                        .split(/[,;\n/]+/)
+                        .map(s => s.trim())
+                        .filter(s => s.length > 1)
+                        .forEach(name => {
+                            const avail = getAvailabilityCached(name);
+                            const worker = {
                                 name,
                                 role: pos.role,
                                 homeLine: lKey,
@@ -589,9 +621,11 @@ export const DataProvider = ({ children }) => {
                                 isBusy: false,
                                 isAvailable: avail.available,
                                 statusReason: avail.reason
-                            });
+                            };
+                            allShiftWorkers.push(worker);
+                            workersById.set(worker.id, worker);
+                            workersByNameHomeLine.set(`${normalizeName(name)}|${lKey}`, worker);
                         });
-                    }
                 });
             });
 
@@ -599,7 +633,7 @@ export const DataProvider = ({ children }) => {
             Object.keys(manualAssignments).forEach(key => {
                 if (key.startsWith(targetDate)) {
                     const w = manualAssignments[key];
-                    if (w.type !== 'vacancy') usedFloaterIds.add(w.originalId || w.id);
+                    if (w?.type !== 'vacancy') usedFloaterIds.add(w.originalId || w.id);
                 }
             });
 
@@ -611,39 +645,54 @@ export const DataProvider = ({ children }) => {
                 if (positions.length > 0) {
                     positions.forEach((pos) => {
                         const assignedNamesStr = pos.roster && pos.roster[brigade.id];
-                        let assignedNamesList = assignedNamesStr ? assignedNamesStr.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1) : [];
+                        const assignedNamesList = assignedNamesStr
+                            ? assignedNamesStr.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1)
+                            : [];
                         const totalSlots = Math.max(pos.count, assignedNamesList.length);
 
                         for (let i = 0; i < totalSlots; i++) {
                             const slotId = `${targetDate}_${brigade.id}_${activeLineName}_${pos.role}_${i}`;
                             const currentWorkerName = assignedNamesList[i] || null;
                             let status = 'vacancy';
+
                             if (currentWorkerName) {
-                                const wAvail = checkWorkerAvailability(currentWorkerName, targetDate, workerRegistry);
+                                const wAvail = getAvailabilityCached(currentWorkerName);
                                 status = wAvail.available ? 'filled' : 'vacancy';
                             }
+
                             const manual = manualAssignments[slotId];
                             if (manual) status = manual.type === 'vacancy' ? 'vacancy' : 'manual';
+
                             if (status === 'filled' && currentWorkerName) {
-                                const wAvail = checkWorkerAvailability(currentWorkerName, targetDate, workerRegistry);
+                                const wAvail = getAvailabilityCached(currentWorkerName);
                                 if (!wAvail.available) status = 'vacancy';
                             }
-                            tasksForLine.push({ status, roleTitle: pos.role, slotId, isManualVacancy: manualAssignments[slotId]?.type === 'vacancy', currentWorkerName, assigned: manual || (status === 'filled' ? { name: currentWorkerName } : null) });
 
+                            tasksForLine.push({
+                                status,
+                                roleTitle: pos.role,
+                                slotId,
+                                isManualVacancy: manualAssignments[slotId]?.type === 'vacancy',
+                                currentWorkerName,
+                                assigned: manual || (status === 'filled' ? { name: currentWorkerName } : null)
+                            });
+
+                            // Mark worker as busy without O(n) scan
                             if (manual && manual.type !== 'vacancy' && manual.type !== 'floater') {
-                                const w = allShiftWorkers.find(w => w.id === (manual.originalId || manual.id));
+                                const w = workersById.get(manual.originalId || manual.id);
                                 if (w) w.isBusy = true;
-                            } else if (!manual && status === 'filled') {
-                                const w = allShiftWorkers.find(w => w.name === currentWorkerName && w.homeLine === templateName);
+                            } else if (!manual && status === 'filled' && currentWorkerName) {
+                                const w = workersByNameHomeLine.get(`${normalizeName(currentWorkerName)}|${templateName || ''}`);
                                 if (w) w.isBusy = true;
                             }
                         }
                     });
                 }
+
                 lineTasks.push({ slots: tasksForLine, displayName: templateName || activeLineName });
             });
 
-            let freeAgents = allShiftWorkers.filter(w => !w.isBusy && w.isAvailable);
+            const freeAgents = allShiftWorkers.filter(w => !w.isBusy && w.isAvailable);
             lineTasks.forEach(lt => {
                 lt.slots.forEach(slot => {
                     if (slot.status === 'vacancy' && !slot.isManualVacancy && freeAgents.length > 0) {
@@ -651,7 +700,7 @@ export const DataProvider = ({ children }) => {
                         if (idx === -1) {
                             idx = freeAgents.findIndex(a => {
                                 const registryEntry = workerRegistry[a.name];
-                                return registryEntry && registryEntry.competencies.has(slot.roleTitle);
+                                return registryEntry && registryEntry.competencies?.has && registryEntry.competencies.has(slot.roleTitle);
                             });
                         }
                         if (idx >= 0) {
@@ -664,14 +713,44 @@ export const DataProvider = ({ children }) => {
                 });
             });
 
-            let baseFloaters = shiftTypeLower.includes('день') ? [...floaters.day] : [...floaters.night];
+            const baseFloaters = shiftTypeLower.includes('день') ? [...floaters.day] : [...floaters.night];
             const freeFloaters = baseFloaters.filter(f => !usedFloaterIds.has(f.id));
             const totalRequired = lineTasks.reduce((sum, lt) => sum + lt.slots.length, 0);
             const filledSlots = lineTasks.reduce((sum, lt) => sum + lt.slots.filter(s => s.status !== 'vacancy' && s.status !== 'unknown').length, 0);
 
-            return { id: brigade.id, name: brigade.name, type: brigade.type, lineTasks, unassignedPeople: allShiftWorkers.filter(w => !w.isBusy), floaters: freeFloaters, totalRequired, filledSlots };
+            return {
+                id: brigade.id,
+                name: brigade.name,
+                type: brigade.type,
+                lineTasks,
+                unassignedPeople: allShiftWorkers.filter(w => !w.isBusy),
+                floaters: freeFloaters,
+                totalRequired,
+                filledSlots
+            };
         });
-    }, [rawTables, lineTemplates, manualAssignments, floaters, workerRegistry]);
+    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, workerRegistry]);
+
+    // --- SHIFTS CACHE (by date) ---
+    const shiftsByDate = useMemo(() => {
+        const map = new Map();
+        if (!scheduleDates || scheduleDates.length === 0) return map;
+        const availabilityCache = new Map();
+        scheduleDates.forEach(dateStr => {
+            const brigadesMap = demandIndex.brigadesByDate.get(dateStr);
+            map.set(dateStr, buildShiftsFromBrigadesMap(dateStr, brigadesMap, availabilityCache));
+        });
+        return map;
+    }, [scheduleDates, demandIndex, buildShiftsFromBrigadesMap]);
+
+    const getShiftsForDate = useCallback((targetDate) => {
+        if (!targetDate) return [];
+        if (shiftsByDate.has(targetDate)) return shiftsByDate.get(targetDate) || [];
+        // Fallback for dates outside scheduleDates
+        const availabilityCache = new Map();
+        const brigadesMap = demandIndex.brigadesByDate.get(targetDate);
+        return buildShiftsFromBrigadesMap(targetDate, brigadesMap, availabilityCache);
+    }, [buildShiftsFromBrigadesMap, demandIndex, shiftsByDate]);
 
     const calculateDailyStats = useMemo(() => {
         const stats = {};
@@ -747,94 +826,217 @@ export const DataProvider = ({ children }) => {
         updateAssignments(newAssignments);
     }, [manualAssignments, scheduleDates, selectedDate, getShiftsForDate, updateAssignments]);
 
-    const calculateChessTable = useCallback(() => {
-        if (!rawTables['demand'] || !rawTables['roster']) return null;
-        const calendar = {};
-        const data = rawTables['demand'];
-        const sortedDates = [];
+    // --- CHESS TABLE WORKER LIFECYCLE ---
+    useEffect(() => {
+        if (!USE_CHESS_WORKER) return;
+        if (chessTableWorkerRef.current) return;
 
-        data.slice(1).forEach(row => {
-            let d = row[11];
-            let dateStr = '';
-            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
-            else if (typeof d === 'string') {
-                const dt = new Date(d);
-                if (!isNaN(dt.getTime())) dateStr = dt.toLocaleDateString('ru-RU');
+        const worker = new Worker(new URL('../chessTable.worker.js', import.meta.url), { type: 'module' });
+        chessTableWorkerRef.current = worker;
+
+        worker.onmessage = (e) => {
+            const { requestId, result, error } = e.data || {};
+            if (!requestId || requestId !== chessTableWorkerReqIdRef.current) return;
+
+            if (error) {
+                setChessTableWorkerStatus({ status: 'error', error: String(error), requestId });
+                return;
             }
-            if (!dateStr || dateStr.length < 5) return;
-            if (!calendar[dateStr]) { calendar[dateStr] = { day: null, night: null }; if (!sortedDates.includes(dateStr)) sortedDates.push(dateStr); }
+
+            const workers = (result?.workers || []).map(w => ({
+                ...w,
+                homeBrigades: new Set(w.homeBrigades || [])
+            }));
+
+            setChessTableWorkerResult(result ? { ...result, workers } : null);
+            setChessTableWorkerStatus({ status: 'ready', error: null, requestId });
+        };
+
+        worker.onerror = (err) => {
+            setChessTableWorkerStatus((prev) => ({ ...prev, status: 'error', error: err?.message || 'Worker error' }));
+        };
+
+        return () => {
+            try { worker.terminate(); } catch (_) {}
+            chessTableWorkerRef.current = null;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (!USE_CHESS_WORKER) return;
+        if (viewMode !== 'chess') return;
+        const worker = chessTableWorkerRef.current;
+        if (!worker) return;
+        if (!rawTables?.demand || !Array.isArray(scheduleDates) || scheduleDates.length === 0) return;
+
+        const requestId = ++chessTableWorkerReqIdRef.current;
+        setChessTableWorkerStatus({ status: 'calculating', error: null, requestId });
+
+        // Structured-clone friendly payload (no Set/Map)
+        const workerRegistryForWorker = {};
+        Object.entries(workerRegistry || {}).forEach(([key, value]) => {
+            workerRegistryForWorker[key] = {
+                ...value,
+                competencies: Array.from(value?.competencies || [])
+            };
         });
 
-        sortedDates.sort((a, b) => {
-            const [d1, m1, y1] = a.split('.').map(Number);
-            const [d2, m2, y2] = b.split('.').map(Number);
-            return new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2);
+        worker.postMessage({
+            requestId,
+            payload: {
+                scheduleDates,
+                demand: rawTables.demand,
+                lineTemplates,
+                floaters,
+                manualAssignments,
+                workerRegistry: workerRegistryForWorker,
+                factData
+            }
         });
+    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData]);
 
+    const chessTableBase = useMemo(() => {
+        // Avoid spending CPU when user isn't on the timesheet view.
+        if (viewMode !== 'chess') return null;
+        if (USE_CHESS_WORKER) return null;
+        if (!rawTables?.demand || !rawTables?.roster) return null;
+
+        const sortedDates = Array.isArray(scheduleDates) ? scheduleDates : [];
+        if (sortedDates.length === 0) return null;
+
+        const getSurnameNorm = (fullName) => {
+            const first = String(fullName || '').trim().split(/\s+/)[0] || '';
+            return normalizeName(first);
+        };
+
+        const availabilityCache = new Map();
+        const getAvailabilityCached = (name, dateStr) => {
+            const k = `${name}|${dateStr}`;
+            if (availabilityCache.has(k)) return availabilityCache.get(k);
+            const v = checkWorkerAvailability(name, dateStr, workerRegistry);
+            availabilityCache.set(k, v);
+            return v;
+        };
+
+        // --- Build workers list (plan + floaters) ---
         const workerMeta = new Map();
         Object.keys(lineTemplates).forEach(lineKey => {
             lineTemplates[lineKey].forEach(pos => {
-                Object.entries(pos.roster).forEach(([bId, val]) => {
-                    val.split(/[,;\n/]+/).map(n => n.trim()).filter(n => n.length > 1).forEach(name => {
-                        if (!workerMeta.has(name)) workerMeta.set(name, { name, role: pos.role, homeLine: lineKey, homeBrigades: new Set(), category: 'staff', sortShift: 99 });
-                        const w = workerMeta.get(name); w.homeBrigades.add(bId); w.sortShift = Math.min(w.sortShift, parseInt(bId) || 99);
+                const roster = pos?.roster || {};
+                Object.entries(roster).forEach(([bId, val]) => {
+                    if (!val) return;
+                    String(val).split(/[,;\n/]+/).map(n => n.trim()).filter(n => n.length > 1).forEach(name => {
+                        if (!workerMeta.has(name)) {
+                            workerMeta.set(name, { name, role: pos.role, homeLine: lineKey, homeBrigades: new Set(), category: 'staff', sortShift: 99 });
+                        }
+                        const w = workerMeta.get(name);
+                        w.homeBrigades.add(bId);
+                        w.sortShift = Math.min(w.sortShift, parseInt(bId) || 99);
                     });
                 });
             });
         });
-        floaters.day.forEach(f => { if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Д', homeBrigades: new Set(), category: 'floater_day', sortShift: 100 }); });
-        floaters.night.forEach(f => { if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Н', homeBrigades: new Set(), category: 'floater_night', sortShift: 101 }); });
+
+        floaters.day.forEach(f => {
+            if (!f?.name) return;
+            if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Д', homeBrigades: new Set(), category: 'floater_day', sortShift: 100 });
+        });
+        floaters.night.forEach(f => {
+            if (!f?.name) return;
+            if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Н', homeBrigades: new Set(), category: 'floater_night', sortShift: 101 });
+        });
 
         const workerRows = Array.from(workerMeta.values()).sort((a, b) => (a.category === 'staff' ? a.sortShift - b.sortShift : 10) || a.name.localeCompare(b.name));
-        const workerLookup = new Map();
-        workerRows.forEach(w => workerLookup.set(normalizeName(w.name), w));
-        const workerRegistryLookup = new Map();
-        Object.values(workerRegistry).forEach(w => { if (w && w.name) workerRegistryLookup.set(normalizeName(w.name), w); });
-        
-        const factLookup = new Map();
+
+        const workerLookupByNorm = new Map();
+        const workersBySurname = new Map();
+        workerRows.forEach(w => {
+            const norm = normalizeName(w.name);
+            workerLookupByNorm.set(norm, w);
+            const surname = getSurnameNorm(w.name);
+            if (!workersBySurname.has(surname)) workersBySurname.set(surname, []);
+            workersBySurname.get(surname).push(w);
+        });
+
+        const workerRegistryLookupByNorm = new Map();
+        const workerRegistryBySurname = new Map();
+        Object.values(workerRegistry).forEach(w => {
+            if (!w?.name) return;
+            const norm = normalizeName(w.name);
+            workerRegistryLookupByNorm.set(norm, w);
+            const surname = getSurnameNorm(w.name);
+            if (!workerRegistryBySurname.has(surname)) workerRegistryBySurname.set(surname, []);
+            workerRegistryBySurname.get(surname).push(w);
+        });
+
+        // --- Facts index (by date) ---
+        const factLookupByDate = new Map(); // date -> Map<norm, entry>
+        const factBySurnameByDate = new Map(); // date -> Map<surnameNorm, entry[]>
         if (factData) {
             Object.entries(factData).forEach(([date, dateData]) => {
                 const dateMap = new Map();
-                Object.entries(dateData).forEach(([key, factEntry]) => {
+                const surnameMap = new Map();
+                Object.values(dateData || {}).forEach((factEntry) => {
                     if (!factEntry) return;
-                    dateMap.set(normalizeName(key), factEntry);
-                    if (factEntry.rawName) dateMap.set(normalizeName(factEntry.rawName), factEntry);
+                    const rawName = factEntry.rawName || '';
+                    const norm = normalizeName(rawName);
+                    if (norm) dateMap.set(norm, factEntry);
+                    const surname = getSurnameNorm(rawName);
+                    if (!surnameMap.has(surname)) surnameMap.set(surname, []);
+                    surnameMap.get(surname).push(factEntry);
                 });
-                factLookup.set(date, dateMap);
+                factLookupByDate.set(date, dateMap);
+                factBySurnameByDate.set(date, surnameMap);
             });
         }
 
+        const resolveFactEntry = (dateStr, workerName) => {
+            const dateMap = factLookupByDate.get(dateStr);
+            if (!dateMap) return null;
+            const normName = normalizeName(workerName);
+            const exact = dateMap.get(normName);
+            if (exact) return exact;
+            const surname = getSurnameNorm(workerName);
+            const surnameMap = factBySurnameByDate.get(dateStr);
+            const candidates = surnameMap?.get(surname) || [];
+            for (const candidate of candidates) {
+                if (candidate?.rawName && matchNames(workerName, candidate.rawName)) return candidate;
+            }
+            return null;
+        };
+
+        // --- Add unexpected workers (present in facts but not in plan) ---
         if (factData) {
             const unexpectedWorkersMap = new Map();
             sortedDates.forEach(date => {
-                const dateFactMap = factLookup?.get(date);
-                if (!dateFactMap) return;
-                dateFactMap.forEach((factEntry, normKey) => {
-                    if (!factEntry || (!factEntry.rawName || (!factEntry.cleanTime && !factEntry.nextDayExit))) return;
-                    let foundInPlan = false;
-                    const factNormName = normalizeName(factEntry.rawName);
-                    if (workerLookup.has(factNormName)) foundInPlan = true;
-                    else {
-                        for (const worker of workerRows) {
-                            if (matchNames(worker.name, factEntry.rawName)) {
-                                foundInPlan = true;
-                                break;
-                            }
+                const surnameMap = factBySurnameByDate.get(date);
+                if (!surnameMap) return;
+                surnameMap.forEach((entries) => {
+                    entries.forEach((factEntry) => {
+                        if (!factEntry?.rawName) return;
+                        if (!factEntry.cleanTime && !factEntry.nextDayExit) return;
+
+                        const factNormName = normalizeName(factEntry.rawName);
+                        if (workerLookupByNorm.has(factNormName)) return;
+
+                        const surname = getSurnameNorm(factEntry.rawName);
+                        const candidates = workersBySurname.get(surname) || [];
+                        let foundInPlan = false;
+                        for (const worker of candidates) {
+                            if (matchNames(worker.name, factEntry.rawName)) { foundInPlan = true; break; }
                         }
-                    }
-                    if (!foundInPlan) {
-                        const normName = normalizeName(factEntry.rawName);
-                        if (!unexpectedWorkersMap.has(normName)) {
-                            let regEntry = workerRegistryLookup.get(normName);
+                        if (foundInPlan) return;
+
+                        if (!unexpectedWorkersMap.has(factNormName)) {
+                            let regEntry = workerRegistryLookupByNorm.get(factNormName);
                             if (!regEntry) {
-                                for (const w of workerRegistryLookup.values()) {
-                                    if (matchNames(w.name, factEntry.rawName)) {
-                                        regEntry = w;
-                                        break;
-                                    }
+                                const regCandidates = workerRegistryBySurname.get(surname) || [];
+                                for (const w of regCandidates) {
+                                    if (matchNames(w.name, factEntry.rawName)) { regEntry = w; break; }
                                 }
                             }
-                            unexpectedWorkersMap.set(normName, {
+                            unexpectedWorkersMap.set(factNormName, {
                                 name: factEntry.rawName,
                                 role: regEntry ? regEntry.role : 'Неизвестно',
                                 homeLine: 'Вне плана',
@@ -844,19 +1046,24 @@ export const DataProvider = ({ children }) => {
                                 cells: {}
                             });
                         }
-                    }
+                    });
                 });
             });
-            unexpectedWorkersMap.forEach(worker => workerRows.push(worker));
-            workerRows.sort((a, b) => (a.category === 'staff' ? a.sortShift - b.sortShift : 10) || a.name.localeCompare(b.name));
+
+            if (unexpectedWorkersMap.size > 0) {
+                unexpectedWorkersMap.forEach(worker => workerRows.push(worker));
+                workerRows.sort((a, b) => (a.category === 'staff' ? a.sortShift - b.sortShift : 10) || a.name.localeCompare(b.name));
+            }
         }
 
-        workerRows.forEach(worker => worker.cells = {});
+        workerRows.forEach(worker => { worker.cells = {}; });
 
+        // --- Fill cells ---
         sortedDates.forEach(date => {
-            const shiftsOnDate = getShiftsForDate(date);
+            const shiftsOnDate = shiftsByDate.get(date) || getShiftsForDate(date);
             const workingWorkers = new Map();
             const idleWorkers = new Map();
+
             shiftsOnDate.forEach(shift => {
                 const isNight = shift.type.toLowerCase().includes('ночь');
                 const shiftCode = isNight ? 'Н' : 'Д';
@@ -878,13 +1085,13 @@ export const DataProvider = ({ children }) => {
                 shift.floaters.forEach(f => idleWorkers.set(f.name, shift.id));
             });
 
-            const dateFactMap = factLookup?.get(date);
             workerRows.forEach(worker => {
                 let text = '';
                 let color = 'bg-white';
                 let brigadeId = null;
                 let verificationStatus = null;
-                const avail = checkWorkerAvailability(worker.name, date, workerRegistry);
+
+                const avail = getAvailabilityCached(worker.name, date);
                 if (!avail.available) {
                     if (avail.type === 'vacation') { text = 'О'; color = 'bg-emerald-50 text-emerald-700 border-emerald-200'; }
                     else if (avail.type === 'sick') { text = 'Б'; color = 'bg-amber-50 text-amber-700 border-amber-200'; }
@@ -897,42 +1104,25 @@ export const DataProvider = ({ children }) => {
                     else if (text === 'Н') color = 'bg-blue-100 text-blue-800 border-blue-200 font-bold';
                     else if (text === 'Д/Н') color = 'bg-teal-100 text-teal-800 border-teal-200 font-bold';
                     else if (text === 'РВ') color = 'bg-orange-100 text-orange-700 border-orange-200 font-bold';
-                    
-                    if (dateFactMap) {
-                        const normName = normalizeName(worker.name);
-                        let factEntry = dateFactMap.get(normName);
-                        if (!factEntry) {
-                            for (const [key, value] of dateFactMap) {
-                                if (value && value.rawName && matchNames(worker.name, value.rawName)) {
-                                    factEntry = value;
-                                    break;
-                                }
-                            }
-                        }
-                        if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
-                             verificationStatus = workingWorkers.has(worker.name) ? 'ok' : 'unassigned';
-                             if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-green-500';
+
+                    const factEntry = resolveFactEntry(date, worker.name);
+                    if (factEntry) {
+                        if (factEntry.cleanTime || factEntry.nextDayExit) {
+                            verificationStatus = 'ok';
+                            if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-green-500';
                         } else {
-                             verificationStatus = 'missing';
-                             if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-red-500';
+                            verificationStatus = 'missing';
+                            if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-red-500';
                         }
                     }
                 } else if (idleWorkers.has(worker.name)) {
                     text = '—';
                     color = 'bg-yellow-100 text-yellow-800 border-yellow-200 font-bold';
                     brigadeId = idleWorkers.get(worker.name);
-                    if (dateFactMap) {
-                        const normName = normalizeName(worker.name);
-                        let factEntry = dateFactMap.get(normName);
-                        if (!factEntry) {
-                            for (const [key, value] of dateFactMap) {
-                                if (value && value.rawName && matchNames(worker.name, value.rawName)) {
-                                    factEntry = value;
-                                    break;
-                                }
-                            }
-                        }
-                        if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
+
+                    const factEntry = resolveFactEntry(date, worker.name);
+                    if (factEntry) {
+                        if (factEntry.cleanTime || factEntry.nextDayExit) {
                             verificationStatus = 'unassigned';
                         } else {
                             verificationStatus = 'missing';
@@ -940,29 +1130,25 @@ export const DataProvider = ({ children }) => {
                         }
                     }
                 } else {
-                     if (dateFactMap) {
-                        const normName = normalizeName(worker.name);
-                        let factEntry = dateFactMap.get(normName);
-                        if (!factEntry) {
-                            for (const [key, value] of dateFactMap) {
-                                if (value && value.rawName && matchNames(worker.name, value.rawName)) {
-                                    factEntry = value;
-                                    break;
-                                }
-                            }
-                        }
-                        if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
-                            verificationStatus = 'unexpected';
-                            text = '!';
-                            color = 'bg-orange-50 text-orange-700 border-orange-200 font-bold';
-                        }
+                    const factEntry = resolveFactEntry(date, worker.name);
+                    if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
+                        verificationStatus = 'unexpected';
+                        text = '!';
+                        color = 'bg-orange-50 text-orange-700 border-orange-200 font-bold';
                     }
                 }
+
                 worker.cells[date] = { text, color, brigadeId, verificationStatus };
             });
         });
+
         return { dates: sortedDates, workers: workerRows };
-    }, [rawTables, lineTemplates, floaters, manualAssignments, workerRegistry, scheduleDates, getShiftsForDate, factData]);
+    }, [viewMode, rawTables, scheduleDates, lineTemplates, floaters.day, floaters.night, workerRegistry, factData, shiftsByDate, getShiftsForDate]);
+
+    const calculateChessTable = useCallback(() => {
+        if (USE_CHESS_WORKER) return chessTableWorkerResult;
+        return chessTableBase;
+    }, [USE_CHESS_WORKER, chessTableWorkerResult, chessTableBase]);
 
     const exportWithExcelJS = async (tableData) => {
         const { dates, workers } = tableData;
@@ -1127,11 +1313,15 @@ export const DataProvider = ({ children }) => {
     };
 
     const exportChessTableToExcel = useCallback(async () => {
+        if (USE_CHESS_WORKER && chessTableWorkerStatus.status === 'calculating') {
+            alert('Идёт расчёт табеля, подождите несколько секунд.');
+            return;
+        }
         const tableData = calculateChessTable();
         if (!tableData) { alert('Нет данных для экспорта'); return; }
         try { await exportWithExcelJS(tableData); } 
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
-    }, [calculateChessTable]);
+    }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable]);
 
     const value = useMemo(() => ({
         // State
@@ -1150,6 +1340,7 @@ export const DataProvider = ({ children }) => {
         chessSearch, setChessSearch,
         isGlobalFill, setIsGlobalFill,
         chessDisplayLimit, setChessDisplayLimit,
+        chessTableWorkerStatus,
         
         // Actions / Setters
         setWorkerRegistry, setLineTemplates, setFloaters,
@@ -1185,6 +1376,7 @@ export const DataProvider = ({ children }) => {
         chessSearch,
         isGlobalFill,
         chessDisplayLimit,
+        chessTableWorkerStatus,
         // Только мемоизированные функции
         getShiftsForDate,
         calculateDailyStats,

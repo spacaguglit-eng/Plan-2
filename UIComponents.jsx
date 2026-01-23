@@ -405,7 +405,11 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
                         const borderClass = getBorderClass(date);
                         return (
                             <div key={date} onClick={() => { onSelect(date); setIsOpen(false); }} className={`px-3 py-2 hover:bg-slate-50 cursor-pointer flex items-center justify-between group transition-colors ${selectedDate === date ? 'bg-blue-50' : ''}`}>
-                                <div className="flex items-center gap-3"><div className={`w-2 h-2 rounded-full ${colorClass === 'bg-slate-100 text-slate-500' ? 'bg-slate-300' : colorClass.split(' ')[0]}`}></div><span className={`text-sm font-medium ${selectedDate === date ? 'text-blue-700' : 'text-slate-700'}`}>{date}</span></div>
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-2 h-2 rounded-full ${colorClass === 'bg-slate-100 text-slate-500' ? 'bg-slate-300' : colorClass.split(' ')[0]}`}></div>
+                                    <span className={`text-sm font-medium ${selectedDate === date ? 'text-blue-700' : 'text-slate-700'}`}>{date}</span>
+                                    {selectedDate === date && <CheckCircle2 size={14} className="text-blue-600" />}
+                                </div>
                                 <div className="flex items-center gap-2">
                                     {getBorderClass(date) && <Edit3 size={12} className="text-blue-500" />}
                                     <div className="flex items-center gap-1 bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-bold min-w-[35px] justify-center" title="Свободные штатные"><Users size={10} />{stats.freeStaff}</div>

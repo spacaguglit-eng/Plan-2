@@ -30,6 +30,16 @@ const VerificationView = () => {
     const [departmentFilter, setDepartmentFilter] = useState('all');
     const [allEmployeesData, setAllEmployeesData] = useState({});
     const [visibleCount, setVisibleCount] = useState(50);
+    const USE_VERIFICATION_WORKER = true;
+    const [verificationWorkerResult, setVerificationWorkerResult] = useState(null);
+    const [verificationWorkerStatus, setVerificationWorkerStatus] = useState({ status: 'idle', error: null, requestId: 0 });
+    const verificationWorkerRef = useRef(null);
+    const verificationWorkerReqIdRef = useRef(0);
+    const ROW_HEIGHT_PX = 44;
+    const OVERSCAN_ROWS = 10;
+    const scrollRef = useRef(null);
+    const [scrollTop, setScrollTop] = useState(0);
+    const [viewportHeight, setViewportHeight] = useState(600);
 
     // Загружаем данные об отделениях из localStorage
     useEffect(() => {
@@ -76,6 +86,31 @@ const VerificationView = () => {
             clearTimeout(focusTimeout);
         };
     }, []);
+
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+
+        if (typeof ResizeObserver === 'undefined') {
+            setViewportHeight(el.clientHeight || 600);
+            return;
+        }
+
+        const ro = new ResizeObserver(() => {
+            setViewportHeight(el.clientHeight || 600);
+        });
+        ro.observe(el);
+        setViewportHeight(el.clientHeight || 600);
+
+        return () => ro.disconnect();
+    }, []);
+
+    const getSurnameNorm = useCallback((fullName) => {
+        const first = String(fullName || '').trim().split(/\s+/)[0] || '';
+        return normalizeName(first);
+    }, []);
+
+    const departmentCacheRef = useRef(new Map());
 
     const handleFileUpload = (e) => {
         const file = e.target.files[0];
@@ -237,30 +272,51 @@ const VerificationView = () => {
     const departmentIndex = useMemo(() => {
         const index = new Map();
         const fuzzyIndex = [];
+        const bySurname = new Map();
         
         Object.values(allEmployeesData).forEach(emp => {
             const normName = normalizeName(emp.name);
             if (emp.department) {
                 index.set(normName, emp.department);
                 fuzzyIndex.push({ normName, name: emp.name, department: emp.department });
+                const surname = getSurnameNorm(emp.name);
+                if (!bySurname.has(surname)) bySurname.set(surname, []);
+                bySurname.get(surname).push({ normName, name: emp.name, department: emp.department });
             }
         });
         
-        return { exact: index, fuzzy: fuzzyIndex };
-    }, [allEmployeesData]);
+        return { exact: index, fuzzy: fuzzyIndex, bySurname };
+    }, [allEmployeesData, getSurnameNorm]);
+
+    useEffect(() => {
+        departmentCacheRef.current = new Map();
+    }, [departmentIndex]);
 
     const getDepartment = useCallback((name) => {
+        const cacheKey = String(name || '');
+        if (departmentCacheRef.current.has(cacheKey)) {
+            return departmentCacheRef.current.get(cacheKey);
+        }
+
         const normName = normalizeName(name);
         const exactDept = departmentIndex.exact.get(normName);
-        if (exactDept) return exactDept;
-        
-        for (const emp of departmentIndex.fuzzy) {
+        if (exactDept) {
+            departmentCacheRef.current.set(cacheKey, exactDept);
+            return exactDept;
+        }
+
+        const surname = getSurnameNorm(name);
+        const surnameCandidates = departmentIndex.bySurname.get(surname) || departmentIndex.fuzzy;
+        for (const emp of surnameCandidates) {
             if (matchNames(emp.name, name)) {
+                departmentCacheRef.current.set(cacheKey, emp.department);
                 return emp.department;
             }
         }
+
+        departmentCacheRef.current.set(cacheKey, '');
         return '';
-    }, [departmentIndex]);
+    }, [departmentIndex, getSurnameNorm]);
 
     const factMap = useMemo(() => {
         if (!selectedDate || !factData || !factData[selectedDate]) return null;
@@ -268,7 +324,7 @@ const VerificationView = () => {
         const dayFact = factData[selectedDate];
         const byNormKey = new Map();
         const byNormRawName = new Map();
-        const allEntries = [];
+        const bySurname = new Map();
         
         Object.entries(dayFact).forEach(([key, value]) => {
             if (!value) return;
@@ -278,54 +334,152 @@ const VerificationView = () => {
             if (value.rawName) {
                 const normRawName = normalizeName(value.rawName);
                 byNormRawName.set(normRawName, value);
-                allEntries.push({ key, value, normKey, normRawName });
+
+                const surname = getSurnameNorm(value.rawName);
+                if (!bySurname.has(surname)) bySurname.set(surname, []);
+                bySurname.get(surname).push(value);
             }
         });
         
-        return { byNormKey, byNormRawName, allEntries };
-    }, [selectedDate, factData]);
+        return { byNormKey, byNormRawName, bySurname };
+    }, [selectedDate, factData, getSurnameNorm]);
 
     const workerRegistryMap = useMemo(() => {
         const map = new Map();
+        const bySurname = new Map();
         Object.values(workerRegistry).forEach(worker => {
             if (worker && worker.name) {
                 const normName = normalizeName(worker.name);
                 map.set(normName, worker);
+                const surname = getSurnameNorm(worker.name);
+                if (!bySurname.has(surname)) bySurname.set(surname, []);
+                bySurname.get(surname).push(worker);
             }
         });
-        return map;
-    }, [workerRegistry]);
+        return { byNorm: map, bySurname };
+    }, [workerRegistry, getSurnameNorm]);
+
+    const planEntries = useMemo(() => {
+        if (!selectedDate || !factData || !factData[selectedDate]) return [];
+        const shifts = getShiftsForDate(selectedDate);
+        const rows = [];
+        shifts.forEach(shift => {
+            shift.lineTasks.forEach(task => {
+                task.slots.forEach(slot => {
+                    if ((slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') && slot.assigned) {
+                        rows.push({
+                            name: slot.assigned.name,
+                            role: slot.roleTitle,
+                            shift: shift.name,
+                            line: task.displayName,
+                            details: slot.assigned
+                        });
+                    }
+                });
+            });
+        });
+        return rows;
+    }, [selectedDate, factData, getShiftsForDate]);
+
+    useEffect(() => {
+        if (!USE_VERIFICATION_WORKER) return;
+        if (verificationWorkerRef.current) return;
+
+        const worker = new Worker(new URL('../../verification.worker.js', import.meta.url), { type: 'module' });
+        verificationWorkerRef.current = worker;
+
+        worker.onmessage = (e) => {
+            const { requestId, result, error } = e.data || {};
+            if (!requestId || requestId !== verificationWorkerReqIdRef.current) return;
+            if (error) {
+                setVerificationWorkerStatus({ status: 'error', error: String(error), requestId });
+                return;
+            }
+            setVerificationWorkerResult(result || null);
+            setVerificationWorkerStatus({ status: 'ready', error: null, requestId });
+        };
+
+        worker.onerror = (err) => {
+            setVerificationWorkerStatus((prev) => ({ ...prev, status: 'error', error: err?.message || 'Worker error' }));
+        };
+
+        return () => {
+            try { worker.terminate(); } catch (_) {}
+            verificationWorkerRef.current = null;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (!USE_VERIFICATION_WORKER) return;
+        if (viewMode !== 'verification') return;
+        const worker = verificationWorkerRef.current;
+        if (!worker) return;
+        if (!selectedDate || !factData || !factData[selectedDate]) return;
+
+        const requestId = ++verificationWorkerReqIdRef.current;
+        setVerificationWorkerStatus({ status: 'calculating', error: null, requestId });
+
+        const workerRegistryForWorker = {};
+        Object.entries(workerRegistry || {}).forEach(([key, value]) => {
+            workerRegistryForWorker[key] = { name: value?.name || key, role: value?.role || '' };
+        });
+
+        worker.postMessage({
+            requestId,
+            payload: {
+                selectedDate,
+                planEntries,
+                dayFact: factData[selectedDate],
+                allEmployeesData,
+                workerRegistry: workerRegistryForWorker
+            }
+        });
+    }, [USE_VERIFICATION_WORKER, viewMode, selectedDate, factData, planEntries, allEmployeesData, workerRegistry]);
 
     const comparisonResult = useMemo(() => {
+        if (USE_VERIFICATION_WORKER) return verificationWorkerResult?.comparisonResult || [];
         if (!selectedDate || !factData || !factData[selectedDate] || !factMap) return [];
 
         const shifts = getShiftsForDate(selectedDate);
         const dayFact = factData[selectedDate];
         const result = [];
         const processedFactNames = new Set();
+        const processedBySurname = new Map();
+
+        const markProcessed = (rawName) => {
+            if (!rawName) return;
+            const norm = normalizeName(rawName);
+            processedFactNames.add(norm);
+            const surname = getSurnameNorm(rawName);
+            if (!processedBySurname.has(surname)) processedBySurname.set(surname, []);
+            processedBySurname.get(surname).push(rawName);
+        };
+
+        const resolveFactEntry = (planName) => {
+            const normNameForMatch = normalizeName(planName);
+            let factEntry = factMap.byNormKey.get(normNameForMatch) ||
+                            factMap.byNormRawName.get(normNameForMatch);
+            if (factEntry) return factEntry;
+
+            const surname = getSurnameNorm(planName);
+            const candidates = factMap.bySurname.get(surname) || [];
+            for (const candidate of candidates) {
+                if (candidate?.rawName && matchNames(planName, candidate.rawName)) {
+                    return candidate;
+                }
+            }
+
+            return null;
+        };
 
         shifts.forEach(shift => {
             shift.lineTasks.forEach(task => {
                 task.slots.forEach(slot => {
                     if ((slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') && slot.assigned) {
                         const planName = slot.assigned.name;
-                        const normNameForMatch = normalizeName(planName);
-
-                        let factEntry = factMap.byNormKey.get(normNameForMatch) || 
-                                       factMap.byNormRawName.get(normNameForMatch);
-
-                        if (!factEntry) {
-                            for (const { value } of factMap.allEntries) {
-                                if (value.rawName && matchNames(planName, value.rawName)) {
-                                    factEntry = value;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (factEntry && factEntry.rawName) {
-                            processedFactNames.add(normalizeName(factEntry.rawName));
-                        }
+                        const factEntry = resolveFactEntry(planName);
+                        if (factEntry?.rawName) markProcessed(factEntry.rawName);
 
                         let status = 'ok';
                         let timeDisplay = factEntry ? factEntry.time : '-';
@@ -377,9 +531,10 @@ const VerificationView = () => {
             let wasProcessed = processedFactNames.has(normName);
             
             if (!wasProcessed) {
-                for (const processedName of processedFactNames) {
-                    const factEntry = factMap.byNormRawName.get(processedName);
-                    if (factEntry && factEntry.rawName && matchNames(entry.rawName, factEntry.rawName)) {
+                const surname = getSurnameNorm(entry.rawName);
+                const processedCandidates = processedBySurname.get(surname) || [];
+                for (const processedName of processedCandidates) {
+                    if (matchNames(entry.rawName, processedName)) {
                         wasProcessed = true;
                         break;
                     }
@@ -387,10 +542,12 @@ const VerificationView = () => {
             }
 
             if (!wasProcessed && entry.cleanTime) {
-                let regEntry = workerRegistryMap.get(normName);
+                let regEntry = workerRegistryMap.byNorm.get(normName);
                 
                 if (!regEntry) {
-                    for (const worker of workerRegistryMap.values()) {
+                    const surname = getSurnameNorm(entry.rawName);
+                    const candidates = workerRegistryMap.bySurname.get(surname) || [];
+                    for (const worker of candidates) {
                         if (matchNames(worker.name, entry.rawName)) {
                             regEntry = worker;
                             break;
@@ -428,7 +585,7 @@ const VerificationView = () => {
         });
 
         return result;
-    }, [selectedDate, factData, getShiftsForDate, factMap, workerRegistryMap, getDepartment]);
+    }, [USE_VERIFICATION_WORKER, verificationWorkerResult, selectedDate, factData, getShiftsForDate, factMap, workerRegistryMap, getDepartment]);
 
     useEffect(() => {
         setVisibleCount(50);
@@ -483,6 +640,15 @@ const VerificationView = () => {
             return { type: 'flat', data: filteredResult.slice(0, visibleCount), total: filteredResult.length };
         }
     }, [filteredResult, departmentFilter, visibleCount]);
+
+    const windowedData = useMemo(() => {
+        const total = visibleData.data.length;
+        const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT_PX) - OVERSCAN_ROWS);
+        const end = Math.min(total, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT_PX) + OVERSCAN_ROWS);
+        const paddingTop = start * ROW_HEIGHT_PX;
+        const paddingBottom = Math.max(0, (total - end) * ROW_HEIGHT_PX);
+        return { start, end, paddingTop, paddingBottom, items: visibleData.data.slice(start, end) };
+    }, [visibleData.data, scrollTop, viewportHeight]);
 
     const departments = useMemo(() => {
         const deptSet = new Set();
@@ -550,6 +716,17 @@ const VerificationView = () => {
                             {factDates.map(d => <option key={d} value={d}>{d}</option>)}
                         </select>
                     </div>
+                    {USE_VERIFICATION_WORKER && verificationWorkerStatus.status === 'calculating' && (
+                        <div className="text-xs text-slate-500 flex items-center gap-2">
+                            <Loader2 size={14} className="animate-spin" />
+                            Идёт расчёт…
+                        </div>
+                    )}
+                    {USE_VERIFICATION_WORKER && verificationWorkerStatus.status === 'error' && (
+                        <div className="text-xs text-red-500">
+                            Ошибка расчёта: {verificationWorkerStatus.error || 'неизвестная ошибка'}
+                        </div>
+                    )}
                     <div className="h-8 w-px bg-slate-200"></div>
                     <button onClick={() => {
                         setFactData(null);
@@ -602,7 +779,11 @@ const VerificationView = () => {
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-1">
-                    <div className="overflow-auto h-full">
+                    <div
+                        ref={scrollRef}
+                        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+                        className="overflow-auto h-full"
+                    >
                         <table className="w-full text-sm text-left">
                             <thead className="bg-slate-50 text-slate-500 font-semibold sticky top-0 z-10 shadow-sm">
                                 <tr>
@@ -613,8 +794,13 @@ const VerificationView = () => {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
+                                {windowedData.paddingTop > 0 && (
+                                    <tr>
+                                        <td colSpan={4} style={{ height: windowedData.paddingTop, padding: 0, border: 0 }} />
+                                    </tr>
+                                )}
                                 {visibleData.type === 'grouped' ? (
-                                    visibleData.data.map((item, idx) => {
+                                    windowedData.items.map((item, idx) => {
                                         if (item.type === 'header') {
                                             return (
                                                 <tr key={`header-${item.department}`} className="bg-slate-100 sticky top-0 z-20">
@@ -692,7 +878,7 @@ const VerificationView = () => {
                                         );
                                     })
                                 ) : (
-                                    visibleData.data.map((row, i) => {
+                                    windowedData.items.map((row, i) => {
                                         let statusBadge;
                                         let rowClass = '';
 
@@ -755,6 +941,11 @@ const VerificationView = () => {
                                             </tr>
                                         );
                                     })
+                                )}
+                                {windowedData.paddingBottom > 0 && (
+                                    <tr>
+                                        <td colSpan={4} style={{ height: windowedData.paddingBottom, padding: 0, border: 0 }} />
+                                    </tr>
                                 )}
                                 {visibleData.data.length === 0 && (
                                     <tr>
