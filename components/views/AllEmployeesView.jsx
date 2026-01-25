@@ -346,7 +346,7 @@ const AllEmployeesView = () => {
                     </div>
                 )}
 
-                <div className="space-y-3">
+                <div className="flex-1 overflow-y-auto pr-2 space-y-3">
                     {filteredEmployees.length === 0 ? (
                         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center text-slate-400">
                             {employeesWithStats.length === 0 
