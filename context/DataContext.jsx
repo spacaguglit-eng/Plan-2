@@ -35,6 +35,7 @@ export const DataProvider = ({ children }) => {
     // Multi-plan management
     const [savedPlans, setSavedPlans] = useState([]);
     const [currentPlanId, setCurrentPlanId] = useState(null);
+    const [isLocked, setIsLocked] = useState(false);
 
     const [lineTemplates, setLineTemplates] = useState({});
     const [floaters, setFloaters] = useState({ day: [], night: [] });
@@ -214,6 +215,15 @@ export const DataProvider = ({ children }) => {
         saveToLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
     }, [currentPlanId]);
 
+    useEffect(() => {
+        const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
+        if (activePlan?.type === 'Master') {
+            setIsLocked(true);
+        } else {
+            setIsLocked(false);
+        }
+    }, [currentPlanId, savedPlans]);
+
     // --- LOGIC FUNCTIONS ---
 
     const saveSourceDataToLocal = (tables, hashes) => {
@@ -224,6 +234,14 @@ export const DataProvider = ({ children }) => {
             setError("Ошибка сохранения данных.");
         }
     };
+
+    const unlockWithCode = useCallback((code) => {
+        if (code === '1234') {
+            setIsLocked(false);
+            return true;
+        }
+        return false;
+    }, []);
 
     const debouncedSaveToLocal = useCallback(debounce((assignments) => {
         setSyncStatus('syncing');
@@ -239,11 +257,23 @@ export const DataProvider = ({ children }) => {
     }, 1000), []);
 
     const updateAssignments = useCallback((newAssignments) => {
+        if (isLocked) {
+            alert('Мастер-план защищен. Разблокируйте для внесения изменений.');
+            return;
+        }
+        if (viewMode !== 'dashboard') {
+            alert('Редактирование доступно только в режиме \"Смены\".');
+            return;
+        }
         setManualAssignments(newAssignments);
         debouncedSaveToLocal(newAssignments);
-    }, [debouncedSaveToLocal]);
+    }, [debouncedSaveToLocal, isLocked, viewMode]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
+        if (isLocked) {
+            alert('Мастер-план защищен. Разблокируйте для внесения изменений.');
+            return;
+        }
         setLineTemplates(prev => {
             const newTemplates = { ...prev };
             Object.keys(newTemplates).forEach(lineKey => {
@@ -757,6 +787,16 @@ export const DataProvider = ({ children }) => {
     ]);
 
     const handleDragStart = useCallback((e, worker) => {
+        if (isLocked) {
+            e.preventDefault();
+            alert('Мастер-план защищен. Разблокируйте для внесения изменений.');
+            return;
+        }
+        if (viewMode !== 'dashboard') {
+            e.preventDefault();
+            alert('Редактирование доступно только в режиме \"Смены\".');
+            return;
+        }
         const availability = checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
         if (!availability.available) {
             e.preventDefault();
@@ -765,7 +805,7 @@ export const DataProvider = ({ children }) => {
         }
         setDraggedWorker(worker);
         e.dataTransfer.effectAllowed = 'move';
-    }, [selectedDate, workerRegistry]);
+    }, [isLocked, viewMode, selectedDate, workerRegistry]);
 
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
@@ -1598,6 +1638,7 @@ export const DataProvider = ({ children }) => {
         isGlobalFill, setIsGlobalFill,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
+        isLocked,
         
         // Actions / Setters
         setWorkerRegistry, setLineTemplates, setFloaters,
@@ -1612,6 +1653,7 @@ export const DataProvider = ({ children }) => {
         deletePlan,
         importPlanFromJson,
         importPlanFromExcelFile,
+        unlockWithCode,
         updateAssignments,
         handleMatrixAssignment,
         handleWorkerEditSave, 
@@ -1642,6 +1684,7 @@ export const DataProvider = ({ children }) => {
         isGlobalFill,
         chessDisplayLimit,
         chessTableWorkerStatus,
+        isLocked,
         // Только мемоизированные функции
         parseExcelToPlanData,
         saveCurrentAsNewPlan,
@@ -1650,6 +1693,7 @@ export const DataProvider = ({ children }) => {
         deletePlan,
         importPlanFromJson,
         importPlanFromExcelFile,
+        unlockWithCode,
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,

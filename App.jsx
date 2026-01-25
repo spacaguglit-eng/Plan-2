@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -39,7 +39,9 @@ export default function App() {
         rawTables,
         setRawTables,
         savedPlans,
-        currentPlanId
+        currentPlanId,
+        isLocked,
+        unlockWithCode
     } = useData();
 
     const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
@@ -106,6 +108,24 @@ export default function App() {
                                         </div>
                                     )}
                                 </div>
+                                <button
+                                    onClick={() => {
+                                        if (!isLocked) return;
+                                        const code = window.prompt('Введите PIN-код для разблокировки:');
+                                        if (code !== null && !unlockWithCode(code)) {
+                                            alert('Неверный PIN-код.');
+                                        }
+                                    }}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                                        isLocked
+                                            ? 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100'
+                                            : 'bg-green-50 text-green-700 border-green-200'
+                                    }`}
+                                    title={isLocked ? 'Мастер-план защищен' : 'Редактирование разрешено'}
+                                >
+                                    {isLocked ? <Lock size={14} /> : <Unlock size={14} />}
+                                    {isLocked ? 'Мастер (Защищено)' : 'Редактирование'}
+                                </button>
                                 <div className="bg-slate-100 p-1 rounded-lg flex border border-slate-200">
                                     <button
                                         onClick={() => setViewMode('dashboard')}

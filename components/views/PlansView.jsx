@@ -156,7 +156,14 @@ const PlansView = () => {
                                                 Загрузить
                                             </button>
                                             <button
-                                                onClick={() => setPlanType(plan.id, 'Master')}
+                                                onClick={() => {
+                                                    const code = window.prompt('Введите PIN-код для установки основного плана:');
+                                                    if (code === '1234') {
+                                                        setPlanType(plan.id, 'Master');
+                                                    } else if (code !== null) {
+                                                        alert('Неверный PIN-код.');
+                                                    }
+                                                }}
                                                 className="px-3 py-1.5 text-xs font-semibold bg-emerald-100 text-emerald-700 rounded-md hover:bg-emerald-200"
                                             >
                                                 Сделать основным
