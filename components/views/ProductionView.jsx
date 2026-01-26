@@ -153,7 +153,7 @@ const ProductionView = () => {
             filteredDowntimeRows
                 .filter(downtime => {
                     // Показываем только простои, которые НЕ исключены
-                    const downtimeType = downtime.type || '';
+                    const downtimeType = String(downtime.type || '').trim();
                     return !excludedDowntimeTypes.has(downtimeType);
                 })
                 .forEach(downtime => {

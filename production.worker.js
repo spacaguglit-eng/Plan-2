@@ -95,13 +95,6 @@ const extractLineNumberFromFileName = (fileName) => {
     return match ? parseInt(match[1], 10) : null;
 };
 
-// Извлечение номера линии из строки (для обратной совместимости)
-const extractLineNumber = (lineStr) => {
-    if (!lineStr) return null;
-    const match = String(lineStr).match(/\d+/);
-    return match ? parseInt(match[0], 10) : null;
-};
-
 // Чтение диапазона строк для производства (строки 21-32 для дня, 136-147 для ночи)
 // Структура: A - продукт, B - начало, C - конец, E - скорость, K - факт
 const readRowRange = (sheet, startRow, endRow, shift) => {
@@ -274,71 +267,32 @@ const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = nu
     return downtimes;
 };
 
-// Расчет доступного времени (общее время минус простои из excludedDowntimeTypes)
-// Логика: если из 720 минут 120 - это плановые простои, и они отмечены как не влияющие на план,
-// то доступное время = 720 - 120 = 600 минут
-const calculateAvailableMinutes = (totalMinutes, downtimes, excludedDowntimeTypes) => {
-    if (!totalMinutes || totalMinutes <= 0) return 0;
-    
-    // Суммируем время простоев из excludedDowntimeTypes (они не влияют на план)
-    let excludedDowntimeMinutes = 0;
-    if (excludedDowntimeTypes && Array.isArray(excludedDowntimeTypes)) {
-        downtimes.forEach(downtime => {
-            if (excludedDowntimeTypes.includes(downtime.type)) {
-                excludedDowntimeMinutes += (downtime.durationMinutes || 0);
-            }
-        });
-    }
-    
-    // Доступное время = общее время - простои из excludedDowntimeTypes
-    return Math.max(0, Math.round(totalMinutes - excludedDowntimeMinutes));
-};
-
-// Расчет времени простоев (сумма всех простоев, кроме excludedDowntimeTypes)
-// Это простои, которые влияют на план
-const calculateDowntimeMinutes = (downtimes, excludedDowntimeTypes) => {
-    if (!downtimes || downtimes.length === 0) return 0;
-    
-    let totalDowntime = 0;
-    const excludedSet = excludedDowntimeTypes && Array.isArray(excludedDowntimeTypes) 
-        ? new Set(excludedDowntimeTypes) 
-        : new Set();
-    
-    downtimes.forEach(downtime => {
-        // Учитываем только простои, которые НЕ исключены (т.е. влияют на план)
-        if (!excludedSet.has(downtime.type)) {
-            totalDowntime += (downtime.durationMinutes || 0);
-        }
-    });
-    
-    return Math.round(totalDowntime);
-};
-
-// Расчет плана на основе доступного времени
-const calculatePlan = (availableMinutes, productionRate) => {
-    if (!availableMinutes || availableMinutes <= 0 || !productionRate || productionRate <= 0) {
-        return 0;
-    }
-    // План = доступное время / время на единицу продукции
-    return Math.round(availableMinutes / productionRate);
-};
-
-// Проверка пересечения временных интервалов
+// Проверка пересечения временных интервалов (с учетом перехода через полночь)
 // Возвращает true, если интервалы пересекаются
 const timeIntervalsOverlap = (start1, end1, start2, end2) => {
     if (!start1 || !end1 || !start2 || !end2) return false;
-    
+
     const start1Minutes = parseTimeToMinutes(start1);
     const end1Minutes = parseTimeToMinutes(end1);
     const start2Minutes = parseTimeToMinutes(start2);
     const end2Minutes = parseTimeToMinutes(end2);
-    
+
     if (start1Minutes === null || end1Minutes === null || start2Minutes === null || end2Minutes === null) {
         return false;
     }
-    
-    // Проверяем пересечение: начало первого интервала < конец второго И конец первого интервала > начало второго
-    return start1Minutes < end2Minutes && end1Minutes > start2Minutes;
+
+    const toRanges = (start, end) => {
+        if (end >= start) return [[start, end]];
+        // Переход через полночь: [start, 1440] и [0, end]
+        return [[start, 1440], [0, end]];
+    };
+
+    const ranges1 = toRanges(start1Minutes, end1Minutes);
+    const ranges2 = toRanges(start2Minutes, end2Minutes);
+
+    return ranges1.some(([s1, e1]) =>
+        ranges2.some(([s2, e2]) => s1 < e2 && e1 > s2)
+    );
 };
 
 // Парсинг рабочей книги Excel
@@ -475,31 +429,10 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
         // Используем номер линии из названия файла, если он есть
         const lineFromFile = result.lineName || '';
         
-        // Рассчитываем доступное время для смены: 720 минут - исключаемые простои (плановые)
-        const excludedSet = excludedDowntimeTypes && Array.isArray(excludedDowntimeTypes) 
-            ? new Set(excludedDowntimeTypes) 
+        // Набор исключаемых категорий (плановые простои)
+        const excludedSet = excludedDowntimeTypes && Array.isArray(excludedDowntimeTypes)
+            ? new Set(excludedDowntimeTypes.map((type) => String(type || '').trim()).filter(Boolean))
             : new Set();
-        
-        // Суммируем все исключаемые простои для дня
-        let excludedDayDowntimeMinutes = 0;
-        dayDowntimes.forEach(d => {
-            if (excludedSet.has(d.type) && d.durationMinutes !== null) {
-                excludedDayDowntimeMinutes += d.durationMinutes;
-            }
-        });
-        
-        // Суммируем все исключаемые простои для ночи
-        let excludedNightDowntimeMinutes = 0;
-        nightDowntimes.forEach(d => {
-            if (excludedSet.has(d.type) && d.durationMinutes !== null) {
-                excludedNightDowntimeMinutes += d.durationMinutes;
-            }
-        });
-        
-        // Доступное время для дня = 720 - исключаемые простои
-        const availableDayMinutes = Math.max(0, totalShiftMinutes - excludedDayDowntimeMinutes);
-        // Доступное время для ночи = 720 - исключаемые простои
-        const availableNightMinutes = Math.max(0, totalShiftMinutes - excludedNightDowntimeMinutes);
         
         result.rows.forEach(rowData => {
             // Используем линию из названия файла
@@ -539,35 +472,23 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
                 return timeIntervalsOverlap(start, end, d.start, d.end);
             });
             
-            // Рассчитываем время простоев, которые пересекаются с продуктом и НЕ являются исключаемыми
-            // Нужно учитывать только ту часть простоя, которая попадает в интервал продукта
+            // Время простоев для продукта = сумма всех простоев (по времени продукта),
+            // исключая категории из excludedDowntimeTypes
             let relatedDowntimeMinutes = 0;
-            
+            // Сумма исключаемых простоев (плановые), которые относятся к продукту
+            let excludedRelatedDowntimeMinutes = 0;
             relatedDowntimes.forEach(d => {
-                // Учитываем только простои, которые НЕ исключены (не плановые)
-                if (!excludedSet.has(d.type)) {
-                    const downtimeStartMinutes = parseTimeToMinutes(d.start);
-                    const downtimeEndMinutes = parseTimeToMinutes(d.end);
-                    
-                    if (downtimeStartMinutes !== null && downtimeEndMinutes !== null && 
-                        startMinutes !== null && endMinutes !== null) {
-                        // Находим пересечение интервалов
-                        const overlapStart = Math.max(startMinutes, downtimeStartMinutes);
-                        const overlapEnd = Math.min(endMinutes, downtimeEndMinutes);
-                        
-                        if (overlapEnd > overlapStart) {
-                            relatedDowntimeMinutes += (overlapEnd - overlapStart);
-                        }
-                    } else if (d.durationMinutes !== null) {
-                        // Если не можем точно рассчитать пересечение, используем полную длительность
-                        relatedDowntimeMinutes += d.durationMinutes;
-                    }
+                const downtimeType = String(d.type || '').trim();
+                if (d.durationMinutes === null) return;
+                if (excludedSet.has(downtimeType)) {
+                    excludedRelatedDowntimeMinutes += d.durationMinutes;
+                } else {
+                    relatedDowntimeMinutes += d.durationMinutes;
                 }
             });
             
-            // Доступное время для продукта = min(длительность продукта, доступное время смены)
-            const shiftAvailableMinutes = rowData.shift === 'День' ? availableDayMinutes : availableNightMinutes;
-            const availableMinutes = Math.max(0, Math.min(productDurationMinutes, shiftAvailableMinutes));
+            // Доступное время для продукта = длительность продукта - исключаемые простои (плановые)
+            const availableMinutes = Math.max(0, productDurationMinutes - excludedRelatedDowntimeMinutes);
             
             // Время простоев для этого продукта (только те, которые пересекаются и НЕ исключены)
             const downtimeMinutes = Math.round(relatedDowntimeMinutes);
