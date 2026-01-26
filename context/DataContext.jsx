@@ -1685,31 +1685,29 @@ export const DataProvider = ({ children }) => {
 
                 const avail = getAvailabilityCached(worker.name, date);
                 if (!avail.available) {
-                    if (avail.type === 'vacation') { text = 'О'; color = 'bg-emerald-50 text-emerald-700 border-emerald-200'; }
-                    else if (avail.type === 'sick') { text = 'Б'; color = 'bg-amber-50 text-amber-700 border-amber-200'; }
+                    if (avail.type === 'vacation') { text = 'О'; color = 'bg-emerald-50 text-emerald-700'; }
+                    else if (avail.type === 'sick') { text = 'Б'; color = 'bg-amber-50 text-amber-700'; }
                     else if (avail.type === 'fired') { text = 'У'; color = 'bg-slate-200 text-slate-500'; }
                 } else if (workingWorkers.has(worker.name)) {
                     const workData = workingWorkers.get(worker.name);
                     text = workData.code;
                     brigadeId = workData.brigadeId;
-                    if (text === 'Д') color = 'bg-green-100 text-green-800 border-green-200 font-bold';
-                    else if (text === 'Н') color = 'bg-blue-100 text-blue-800 border-blue-200 font-bold';
-                    else if (text === 'Д/Н') color = 'bg-teal-100 text-teal-800 border-teal-200 font-bold';
-                    else if (text === 'РВ') color = 'bg-orange-100 text-orange-700 border-orange-200 font-bold';
+                    if (text === 'Д') color = 'bg-green-100 text-green-800 font-bold';
+                    else if (text === 'Н') color = 'bg-blue-100 text-blue-800 font-bold';
+                    else if (text === 'Д/Н') color = 'bg-teal-100 text-teal-800 font-bold';
+                    else if (text === 'РВ') color = 'bg-orange-100 text-orange-700 font-bold';
 
                     const factEntry = resolveFactEntry(date, worker.name);
                     if (factEntry) {
                         if (factEntry.cleanTime) {
                             verificationStatus = 'ok';
-                            if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-green-500';
                         } else {
                             verificationStatus = 'missing';
-                            if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-red-500';
                         }
                     }
                 } else if (idleWorkers.has(worker.name)) {
                     text = '—';
-                    color = 'bg-yellow-100 text-yellow-800 border-yellow-200 font-bold';
+                    color = 'bg-yellow-100 text-yellow-800 font-bold';
                     brigadeId = idleWorkers.get(worker.name);
 
                     const factEntry = resolveFactEntry(date, worker.name);
@@ -1718,7 +1716,6 @@ export const DataProvider = ({ children }) => {
                             verificationStatus = 'unassigned';
                         } else {
                             verificationStatus = 'missing';
-                            if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-red-500';
                         }
                     }
                 } else {
@@ -1726,7 +1723,7 @@ export const DataProvider = ({ children }) => {
                     if (factEntry && factEntry.cleanTime) {
                         verificationStatus = 'unexpected';
                         text = '!';
-                        color = 'bg-orange-50 text-orange-700 border-orange-200 font-bold';
+                        color = 'bg-orange-50 text-orange-700 font-bold';
                     }
                 }
 
