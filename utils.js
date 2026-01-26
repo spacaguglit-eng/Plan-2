@@ -13,7 +13,9 @@ export const STORAGE_KEYS = {
     FACT_DATES: 'plan_fact_dates',
     ALL_EMPLOYEES: 'plan_all_employees',
     SAVED_PLANS: 'plan_saved_plans',
-    CURRENT_PLAN_ID: 'plan_current_plan_id'
+    CURRENT_PLAN_ID: 'plan_current_plan_id',
+    AUTO_REASSIGN_ENABLED: 'plan_auto_reassign_enabled',
+    ASSIGNMENTS_BACKUP: 'plan_assignments_backup'
 };
 
 // --- LOCAL STORAGE HELPERS ---
@@ -241,4 +243,53 @@ export const parseCellStrict = (cellValue) => {
         inTime: cleanTime(rawIn),
         outTime: cleanTime(rawOut)
     };
+};
+
+// Форматирование даты без учета часового пояса (использует локальные компоненты даты)
+export const formatDateLocal = (date) => {
+    if (!date) return '';
+    const d = date instanceof Date ? date : new Date(date);
+    if (isNaN(d.getTime())) return '';
+    // Используем локальные компоненты даты для избежания сдвига из-за часового пояса
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}.${month}.${year}`;
+};
+
+// Нормализация даты из Excel (преобразует в локальную дату без учета часового пояса)
+export const normalizeExcelDate = (dateVal) => {
+    if (!dateVal) return null;
+    
+    // Если это число Excel (количество дней с 1900-01-01)
+    if (typeof dateVal === 'number') {
+        // Excel считает даты как количество дней с 1900-01-01
+        // Но есть баг: Excel считает 1900 високосным годом, хотя это не так
+        const excelEpoch = new Date(1899, 11, 30); // 30 декабря 1899
+        const msPerDay = 24 * 60 * 60 * 1000;
+        const date = new Date(excelEpoch.getTime() + dateVal * msPerDay);
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    }
+    
+    if (dateVal instanceof Date) {
+        // Используем локальные компоненты даты для избежания сдвига из-за часового пояса
+        return new Date(dateVal.getFullYear(), dateVal.getMonth(), dateVal.getDate());
+    }
+    
+    if (typeof dateVal === 'string') {
+        // Парсим строку как локальную дату
+        let d;
+        if (dateVal.match(/^\d{2}\.\d{2}\.\d{4}$/)) {
+            // Формат DD.MM.YYYY
+            const [day, month, year] = dateVal.split('.').map(Number);
+            d = new Date(year, month - 1, day);
+        } else {
+            d = new Date(dateVal);
+        }
+        if (!isNaN(d.getTime())) {
+            // Используем локальные компоненты даты
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        }
+    }
+    return null;
 };

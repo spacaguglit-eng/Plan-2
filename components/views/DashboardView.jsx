@@ -24,6 +24,10 @@ const DashboardView = () => {
         handleAutoFillFloaters,
         isGlobalFill,
         setIsGlobalFill,
+        autoReassignEnabled,
+        setAutoReassignEnabled,
+        backupAssignments,
+        restoreAssignments,
         draggedWorker,
         viewMode
     } = useData();
@@ -39,7 +43,14 @@ const DashboardView = () => {
 
     return (
         <div className="pb-20">
-            <DayStatusHeader stats={dayStats} date={selectedDate} />
+            <DayStatusHeader 
+                stats={dayStats} 
+                date={selectedDate}
+                autoReassignEnabled={autoReassignEnabled}
+                onToggleAutoReassign={setAutoReassignEnabled}
+                onBackup={backupAssignments}
+                onRestore={restoreAssignments}
+            />
             {rvModalData && (
                 <RvPickerModal
                     isOpen={!!rvModalData}
@@ -65,6 +76,15 @@ const DashboardView = () => {
                                 </div>
                             </div>
                             <div className="flex items-center gap-3">
+                                <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors select-none">
+                                    <input
+                                        type="checkbox"
+                                        className="accent-blue-600"
+                                        checked={autoReassignEnabled}
+                                        onChange={(e) => setAutoReassignEnabled(e.target.checked)}
+                                    />
+                                    <span>Автоподстановка</span>
+                                </label>
                                 <label className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors select-none">
                                     {isGlobalFill ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />} <span>Заполнить глобально</span> <input type="checkbox" className="hidden" checked={isGlobalFill} onChange={(e) => setIsGlobalFill(e.target.checked)} />
                                 </label>
@@ -91,11 +111,25 @@ const DashboardView = () => {
 
                                                 if (slot.assigned?.type === 'external') {
                                                     return (
-                                                        <div key={sIdx} className="bg-orange-50 border-orange-200 border-2 p-2 rounded-lg relative group">
+                                                        <div 
+                                                            key={sIdx} 
+                                                            draggable
+                                                            onDragStart={(e) => {
+                                                                const workerForDrag = {
+                                                                    ...slot.assigned,
+                                                                    sourceSlotId: slot.slotId
+                                                                };
+                                                                handleDragStart(e, workerForDrag);
+                                                            }}
+                                                            onDragOver={handleDragOver}
+                                                            onDrop={(e) => handleDrop(e, slot.slotId)}
+                                                            className={`bg-orange-50 border-orange-200 border-2 p-2 rounded-lg relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+                                                        >
+                                                            <GripVertical size={14} className="text-orange-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1 top-2" />
                                                             <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 cursor-pointer">
                                                                 <X size={12} />
                                                             </button>
-                                                            <div className="absolute top-0 right-0 bg-orange-500 text-white text-[9px] px-1.5 py-0.5 rounded-bl font-bold">РВ • Бр.{slot.assigned.sourceShift}</div>
+                                                            <div className="absolute top-0 right-0 bg-orange-500 text-white text-[9px] px-1.5 py-0.5 rounded-bl font-bold pointer-events-none">РВ • Бр.{slot.assigned.sourceShift}</div>
                                                             <div className="flex items-center gap-2">
                                                                 <div className="w-8 h-8 bg-orange-200 text-orange-700 rounded-full flex items-center justify-center font-bold text-xs">{slot.assigned.name[0]}</div>
                                                                 <div className="min-w-0">
@@ -108,12 +142,38 @@ const DashboardView = () => {
                                                 }
 
                                                 const renderFilled = (statusColor, borderColor, iconBg, iconColor, assignedWorker, isManual = false) => (
-                                                    <div className={`flex items-center gap-3 p-2 rounded-lg ${statusColor} border ${borderColor} relative group`}>
-                                                        {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
-                                                            <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 cursor-pointer">
-                                                                <X size={12} />
+                                                    <div 
+                                                        draggable 
+                                                        onDragStart={(e) => {
+                                                            // Создаем worker объект из слота для перетаскивания
+                                                            const workerForDrag = {
+                                                                ...assignedWorker,
+                                                                sourceSlotId: slot.slotId // Запоминаем откуда тащим
+                                                            };
+                                                            handleDragStart(e, workerForDrag);
+                                                        }}
+                                                        onDragOver={handleDragOver}
+                                                        onDrop={(e) => {
+                                                            // Если тащат на занятый слот - меняем местами
+                                                            handleDrop(e, slot.slotId);
+                                                        }}
+                                                        className={`flex items-center gap-3 p-2 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+                                                    >
+                                                        <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
+                                                        <div className="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                                            <button
+                                                                onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
+                                                                className="bg-orange-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-orange-600"
+                                                                title="Назначить РВ"
+                                                            >
+                                                                <UserPlus size={12} />
                                                             </button>
-                                                        )}
+                                                            {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
+                                                                <button onClick={() => handleRemoveAssignment(slot.slotId)} className="bg-red-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-red-600">
+                                                                    <X size={12} />
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                         <div className={`w-8 h-8 rounded-full ${iconBg} ${iconColor} flex items-center justify-center text-xs font-bold flex-shrink-0`}>
                                                             {typeof assignedWorker.name === 'string' ? assignedWorker.name.substring(0, 1) : '?'}
                                                         </div>

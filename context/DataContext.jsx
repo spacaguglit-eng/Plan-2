@@ -15,8 +15,9 @@ import {
     cyrb53,
     parseWorkerStatus,
     checkWorkerAvailability,
-    getRealNeighborDateStrings,
-    parseCellStrict
+    parseCellStrict,
+    formatDateLocal,
+    normalizeExcelDate
 } from '../utils';
 
 const DataContext = createContext(null);
@@ -58,6 +59,7 @@ export const DataProvider = ({ children }) => {
     const [chessFilterShift, setChessFilterShift] = useState('all');
     const [chessSearch, setChessSearch] = useState('');
     const [isGlobalFill, setIsGlobalFill] = useState(false);
+    const [autoReassignEnabled, setAutoReassignEnabled] = useState(() => loadFromLocalStorage(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, true));
     const [chessDisplayLimit, setChessDisplayLimit] = useState(50);
 
     // Chess Table (Worker offload)
@@ -97,9 +99,10 @@ export const DataProvider = ({ children }) => {
         return demandTable.map((row, i) => {
             if (i === 0) return row;
             const dateVal = row[11];
-            if (dateVal && typeof dateVal === 'string') {
-                const d = new Date(dateVal);
-                if (!isNaN(d.getTime())) row[11] = d;
+            // Нормализуем дату для избежания проблем с часовым поясом
+            const normalized = normalizeExcelDate(dateVal);
+            if (normalized) {
+                row[11] = normalized;
             }
             return row;
         });
@@ -251,6 +254,11 @@ export const DataProvider = ({ children }) => {
         if (restoring) return;
         saveToLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
     }, [currentPlanId, restoring]);
+
+    useEffect(() => {
+        if (restoring) return;
+        saveToLocalStorage(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, autoReassignEnabled);
+    }, [autoReassignEnabled, restoring]);
 
     useEffect(() => {
         const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
@@ -455,17 +463,12 @@ export const DataProvider = ({ children }) => {
 
     const analyzeDataPure = useCallback((demandData, rosterData) => {
         const rawDates = demandData.slice(1).map(row => {
-            let val = row[11];
-            if (val instanceof Date) return val;
-            if (typeof val === 'string') {
-                const d = new Date(val);
-                return !isNaN(d.getTime()) ? d : null;
-            }
-            return null;
+            return normalizeExcelDate(row[11]);
         }).filter(d => d);
 
         const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
-        const sortedStringDates = uniqueTimestamps.map(ts => new Date(ts).toLocaleDateString('ru-RU'));
+        // Форматируем дату без учета часового пояса
+        const sortedStringDates = uniqueTimestamps.map(ts => formatDateLocal(new Date(ts)));
 
         const templates = {};
         const floaterMap = { day: new Map(), night: new Map() };
@@ -560,14 +563,9 @@ export const DataProvider = ({ children }) => {
         const newHashes = {};
         const headers = demandData[0];
         demandData.slice(1).forEach(row => {
-            let d = row[11];
-            let dateStr = '';
-            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
-            else if (typeof d === 'string') {
-                const dateTry = new Date(d);
-                if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
-                else return;
-            } else return;
+            const normalizedDate = normalizeExcelDate(row[11]);
+            if (!normalizedDate) return;
+            const dateStr = formatDateLocal(normalizedDate);
 
             const shiftNum = extractShiftNumber(cleanVal(row[14]));
             const shiftType = cleanVal(row[13]);
@@ -593,11 +591,12 @@ export const DataProvider = ({ children }) => {
         reader.onload = (e) => {
             try {
                 const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                // Отключаем cellDates, чтобы получать даты как числа Excel, которые потом корректно парсим
+                const workbook = XLSX.read(data, { type: 'array', cellDates: false, cellNF: true });
                 const loadedData = {};
                 TARGET_CONFIG.forEach(target => {
                     const sheetName = workbook.SheetNames.find(s => s.toLowerCase().includes(target.expectedSheet.toLowerCase().split('.')[0]));
-                    if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 });
+                    if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false });
                 });
 
                 if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
@@ -665,11 +664,12 @@ export const DataProvider = ({ children }) => {
     const parseExcelToPlanData = useCallback(async (selectedFile) => {
         if (!selectedFile) return null;
         const data = await selectedFile.arrayBuffer();
-        const workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellDates: true });
+        // Отключаем cellDates, чтобы получать даты как числа Excel, которые потом корректно парсим
+        const workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellDates: false, cellNF: true });
         const loadedData = {};
         TARGET_CONFIG.forEach(target => {
             const sheetName = workbook.SheetNames.find(s => s.toLowerCase().includes(target.expectedSheet.toLowerCase().split('.')[0]));
-            if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1 });
+            if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false });
         });
         if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
 
@@ -721,14 +721,9 @@ export const DataProvider = ({ children }) => {
 
         demandData.slice(1).forEach(row => {
             if (!row) return;
-            let d = row[11];
-            let dateStr = '';
-            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
-            else if (typeof d === 'string') {
-                const dateTry = new Date(d);
-                if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
-                else dateStr = cleanVal(d);
-            }
+            const normalizedDate = normalizeExcelDate(row[11]);
+            if (!normalizedDate) return;
+            const dateStr = formatDateLocal(normalizedDate);
             if (!dateStr || dateStr.length < 5) return;
 
             const shiftNum = extractShiftNumber(cleanVal(row[14]));
@@ -1029,8 +1024,59 @@ export const DataProvider = ({ children }) => {
     const handleDrop = useCallback((e, targetSlotId) => {
         e.preventDefault();
         if (!draggedWorker) return;
-        const assignmentEntry = { ...draggedWorker, originalId: draggedWorker.id, id: `assigned_${targetSlotId}_${Date.now()}` };
-        updateAssignments({ ...manualAssignments, [targetSlotId]: assignmentEntry });
+        
+        const newAssignments = { ...manualAssignments };
+        const sourceSlotId = draggedWorker.sourceSlotId;
+        
+        // Если перетаскивают из другого слота (перемещение/обмен)
+        if (sourceSlotId && sourceSlotId !== targetSlotId) {
+            const targetWorker = newAssignments[targetSlotId];
+            
+            // Создаем новую запись для перетаскиваемого работника в целевой слот
+            const draggedEntry = {
+                ...draggedWorker,
+                originalId: draggedWorker.originalId || draggedWorker.id,
+                id: `assigned_${targetSlotId}_${Date.now()}`,
+                movedFrom: sourceSlotId, // Сохраняем откуда перенесли
+                movedAt: Date.now()
+            };
+            delete draggedEntry.sourceSlotId; // Убираем служебное поле
+            
+            // Если целевой слот занят - меняем местами
+            if (targetWorker && targetWorker.type !== 'vacancy') {
+                const swappedEntry = {
+                    ...targetWorker,
+                    id: `assigned_${sourceSlotId}_${Date.now()}`,
+                    movedFrom: targetSlotId, // Сохраняем откуда перенесли
+                    movedAt: Date.now()
+                };
+                newAssignments[sourceSlotId] = swappedEntry;
+            } else {
+                // Если целевой слот пустой - освобождаем исходный (создаем вакансию)
+                // Это нужно чтобы явно удалить работника из базовой расстановки
+                newAssignments[sourceSlotId] = { 
+                    type: 'vacancy', 
+                    id: `moved_vacancy_${sourceSlotId}_${Date.now()}`,
+                    reason: 'moved', // Помечаем что это вакансия из-за переноса
+                    movedTo: targetSlotId, // Куда был перенесен работник
+                    movedWorker: draggedWorker.name, // Кто был перенесен
+                    movedAt: Date.now()
+                };
+            }
+            
+            newAssignments[targetSlotId] = draggedEntry;
+        } else {
+            // Обычное назначение из резерва/свободных
+            const assignmentEntry = {
+                ...draggedWorker,
+                originalId: draggedWorker.id,
+                id: `assigned_${targetSlotId}_${Date.now()}`
+            };
+            delete assignmentEntry.sourceSlotId;
+            newAssignments[targetSlotId] = assignmentEntry;
+        }
+        
+        updateAssignments(newAssignments);
         setDraggedWorker(null);
     }, [draggedWorker, manualAssignments, updateAssignments]);
 
@@ -1063,15 +1109,9 @@ export const DataProvider = ({ children }) => {
         res.headers = Array.isArray(data[0]) ? data[0] : [];
 
         data.slice(1).forEach(row => {
-            let d = row[11];
-            let dateStr = '';
-            if (d instanceof Date) dateStr = d.toLocaleDateString('ru-RU');
-            else if (typeof d === 'string') {
-                const dateTry = new Date(d);
-                if (!isNaN(dateTry.getTime())) dateStr = dateTry.toLocaleDateString('ru-RU');
-                else dateStr = cleanVal(d);
-            }
-            if (!dateStr || dateStr.length < 5) return;
+            const normalizedDate = normalizeExcelDate(row[11]);
+            if (!normalizedDate) return;
+            const dateStr = formatDateLocal(normalizedDate);
 
             const shiftType = cleanVal(row[13]);
             const brigadeRaw = cleanVal(row[14]);
@@ -1203,25 +1243,29 @@ export const DataProvider = ({ children }) => {
             });
 
             const freeAgents = allShiftWorkers.filter(w => !w.isBusy && w.isAvailable);
-            lineTasks.forEach(lt => {
-                lt.slots.forEach(slot => {
-                    if (slot.status === 'vacancy' && !slot.isManualVacancy && freeAgents.length > 0) {
-                        let idx = freeAgents.findIndex(a => a.role === slot.roleTitle);
-                        if (idx === -1) {
-                            idx = freeAgents.findIndex(a => {
-                                const registryEntry = workerRegistry[a.name];
-                                return registryEntry && registryEntry.competencies?.has && registryEntry.competencies.has(slot.roleTitle);
-                            });
+            
+            // Автоподстановка работает только если включена
+            if (autoReassignEnabled) {
+                lineTasks.forEach(lt => {
+                    lt.slots.forEach(slot => {
+                        if (slot.status === 'vacancy' && !slot.isManualVacancy && freeAgents.length > 0) {
+                            let idx = freeAgents.findIndex(a => a.role === slot.roleTitle);
+                            if (idx === -1) {
+                                idx = freeAgents.findIndex(a => {
+                                    const registryEntry = workerRegistry[a.name];
+                                    return registryEntry && registryEntry.competencies?.has && registryEntry.competencies.has(slot.roleTitle);
+                                });
+                            }
+                            if (idx >= 0) {
+                                slot.status = 'reassigned';
+                                slot.assigned = freeAgents[idx];
+                                freeAgents[idx].isBusy = true;
+                                freeAgents.splice(idx, 1);
+                            }
                         }
-                        if (idx >= 0) {
-                            slot.status = 'reassigned';
-                            slot.assigned = freeAgents[idx];
-                            freeAgents[idx].isBusy = true;
-                            freeAgents.splice(idx, 1);
-                        }
-                    }
+                    });
                 });
-            });
+            }
 
             const baseFloaters = shiftTypeLower.includes('день') ? [...floaters.day] : [...floaters.night];
             const freeFloaters = baseFloaters.filter(f => !usedFloaterIds.has(f.id));
@@ -1239,7 +1283,7 @@ export const DataProvider = ({ children }) => {
                 filledSlots
             };
         });
-    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, workerRegistry]);
+    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, workerRegistry, autoReassignEnabled]);
 
     // --- SHIFTS CACHE (by date) ---
     const shiftsByDate = useMemo(() => {
@@ -1336,6 +1380,29 @@ export const DataProvider = ({ children }) => {
         updateAssignments(newAssignments);
     }, [manualAssignments, scheduleDates, selectedDate, getShiftsForDate, updateAssignments]);
 
+    const backupAssignments = useCallback(() => {
+        try {
+            saveToLocalStorage(STORAGE_KEYS.ASSIGNMENTS_BACKUP, manualAssignments);
+            notify({ type: 'success', message: 'Расстановка сохранена в резервную копию' });
+        } catch (e) {
+            notify({ type: 'error', message: 'Ошибка сохранения резервной копии' });
+        }
+    }, [manualAssignments, notify]);
+
+    const restoreAssignments = useCallback(() => {
+        try {
+            const backup = loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENTS_BACKUP, null);
+            if (!backup || Object.keys(backup).length === 0) {
+                notify({ type: 'warning', message: 'Нет сохраненной резервной копии' });
+                return;
+            }
+            updateAssignments(backup);
+            notify({ type: 'success', message: 'Расстановка восстановлена из резервной копии' });
+        } catch (e) {
+            notify({ type: 'error', message: 'Ошибка восстановления резервной копии' });
+        }
+    }, [updateAssignments, notify]);
+
     // --- CHESS TABLE WORKER LIFECYCLE ---
     useEffect(() => {
         if (!USE_CHESS_WORKER) return;
@@ -1401,10 +1468,11 @@ export const DataProvider = ({ children }) => {
                 floaters,
                 manualAssignments,
                 workerRegistry: workerRegistryForWorker,
-                factData
+                factData,
+                autoReassignEnabled
             }
         });
-    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData]);
+    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, autoReassignEnabled]);
 
     const chessTableBase = useMemo(() => {
         // Avoid spending CPU when user isn't on the timesheet view.
@@ -1525,7 +1593,7 @@ export const DataProvider = ({ children }) => {
                 surnameMap.forEach((entries) => {
                     entries.forEach((factEntry) => {
                         if (!factEntry?.rawName) return;
-                        if (!factEntry.cleanTime && !factEntry.nextDayExit) return;
+                        if (!factEntry.cleanTime) return;
 
                         const factNormName = normalizeName(factEntry.rawName);
                         if (workerLookupByNorm.has(factNormName)) return;
@@ -1617,7 +1685,7 @@ export const DataProvider = ({ children }) => {
 
                     const factEntry = resolveFactEntry(date, worker.name);
                     if (factEntry) {
-                        if (factEntry.cleanTime || factEntry.nextDayExit) {
+                        if (factEntry.cleanTime) {
                             verificationStatus = 'ok';
                             if (!color.includes('ring-')) color = color.replace(/border-\w+-\d+/g, '').trim() + ' ring-2 ring-green-500';
                         } else {
@@ -1632,7 +1700,7 @@ export const DataProvider = ({ children }) => {
 
                     const factEntry = resolveFactEntry(date, worker.name);
                     if (factEntry) {
-                        if (factEntry.cleanTime || factEntry.nextDayExit) {
+                        if (factEntry.cleanTime) {
                             verificationStatus = 'unassigned';
                         } else {
                             verificationStatus = 'missing';
@@ -1641,7 +1709,7 @@ export const DataProvider = ({ children }) => {
                     }
                 } else {
                     const factEntry = resolveFactEntry(date, worker.name);
-                    if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
+                    if (factEntry && factEntry.cleanTime) {
                         verificationStatus = 'unexpected';
                         text = '!';
                         color = 'bg-orange-50 text-orange-700 border-orange-200 font-bold';
@@ -1851,6 +1919,7 @@ export const DataProvider = ({ children }) => {
         chessFilterShift, setChessFilterShift,
         chessSearch, setChessSearch,
         isGlobalFill, setIsGlobalFill,
+        autoReassignEnabled, setAutoReassignEnabled,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
         
@@ -1877,6 +1946,7 @@ export const DataProvider = ({ children }) => {
         globalWorkSchedule,
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
+        backupAssignments, restoreAssignments,
         calculateChessTable, exportChessTableToExcel,
         unlockWithCode
         // Performance metrics are stored outside of Context to avoid app-wide render storms.
@@ -1898,6 +1968,7 @@ export const DataProvider = ({ children }) => {
         chessFilterShift,
         chessSearch,
         isGlobalFill,
+        autoReassignEnabled,
         chessDisplayLimit,
         chessTableWorkerStatus,
         // Только мемоизированные функции
@@ -1914,7 +1985,9 @@ export const DataProvider = ({ children }) => {
         globalWorkSchedule,
         calculateChessTable,
         exportChessTableToExcel,
-        unlockWithCode
+        unlockWithCode,
+        backupAssignments,
+        restoreAssignments
         // ❌ УБРАНЫ: все немемоизированные функции
         // ❌ УБРАНЫ: все setState
     ]);

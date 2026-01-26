@@ -41,7 +41,7 @@ function buildDemandIndex(demandTable) {
   return { headers, brigadesByDate };
 }
 
-function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache }) {
+function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache, autoReassignEnabled }) {
   if (!brigadesMap) return [];
 
   const getAvailabilityCached = (name) => {
@@ -150,25 +150,29 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
     });
 
     const freeAgents = allShiftWorkers.filter((w) => !w.isBusy && w.isAvailable);
-    lineTasks.forEach((lt) => {
-      lt.slots.forEach((slot) => {
-        if (slot.status === 'vacancy' && !slot.isManualVacancy && freeAgents.length > 0) {
-          let idx = freeAgents.findIndex((a) => a.role === slot.roleTitle);
-          if (idx === -1) {
-            idx = freeAgents.findIndex((a) => {
-              const registryEntry = workerRegistry?.[a.name];
-              return registryEntry && registryEntry.competencies?.has && registryEntry.competencies.has(slot.roleTitle);
-            });
+    
+    // Автоподстановка работает только если включена
+    if (autoReassignEnabled) {
+      lineTasks.forEach((lt) => {
+        lt.slots.forEach((slot) => {
+          if (slot.status === 'vacancy' && !slot.isManualVacancy && freeAgents.length > 0) {
+            let idx = freeAgents.findIndex((a) => a.role === slot.roleTitle);
+            if (idx === -1) {
+              idx = freeAgents.findIndex((a) => {
+                const registryEntry = workerRegistry?.[a.name];
+                return registryEntry && registryEntry.competencies?.has && registryEntry.competencies.has(slot.roleTitle);
+              });
+            }
+            if (idx >= 0) {
+              slot.status = 'reassigned';
+              slot.assigned = freeAgents[idx];
+              freeAgents[idx].isBusy = true;
+              freeAgents.splice(idx, 1);
+            }
           }
-          if (idx >= 0) {
-            slot.status = 'reassigned';
-            slot.assigned = freeAgents[idx];
-            freeAgents[idx].isBusy = true;
-            freeAgents.splice(idx, 1);
-          }
-        }
+        });
       });
-    });
+    }
 
     const baseFloaters = shiftTypeLower.includes('день') ? [...(floaters?.day || [])] : [...(floaters?.night || [])];
     const freeFloaters = baseFloaters.filter((f) => !usedFloaterIds.has(f.id));
@@ -189,7 +193,7 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
 }
 
 function buildChessTable(payload) {
-  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData } = payload;
+  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData, autoReassignEnabled } = payload;
   const dates = Array.isArray(scheduleDates) ? scheduleDates : [];
   if (!demand || dates.length === 0) return null;
 
@@ -213,6 +217,7 @@ function buildChessTable(payload) {
         manualAssignments,
         workerRegistry,
         availabilityCache,
+        autoReassignEnabled
       })
     );
   });
@@ -305,7 +310,7 @@ function buildChessTable(payload) {
       surnameMap.forEach((entries) => {
         entries.forEach((factEntry) => {
           if (!factEntry?.rawName) return;
-          if (!factEntry.cleanTime && !factEntry.nextDayExit) return;
+          if (!factEntry.cleanTime) return;
           const factNormName = normalizeName(factEntry.rawName);
           if (workerLookupByNorm.has(factNormName)) return;
 
@@ -398,7 +403,7 @@ function buildChessTable(payload) {
 
         const factEntry = resolveFactEntry(date, worker.name);
         if (factEntry) {
-          if (factEntry.cleanTime || factEntry.nextDayExit) {
+          if (factEntry.cleanTime) {
             verificationStatus = 'ok';
             if (!color.includes('ring-')) color = color.replace(/border-\\w+-\\d+/g, '').trim() + ' ring-2 ring-green-500';
           } else {
@@ -413,7 +418,7 @@ function buildChessTable(payload) {
 
         const factEntry = resolveFactEntry(date, worker.name);
         if (factEntry) {
-          if (factEntry.cleanTime || factEntry.nextDayExit) {
+          if (factEntry.cleanTime) {
             verificationStatus = 'unassigned';
           } else {
             verificationStatus = 'missing';
@@ -422,7 +427,7 @@ function buildChessTable(payload) {
         }
       } else {
         const factEntry = resolveFactEntry(date, worker.name);
-        if (factEntry && (factEntry.cleanTime || factEntry.nextDayExit)) {
+        if (factEntry && factEntry.cleanTime) {
           verificationStatus = 'unexpected';
           text = '!';
           color = 'bg-orange-50 text-orange-700 border-orange-200 font-bold';

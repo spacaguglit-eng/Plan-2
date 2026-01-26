@@ -98,7 +98,7 @@ const calculateHours = (entryTime, exitTime) => {
 
 const validateFactEntry = (factEntry) => {
     if (!factEntry) return 'missing';
-    if (factEntry.hasOvernightShift && factEntry.nextDayExit) return 'ok';
+    if (factEntry.cleanTime) return 'ok';
     if (factEntry.entryTime && factEntry.exitTime) return 'ok';
     if (factEntry.entryTime && !factEntry.exitTime) return 'incomplete';
     if (!factEntry.entryTime && factEntry.exitTime) return 'incomplete';
@@ -287,7 +287,7 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
                     if (factStatus === 'incomplete') errorCount++;
                     let duration = null;
                     if (factEntry) {
-                        const exitTime = factEntry.nextDayExit || factEntry.exitTime;
+                        const exitTime = factEntry.exitTime;
                         if (factEntry.entryTime && exitTime) {
                             duration = calculateHours(factEntry.entryTime, exitTime);
                             if (duration) totalMinutes += duration.totalMinutes;
@@ -364,7 +364,7 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
 
             let duration = null;
             if (factEntry) {
-                const exitTime = factEntry.nextDayExit || factEntry.exitTime;
+                const exitTime = factEntry.exitTime;
                 if (factEntry.entryTime && exitTime) {
                     duration = calculateHours(factEntry.entryTime, exitTime);
                     if (duration) totalMinutes += duration.totalMinutes;

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
     X, Search, ArrowRightLeft, Plus, CheckCircle2, 
     UserPlus, ToggleRight, ToggleLeft, Ban, GraduationCap, 
-    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2 
+    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2, Save, Undo2 
 } from 'lucide-react';
 import { checkWorkerAvailability, getRealNeighborDateStrings } from './utils';
 
@@ -424,14 +424,46 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date }) => {
+export const DayStatusHeader = ({ stats, date, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore }) => {
     if (!stats) return null;
     return (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-6 grid grid-cols-1 md:grid-cols-4 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
-            <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-slate-100 p-2 rounded-lg text-slate-600"><Briefcase size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Всего мест</div><div className="text-lg font-bold text-slate-800">{stats.totalSlots}</div></div></div>
-            <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className={`p-2 rounded-lg ${stats.vacancies > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}><AlertTriangle size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Вакансии</div><div className={`text-lg font-bold ${stats.vacancies > 0 ? 'text-red-600' : 'text-green-600'}`}>{stats.vacancies} <span className="text-xs text-slate-400 font-normal">({Math.round((stats.vacancies / stats.totalSlots) * 100 || 0)}%)</span></div></div></div>
-            <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ресурс</div><div className="text-sm font-bold text-slate-700">{stats.freeStaff} <span className="text-slate-400 font-normal">штат</span> + {stats.floatersAvailable} <span className="text-slate-400 font-normal">резерв</span></div></div></div>
-            <div className="flex items-center gap-3"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><Edit3 size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ручные правки</div><div className="text-lg font-bold text-indigo-600">{stats.manualEdits}</div></div></div>
+        <div className="mb-6 space-y-3 animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">Дата: {date}</div>
+                <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors select-none">
+                        <input
+                            type="checkbox"
+                            className="accent-blue-600"
+                            checked={autoReassignEnabled}
+                            onChange={(e) => onToggleAutoReassign && onToggleAutoReassign(e.target.checked)}
+                        />
+                        <span>Автоподстановка</span>
+                    </label>
+                    <button
+                        onClick={onBackup}
+                        className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 rounded-lg border border-green-200 transition-colors"
+                        title="Сохранить текущую расстановку в резервную копию"
+                    >
+                        <Save size={14} />
+                        Сохранить в бэкап
+                    </button>
+                    <button
+                        onClick={onRestore}
+                        className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg border border-blue-200 transition-colors"
+                        title="Восстановить расстановку из резервной копии"
+                    >
+                        <Undo2 size={14} />
+                        Восстановить из бэкапа
+                    </button>
+                </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-slate-100 p-2 rounded-lg text-slate-600"><Briefcase size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Всего мест</div><div className="text-lg font-bold text-slate-800">{stats.totalSlots}</div></div></div>
+                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className={`p-2 rounded-lg ${stats.vacancies > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}><AlertTriangle size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Вакансии</div><div className={`text-lg font-bold ${stats.vacancies > 0 ? 'text-red-600' : 'text-green-600'}`}>{stats.vacancies} <span className="text-xs text-slate-400 font-normal">({Math.round((stats.vacancies / stats.totalSlots) * 100 || 0)}%)</span></div></div></div>
+                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ресурс</div><div className="text-sm font-bold text-slate-700">{stats.freeStaff} <span className="text-slate-400 font-normal">штат</span> + {stats.floatersAvailable} <span className="text-slate-400 font-normal">резерв</span></div></div></div>
+                <div className="flex items-center gap-3"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><Edit3 size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ручные правки</div><div className="text-lg font-bold text-indigo-600">{stats.manualEdits}</div></div></div>
+            </div>
         </div>
     );
 };

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -14,6 +14,7 @@ import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
+import RawDataView from './components/views/RawDataView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
@@ -216,6 +217,18 @@ export default function App() {
                                             <FolderOpen size={16} /> Планы
                                         </button>
                                     </div>
+
+                                    {/* Raw Data Menu Item */}
+                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={() => setViewMode('raw_data')}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                                viewMode === 'raw_data' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            <Database size={16} /> Исходные данные
+                                        </button>
+                                    </div>
                                 </div>
                                 {viewMode === 'dashboard' && (
                                     <CustomDateSelector
@@ -245,6 +258,7 @@ export default function App() {
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
+                        {viewMode === 'raw_data' && <RawDataView />}
                     </div>
                 </>
             )}
