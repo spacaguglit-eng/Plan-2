@@ -1,5 +1,48 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
+
+const FILE_HANDLE_DB = 'productionFileHandlesDB';
+const FILE_HANDLE_STORE = 'handles';
+
+const openHandlesDb = () => new Promise((resolve, reject) => {
+    const request = indexedDB.open(FILE_HANDLE_DB, 1);
+    request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(FILE_HANDLE_STORE)) {
+            db.createObjectStore(FILE_HANDLE_STORE, { keyPath: 'id' });
+        }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+});
+
+const saveFileHandles = async (handles, snapshots = null) => {
+    const db = await openHandlesDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(FILE_HANDLE_STORE, 'readwrite');
+        const store = tx.objectStore(FILE_HANDLE_STORE);
+        store.put({ id: 'production', handles, snapshots: snapshots || null });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+};
+
+const loadFileHandles = async () => {
+    const db = await openHandlesDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(FILE_HANDLE_STORE, 'readonly');
+        const store = tx.objectStore(FILE_HANDLE_STORE);
+        const req = store.get('production');
+        req.onsuccess = () => {
+            const result = req.result || {};
+            resolve({ 
+                handles: result.handles || [], 
+                snapshots: result.snapshots || null 
+            });
+        };
+        req.onerror = () => reject(req.error);
+    });
+};
 
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
@@ -16,9 +59,42 @@ const getCategoryColor = (category) => {
     return colors[Math.abs(hash) % colors.length];
 };
 
+const CATEGORY_COLOR_HEX = {
+    'bg-red-400': '#f87171',
+    'bg-pink-400': '#f472b6',
+    'bg-purple-400': '#c084fc',
+    'bg-indigo-400': '#818cf8',
+    'bg-blue-400': '#60a5fa',
+    'bg-cyan-400': '#22d3ee',
+    'bg-teal-400': '#2dd4bf',
+    'bg-yellow-400': '#facc15',
+    'bg-amber-400': '#fbbf24',
+    'bg-orange-400': '#fb923c',
+    'bg-gray-400': '#9ca3af',
+    'bg-slate-400': '#94a3b8'
+};
+
+const getCategoryColorHex = (category) => {
+    const className = getCategoryColor(category);
+    return CATEGORY_COLOR_HEX[className] || '#94a3b8';
+};
+
+const buildConicGradient = (segments) => {
+    if (!segments || segments.length === 0) return 'conic-gradient(#e2e8f0 0% 100%)';
+    let current = 0;
+    const parts = segments.map((seg) => {
+        const start = current;
+        const end = current + seg.percent;
+        current = end;
+        return `${seg.color} ${start.toFixed(2)}% ${end.toFixed(2)}%`;
+    });
+    return `conic-gradient(${parts.join(', ')})`;
+};
+
 const ProductionView = () => {
     const STORAGE_KEY = 'productionParsedResults';
     const fileInputRef = useRef(null);
+    const filePickerWindowRef = useRef(null);
     const [results, setResults] = useState([]);
     const [isParsing, setIsParsing] = useState(false);
     const [parseError, setParseError] = useState('');
@@ -30,6 +106,10 @@ const ProductionView = () => {
         const stored = localStorage.getItem('productionExcludedDowntimeTypes');
         return stored ? new Set(JSON.parse(stored)) : new Set();
     });
+    const [fileHandles, setFileHandles] = useState([]);
+    const fileSnapshotsRef = useRef(new Map());
+    const [pollState, setPollState] = useState({ inProgress: false, lastCheck: null });
+    const isInitialLoadRef = useRef(true);
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
     
@@ -45,6 +125,219 @@ const ProductionView = () => {
         byLine: new Set(),
         byProduct: new Set()
     });
+    const [lineSlideIndex, setLineSlideIndex] = useState(0);
+    const [isLineSlideVisible, setIsLineSlideVisible] = useState(true);
+
+    const processFiles = useCallback(async (files) => {
+        if (!files || files.length === 0) return;
+
+        setIsParsing(true);
+        setParseError('');
+        setResults([]);
+        setFlatRows([]);
+        setFlatDowntimeRows([]);
+
+        try {
+            const worker = productionWorkerRef.current;
+            if (!worker) {
+                setParseError('Worker не инициализирован');
+                setIsParsing(false);
+                return;
+            }
+
+            // Подготавливаем данные файлов для воркера
+            const filesData = [];
+            const transferables = [];
+            for (const file of files) {
+                try {
+                    const data = await file.arrayBuffer();
+                    if (!data || data.byteLength === 0) {
+                        throw new Error(`Файл ${file.name} пуст или поврежден`);
+                    }
+                    filesData.push({
+                        data: data,
+                        fileName: file.name
+                    });
+                    transferables.push(data);
+                } catch (fileErr) {
+                    throw new Error(`Ошибка чтения файла ${file.name}: ${fileErr.message}`);
+                }
+            }
+
+            if (filesData.length === 0) {
+                throw new Error('Нет файлов для обработки');
+            }
+
+            // Устанавливаем таймаут для обнаружения зависаний
+            const timeoutId = setTimeout(() => {
+                console.error('Таймаут при обработке файлов');
+                setParseError('Таймаут: обработка файлов занимает слишком много времени. Попробуйте загрузить файлы по одному.');
+                setIsParsing(false);
+            }, 120000); // 2 минуты
+
+            const requestId = ++productionWorkerReqIdRef.current;
+
+            // Сохраняем обработчик для очистки таймаута
+            const timeoutRef = { current: timeoutId };
+            const originalOnMessage = worker.onmessage;
+
+            // Временно перехватываем сообщения для очистки таймаута
+            worker.onmessage = (e) => {
+                const { requestId: msgRequestId } = e.data || {};
+
+                // Очищаем таймаут при получении ответа для этого запроса
+                if (msgRequestId === requestId) {
+                    clearTimeout(timeoutRef.current);
+                    // Восстанавливаем оригинальный обработчик
+                    worker.onmessage = originalOnMessage;
+                }
+
+                // Вызываем оригинальный обработчик
+                if (originalOnMessage) {
+                    originalOnMessage(e);
+                }
+            };
+
+            console.log(`Отправка ${filesData.length} файлов воркеру, requestId: ${requestId}`);
+            worker.postMessage({
+                type: 'parseFiles',
+                requestId,
+                payload: {
+                    files: filesData
+                }
+            }, transferables);
+        } catch (err) {
+            console.error('Ошибка при загрузке файлов:', err);
+            setParseError(err?.message || 'Ошибка чтения Excel файла');
+            setIsParsing(false);
+        }
+    }, []);
+
+    const readFilesFromHandles = useCallback(async (handles) => {
+        const files = [];
+        for (const handle of handles) {
+            if (!handle || handle.kind !== 'file') continue;
+            try {
+                const permission = await handle.queryPermission({ mode: 'read' });
+                if (permission !== 'granted') {
+                    const request = await handle.requestPermission({ mode: 'read' });
+                    if (request !== 'granted') continue;
+                }
+                const file = await handle.getFile();
+                files.push(file);
+            } catch (err) {
+                console.warn('Не удалось прочитать файл из handle:', err);
+            }
+        }
+        return files;
+    }, []);
+
+    const updateSnapshots = useCallback((files) => {
+        const next = new Map();
+        files.forEach((file) => {
+            next.set(file.name, file.lastModified);
+        });
+        fileSnapshotsRef.current = next;
+        // Сохраняем snapshots в IndexedDB
+        if (fileHandles.length > 0) {
+            saveFileHandles(fileHandles, Object.fromEntries(next)).catch(err => 
+                console.warn('Не удалось сохранить snapshots:', err)
+            );
+        }
+    }, [fileHandles]);
+
+    const checkForUpdates = useCallback(async () => {
+        if (!fileHandles || fileHandles.length === 0) return;
+        setPollState((prev) => ({ ...prev, inProgress: true }));
+        const files = await readFilesFromHandles(fileHandles);
+        if (files.length === 0) {
+            setPollState((prev) => ({ ...prev, inProgress: false, lastCheck: new Date() }));
+            return;
+        }
+        const snapshots = fileSnapshotsRef.current;
+        // Находим только измененные файлы
+        const changedFiles = files.filter((file) => {
+            const savedModified = snapshots.get(file.name);
+            return savedModified === undefined || savedModified !== file.lastModified;
+        });
+        
+        if (changedFiles.length > 0) {
+            // Обновляем snapshots только для измененных файлов
+            changedFiles.forEach((file) => {
+                snapshots.set(file.name, file.lastModified);
+            });
+            fileSnapshotsRef.current = snapshots;
+            // Сохраняем обновленные snapshots
+            await saveFileHandles(fileHandles, Object.fromEntries(snapshots));
+            // Обрабатываем только измененные файлы
+            await processFiles(changedFiles);
+        }
+        setPollState((prev) => ({ ...prev, inProgress: false, lastCheck: new Date() }));
+    }, [fileHandles, processFiles, readFilesFromHandles]);
+
+    const openFilePickerWindow = () => {
+        const existing = filePickerWindowRef.current;
+        if (existing && !existing.closed) {
+            existing.focus();
+            return;
+        }
+
+        const win = window.open('', 'production-file-picker', 'width=520,height=420');
+        if (!win) return;
+        filePickerWindowRef.current = win;
+        win.document.title = 'Выбор файлов производства';
+        win.document.body.innerHTML = `
+            <div style="font-family: sans-serif; padding: 16px;">
+                <h3 style="margin: 0 0 12px;">Выбор файлов</h3>
+                <p style="margin: 0 0 12px; color: #555;">Выберите один или несколько Excel-файлов.</p>
+                <input id="file-input" type="file" multiple accept=".xls,.xlsx" />
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button id="pick-handles">Выбрать через доступ к файлам</button>
+                    <button id="close-window">Закрыть</button>
+                </div>
+                <p style="margin-top: 12px; color: #777; font-size: 12px;">
+                    Рекомендуется использовать "доступ к файлам" для фонового обновления.
+                </p>
+            </div>
+        `;
+
+        const pickHandlesBtn = win.document.getElementById('pick-handles');
+        const fileInput = win.document.getElementById('file-input');
+        const closeBtn = win.document.getElementById('close-window');
+
+        pickHandlesBtn?.addEventListener('click', async () => {
+            if (!win.showOpenFilePicker) {
+                win.alert('Браузер не поддерживает доступ к файлам. Используйте обычный выбор.');
+                return;
+            }
+            try {
+                const handles = await win.showOpenFilePicker({
+                    multiple: true,
+                    types: [{ description: 'Excel', accept: { 'application/vnd.ms-excel': ['.xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }]
+                });
+                if (typeof win.opener?.__receiveProductionHandles === 'function') {
+                    win.opener.__receiveProductionHandles(handles);
+                } else {
+                    win.opener?.postMessage({ type: 'productionFileHandles', handles }, win.location.origin);
+                }
+            } catch (err) {
+                console.warn('Выбор файлов отменен или неудачен:', err);
+            }
+        });
+
+        fileInput?.addEventListener('change', () => {
+            const files = Array.from(fileInput.files || []);
+            if (files.length > 0) {
+                if (typeof win.opener?.__receiveProductionFiles === 'function') {
+                    win.opener.__receiveProductionFiles(files);
+                } else {
+                    win.opener?.postMessage({ type: 'productionFiles', files }, win.location.origin);
+                }
+            }
+        });
+
+        closeBtn?.addEventListener('click', () => win.close());
+    };
 
 
     const uniqueLines = useMemo(() => {
@@ -53,9 +346,21 @@ const ProductionView = () => {
             ...flatDowntimeRows.map(r => r.line)
         ]);
         return Array.from(lines).sort((a, b) => {
-            const numA = parseInt(a.match(/\d+/)?.[0] || '0');
-            const numB = parseInt(b.match(/\d+/)?.[0] || '0');
-            if (numA !== numB) return numA - numB;
+            const matchA = a.match(/\d+/);
+            const matchB = b.match(/\d+/);
+            const numA = matchA ? parseInt(matchA[0], 10) : NaN;
+            const numB = matchB ? parseInt(matchB[0], 10) : NaN;
+            
+            // Если оба имеют числа - сортируем по числу
+            if (!isNaN(numA) && !isNaN(numB)) {
+                if (numA !== numB) return numA - numB;
+                // Если числа одинаковые, сортируем лексикографически
+                return a.localeCompare(b);
+            }
+            // Если только один имеет число - он идет первым
+            if (!isNaN(numA) && isNaN(numB)) return -1;
+            if (isNaN(numA) && !isNaN(numB)) return 1;
+            // Если оба без чисел - лексикографическая сортировка
             return a.localeCompare(b);
         });
     }, [flatRows, flatDowntimeRows]);
@@ -78,7 +383,14 @@ const ProductionView = () => {
                 dates.add(result.date);
             }
         });
-        return Array.from(dates).sort();
+        return Array.from(dates).sort((a, b) => {
+            const numA = parseInt(a, 10);
+            const numB = parseInt(b, 10);
+            if (!isNaN(numA) && !isNaN(numB)) {
+                return numA - numB;
+            }
+            return a.localeCompare(b);
+        });
     }, [results]);
 
     const filteredRows = useMemo(() => {
@@ -106,6 +418,79 @@ const ProductionView = () => {
             return true;
         });
     }, [flatDowntimeRows, filterLine, filterDate, filterProduct]);
+
+    const lineSlides = useMemo(() => {
+        if (!filterDate) return [];
+        const rowsForDate = flatRows.filter(row => row.date === filterDate);
+        const downtimesForDate = flatDowntimeRows.filter(row => row.date === filterDate);
+        const lines = Array.from(new Set(rowsForDate.map(r => r.line))).sort();
+        return lines.map((line) => {
+            const lineRows = rowsForDate.filter(r => r.line === line);
+            const lineDowntimes = downtimesForDate.filter(d => d.line === line);
+            const plan = lineRows.reduce((sum, r) => sum + (r.plan || 0), 0);
+            const fact = lineRows.reduce((sum, r) => sum + (typeof r.qty === 'number' ? r.qty : 0), 0);
+            
+            // Рассчитываем среднюю скорость линии (среднее арифметическое всех скоростей продуктов)
+            const speeds = lineRows.map(r => r.speed || 0).filter(s => s > 0);
+            const avgSpeed = speeds.length > 0 
+                ? speeds.reduce((sum, s) => sum + s, 0) / speeds.length 
+                : 0;
+            
+            const downtimeMap = new Map();
+            const downtimeDescriptions = new Map();
+            lineDowntimes
+                .filter(d => !excludedDowntimeTypes.has(String(d.type || '').trim()))
+                .forEach((d) => {
+                    const category = d.category || 'Без категории';
+                    const prev = downtimeMap.get(category) || 0;
+                    downtimeMap.set(category, prev + (d.durationMinutes || 0));
+                    const descList = downtimeDescriptions.get(category) || new Set();
+                    if (d.description) descList.add(String(d.description));
+                    downtimeDescriptions.set(category, descList);
+                });
+            const downtimeList = Array.from(downtimeMap.entries())
+                .map(([category, minutes]) => {
+                    // Рассчитываем недовыпуск: минуты / 60 * средняя скорость
+                    const underproduction = avgSpeed > 0 
+                        ? Math.round((minutes / 60) * avgSpeed) 
+                        : 0;
+                    return {
+                        category,
+                        minutes: Math.round(minutes),
+                        underproduction,
+                        color: getCategoryColorHex(category),
+                        descriptions: Array.from(downtimeDescriptions.get(category) || []).filter(Boolean)
+                    };
+                })
+                .filter(item => item.minutes > 0)
+                .sort((a, b) => b.minutes - a.minutes);
+            const totalDowntimeMinutes = downtimeList.reduce((sum, item) => sum + item.minutes, 0);
+            const segments = downtimeList.map(item => ({
+                ...item,
+                percent: totalDowntimeMinutes > 0 ? (item.minutes / totalDowntimeMinutes) * 100 : 0
+            }));
+            const efficiency = plan > 0 ? Math.round((fact / plan) * 100) : 0;
+            return {
+                line,
+                plan,
+                fact,
+                segments,
+                downtimeList,
+                efficiency,
+                totalDowntimeMinutes
+            };
+        });
+    }, [flatRows, flatDowntimeRows, filterDate, excludedDowntimeTypes]);
+
+    useEffect(() => {
+        setLineSlideIndex(0);
+    }, [filterDate, lineSlides.length]);
+
+    useEffect(() => {
+        setIsLineSlideVisible(false);
+        const id = setTimeout(() => setIsLineSlideVisible(true), 50);
+        return () => clearTimeout(id);
+    }, [lineSlideIndex, filterDate]);
 
     // Данные для графиков
     const chartData = useMemo(() => {
@@ -269,92 +654,11 @@ const ProductionView = () => {
     }, [filteredRows, filteredDowntimeRows, excludedDowntimeTypes]);
 
 
+
     const handleFileChange = async (event) => {
         const files = Array.from(event.target.files || []);
-        if (files.length === 0) return;
-
-        setIsParsing(true);
-        setParseError('');
-        setResults([]);
-        setFlatRows([]);
-        setFlatDowntimeRows([]);
-
-        try {
-            const worker = productionWorkerRef.current;
-            if (!worker) {
-                setParseError('Worker не инициализирован');
-                setIsParsing(false);
-                return;
-            }
-
-            // Подготавливаем данные файлов для воркера
-            const filesData = [];
-            const transferables = [];
-            for (const file of files) {
-                try {
-                    const data = await file.arrayBuffer();
-                    if (!data || data.byteLength === 0) {
-                        throw new Error(`Файл ${file.name} пуст или поврежден`);
-                    }
-                    filesData.push({
-                        data: data,
-                        fileName: file.name
-                    });
-                    transferables.push(data);
-                } catch (fileErr) {
-                    throw new Error(`Ошибка чтения файла ${file.name}: ${fileErr.message}`);
-                }
-            }
-
-            if (filesData.length === 0) {
-                throw new Error('Нет файлов для обработки');
-            }
-
-            // Устанавливаем таймаут для обнаружения зависаний
-            const timeoutId = setTimeout(() => {
-                console.error('Таймаут при обработке файлов');
-                setParseError('Таймаут: обработка файлов занимает слишком много времени. Попробуйте загрузить файлы по одному.');
-                setIsParsing(false);
-            }, 120000); // 2 минуты
-
-            const requestId = ++productionWorkerReqIdRef.current;
-            
-            // Сохраняем обработчик для очистки таймаута
-            const timeoutRef = { current: timeoutId };
-            const originalOnMessage = worker.onmessage;
-            
-            // Временно перехватываем сообщения для очистки таймаута
-            worker.onmessage = (e) => {
-                const { type: msgType, requestId: msgRequestId, error } = e.data || {};
-                
-                // Очищаем таймаут при получении ответа для этого запроса
-                if (msgRequestId === requestId) {
-                    clearTimeout(timeoutRef.current);
-                    // Восстанавливаем оригинальный обработчик
-                    worker.onmessage = originalOnMessage;
-                }
-                
-                // Вызываем оригинальный обработчик
-                if (originalOnMessage) {
-                    originalOnMessage(e);
-                }
-            };
-            
-            console.log(`Отправка ${filesData.length} файлов воркеру, requestId: ${requestId}`);
-            worker.postMessage({
-                type: 'parseFiles',
-                requestId,
-                payload: {
-                    files: filesData
-                }
-            }, transferables);
-        } catch (err) {
-            console.error('Ошибка при загрузке файлов:', err);
-            setParseError(err?.message || 'Ошибка чтения Excel файла');
-            setIsParsing(false);
-        } finally {
-            event.target.value = '';
-        }
+        await processFiles(files);
+        event.target.value = '';
     };
 
     // Инициализация воркера
@@ -414,6 +718,124 @@ const ProductionView = () => {
         };
     }, []);
 
+    // Загрузка сохраненных файлов из IndexedDB
+    useEffect(() => {
+        let isActive = true;
+        loadFileHandles()
+            .then(async ({ handles, snapshots }) => {
+                if (!isActive || !handles || handles.length === 0) return;
+                setFileHandles(handles);
+                
+                // Восстанавливаем snapshots из IndexedDB
+                if (snapshots) {
+                    const snapshotsMap = new Map(Object.entries(snapshots));
+                    fileSnapshotsRef.current = snapshotsMap;
+                }
+                
+                // Читаем файлы и проверяем изменения
+                const files = await readFilesFromHandles(handles);
+                if (files.length === 0) return;
+                
+                const savedSnapshots = fileSnapshotsRef.current;
+                // Находим только измененные файлы
+                const changedFiles = files.filter((file) => {
+                    const savedModified = savedSnapshots.get(file.name);
+                    return savedModified === undefined || savedModified !== file.lastModified;
+                });
+                
+                // Обновляем snapshots для всех файлов (включая неизмененные)
+                files.forEach((file) => {
+                    savedSnapshots.set(file.name, file.lastModified);
+                });
+                fileSnapshotsRef.current = savedSnapshots;
+                await saveFileHandles(handles, Object.fromEntries(savedSnapshots));
+                
+                // Обрабатываем только измененные файлы
+                if (changedFiles.length > 0) {
+                    await processFiles(changedFiles);
+                } else if (isInitialLoadRef.current && results.length === 0) {
+                    // При первой загрузке, если нет изменений, но нет данных - загружаем все
+                    await processFiles(files);
+                }
+                isInitialLoadRef.current = false;
+            })
+            .catch((err) => console.warn('Не удалось загрузить сохраненные файлы:', err));
+        return () => {
+            isActive = false;
+        };
+    }, [processFiles, readFilesFromHandles]);
+
+    // Прием данных напрямую от окна выбора файлов
+    useEffect(() => {
+        window.__receiveProductionFiles = async (files) => {
+            if (Array.isArray(files)) {
+                await processFiles(files);
+            }
+        };
+        window.__receiveProductionHandles = async (handles) => {
+            if (!Array.isArray(handles)) return;
+            setFileHandles(handles);
+            const resolvedFiles = await readFilesFromHandles(handles);
+            if (resolvedFiles.length > 0) {
+                // Создаем snapshots для новых файлов
+                const snapshots = new Map();
+                resolvedFiles.forEach((file) => {
+                    snapshots.set(file.name, file.lastModified);
+                });
+                fileSnapshotsRef.current = snapshots;
+                try {
+                    await saveFileHandles(handles, Object.fromEntries(snapshots));
+                } catch (err) {
+                    console.warn('Не удалось сохранить handle файлов:', err);
+                }
+                await processFiles(resolvedFiles);
+            }
+        };
+        return () => {
+            delete window.__receiveProductionFiles;
+            delete window.__receiveProductionHandles;
+        };
+    }, [processFiles]);
+
+    // Слушатель сообщений от окна выбора файлов (fallback)
+    useEffect(() => {
+        const onMessage = async (event) => {
+            if (event.origin !== window.location.origin) return;
+            const { type, handles, files } = event.data || {};
+            if (type === 'productionFileHandles' && Array.isArray(handles)) {
+                setFileHandles(handles);
+                const resolvedFiles = await readFilesFromHandles(handles);
+                if (resolvedFiles.length > 0) {
+                    // Создаем snapshots для новых файлов
+                    const snapshots = new Map();
+                    resolvedFiles.forEach((file) => {
+                        snapshots.set(file.name, file.lastModified);
+                    });
+                    fileSnapshotsRef.current = snapshots;
+                    try {
+                        await saveFileHandles(handles, Object.fromEntries(snapshots));
+                    } catch (err) {
+                        console.warn('Не удалось сохранить handle файлов:', err);
+                    }
+                    await processFiles(resolvedFiles);
+                }
+            } else if (type === 'productionFiles' && Array.isArray(files)) {
+                await processFiles(files);
+            }
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, [processFiles]);
+
+    // Фоновая проверка изменений файлов
+    useEffect(() => {
+        if (!fileHandles || fileHandles.length === 0) return;
+        const intervalId = setInterval(() => {
+            checkForUpdates().catch((err) => console.warn('Ошибка проверки обновлений:', err));
+        }, 30000);
+        return () => clearInterval(intervalId);
+    }, [fileHandles, checkForUpdates]);
+
     // Загрузка данных из localStorage при монтировании
     useEffect(() => {
         const stored = localStorage.getItem(STORAGE_KEY);
@@ -468,6 +890,18 @@ const ProductionView = () => {
         }
     }, [isDowntimeSelectorOpen]);
 
+    // Добавляем CSS анимацию для пирога
+    useEffect(() => {
+        const style = document.createElement('style');
+        style.textContent = '@keyframes pieGrow { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }';
+        document.head.appendChild(style);
+        return () => {
+            if (document.head.contains(style)) {
+                document.head.removeChild(style);
+            }
+        };
+    }, []);
+
     return (
         <div className="h-full flex flex-col bg-slate-50">
             <div className="bg-white border-b border-slate-200 px-6 py-4 flex-shrink-0">
@@ -483,13 +917,38 @@ const ProductionView = () => {
                             </div>
                         </div>
                     </div>
-                    <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
-                    >
-                        <FileUp size={16} />
-                        Загрузить Excel
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={openFilePickerWindow}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200 transition-colors"
+                        >
+                            <FileUp size={16} />
+                            Выбрать файлы
+                        </button>
+                        <span
+                            title={
+                                fileHandles.length === 0
+                                    ? 'Файлы не выбраны для фонового опроса'
+                                    : `Опрос каждые 30с. Последняя проверка: ${
+                                        pollState.lastCheck
+                                            ? new Date(pollState.lastCheck).toLocaleTimeString()
+                                            : 'еще не было'
+                                    }`
+                            }
+                            className={`inline-flex h-2.5 w-2.5 rounded-full ${
+                                fileHandles.length === 0
+                                    ? 'bg-slate-300'
+                                    : 'bg-green-500'
+                            } ${pollState.inProgress ? 'animate-pulse' : ''}`}
+                        />
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+                        >
+                            <FileUp size={16} />
+                            Загрузить Excel
+                        </button>
+                    </div>
                     <input
                         ref={fileInputRef}
                         type="file"
@@ -663,6 +1122,16 @@ const ProductionView = () => {
                             >
                                 <BarChart3 size={16} />
                                 Графики
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('lines')}
+                                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
+                                    activeTab === 'lines'
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                }`}
+                            >
+                                Линии
                             </button>
                         </div>
                         <div className="flex-1 overflow-auto">
@@ -1241,6 +1710,197 @@ const ProductionView = () => {
                                                 </div>
                                             </div>
                                         </>
+                                    )}
+                                </div>
+                            )}
+                            {activeTab === 'lines' && (
+                                <div className="p-6 space-y-6">
+                                    {!filterDate ? (
+                                        <div className="text-center py-12 text-slate-400">
+                                            <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
+                                            <p className="text-lg font-medium">Выберите дату</p>
+                                            <p className="text-sm mt-2">Для просмотра линий выберите дату в фильтре</p>
+                                        </div>
+                                    ) : lineSlides.length === 0 ? (
+                                        <div className="text-center py-12 text-slate-400">
+                                            <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
+                                            <p className="text-lg font-medium">Нет линий на выбранную дату</p>
+                                        </div>
+                                    ) : (
+                                        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                                            <div className="flex items-center justify-between mb-6">
+                                                <div>
+                                                    <h3 className="text-lg font-bold text-slate-800">Линия: {lineSlides[lineSlideIndex]?.line}</h3>
+                                                    <div className="text-xs text-slate-500">Дата: {filterDate}</div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={() => setLineSlideIndex((prev) => Math.max(0, prev - 1))}
+                                                        className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+                                                        disabled={lineSlideIndex === 0}
+                                                    >
+                                                        Назад
+                                                    </button>
+                                                    <div className="text-sm text-slate-500">
+                                                        {lineSlideIndex + 1} / {lineSlides.length}
+                                                    </div>
+                                                    <button
+                                                        onClick={() => setLineSlideIndex((prev) => Math.min(lineSlides.length - 1, prev + 1))}
+                                                        className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+                                                        disabled={lineSlideIndex >= lineSlides.length - 1}
+                                                    >
+                                                        Вперёд
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div
+                                                className={`transition-opacity duration-500 ease-out ${
+                                                    isLineSlideVisible ? 'opacity-100' : 'opacity-0'
+                                                }`}
+                                            >
+                                                <div className="grid grid-cols-1 lg:grid-cols-[480px_1fr] gap-8">
+                                                    <div className="flex flex-col items-center">
+                                                        <div className="relative h-96 w-96">
+                                                            <div
+                                                                key={`pie-${lineSlideIndex}-${filterDate}`}
+                                                                className="h-96 w-96 rounded-full border border-slate-200 shadow-sm"
+                                                                style={{ 
+                                                                    background: buildConicGradient(lineSlides[lineSlideIndex]?.segments || []),
+                                                                    animation: 'pieGrow 1.2s ease-out'
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <div className="mt-4 text-lg font-medium text-slate-600">
+                                                            Простои по категориям (мин)
+                                                        </div>
+                                                        
+                                                        {/* План / Факт / Эффективность */}
+                                                        <div className="mt-6 w-full max-w-md">
+                                                            <div className="grid grid-cols-3 gap-3">
+                                                                <div className="bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 rounded-xl p-4 text-center shadow-sm">
+                                                                    <div className="text-xs font-medium text-blue-600 mb-1">План</div>
+                                                                    <div className="text-2xl font-bold text-blue-700">
+                                                                        {lineSlides[lineSlideIndex]?.plan?.toLocaleString() || 0}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200 rounded-xl p-4 text-center shadow-sm">
+                                                                    <div className="text-xs font-medium text-purple-600 mb-1">Факт</div>
+                                                                    <div className="text-2xl font-bold text-purple-700">
+                                                                        {lineSlides[lineSlideIndex]?.fact?.toLocaleString() || 0}
+                                                                    </div>
+                                                                </div>
+                                                                <div className={`bg-gradient-to-br border rounded-xl p-4 text-center shadow-sm ${
+                                                                    (lineSlides[lineSlideIndex]?.efficiency || 0) >= 95
+                                                                        ? 'from-green-50 to-green-100 border-green-200'
+                                                                        : (lineSlides[lineSlideIndex]?.efficiency || 0) >= 80
+                                                                        ? 'from-yellow-50 to-yellow-100 border-yellow-200'
+                                                                        : 'from-red-50 to-red-100 border-red-200'
+                                                                }`}>
+                                                                    <div className={`text-xs font-medium mb-1 ${
+                                                                        (lineSlides[lineSlideIndex]?.efficiency || 0) >= 95
+                                                                            ? 'text-green-600'
+                                                                            : (lineSlides[lineSlideIndex]?.efficiency || 0) >= 80
+                                                                            ? 'text-yellow-600'
+                                                                            : 'text-red-600'
+                                                                    }`}>
+                                                                        Эффективность
+                                                                    </div>
+                                                                    <div className={`text-2xl font-bold ${
+                                                                        (lineSlides[lineSlideIndex]?.efficiency || 0) >= 95
+                                                                            ? 'text-green-700'
+                                                                            : (lineSlides[lineSlideIndex]?.efficiency || 0) >= 80
+                                                                            ? 'text-yellow-700'
+                                                                            : 'text-red-700'
+                                                                    }`}>
+                                                                        {lineSlides[lineSlideIndex]?.efficiency || 0}%
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        {lineSlides[lineSlideIndex]?.downtimeList?.length ? (
+                                                            <div className="space-y-3">
+                                                                {lineSlides[lineSlideIndex].downtimeList.slice(0, 6).map((item) => (
+                                                                    <div key={item.category} className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                                                                        <div className="flex items-center justify-between text-lg">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <div className="w-4 h-4 rounded" style={{ backgroundColor: item.color }} />
+                                                                                <span className="text-slate-700 font-semibold">{item.category}</span>
+                                                                            </div>
+                                                                            <div className="flex flex-col items-end">
+                                                                                <span className="font-semibold text-slate-600 text-lg">{item.minutes} мин</span>
+                                                                                <span className="text-base text-slate-500 mt-0.5">
+                                                                                    {item.underproduction?.toLocaleString() || 0} шт
+                                                                                </span>
+                                                                            </div>
+                                                                        </div>
+                                                                        {item.descriptions?.length ? (
+                                                                            <div className="mt-2 text-base text-slate-600">
+                                                                                {item.descriptions.slice(0, 2).map((desc, idx) => (
+                                                                                    <div key={`${item.category}_${idx}`} className="truncate">• {desc}</div>
+                                                                                ))}
+                                                                                {item.descriptions.length > 2 && (
+                                                                                    <div className="text-sm text-slate-400">и еще {item.descriptions.length - 2}</div>
+                                                                                )}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div className="mt-2 text-base text-slate-400">Описание отсутствует</div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        ) : (
+                                                            <div className="text-base text-slate-400">Нет простоев</div>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Полоса как в графиках */}
+                                                <div className="mt-8">
+                                                    <div className="relative h-10 bg-slate-100 rounded-lg overflow-hidden border border-slate-200">
+                                                        {(() => {
+                                                            const slide = lineSlides[lineSlideIndex];
+                                                            const plan = slide?.plan || 0;
+                                                            const fact = slide?.fact || 0;
+                                                            const efficiencyPercent = plan > 0 ? Math.min(100, (fact / plan) * 100) : 0;
+                                                            const isGreen = efficiencyPercent >= 95;
+                                                            let leftOffset = efficiencyPercent;
+                                                            const totalDowntimePercent = (slide?.segments || []).reduce((sum, s) => sum + s.percent, 0);
+                                                            const maxDowntimePercent = Math.max(0, 100 - efficiencyPercent);
+                                                            const scale = totalDowntimePercent > maxDowntimePercent && totalDowntimePercent > 0
+                                                                ? maxDowntimePercent / totalDowntimePercent
+                                                                : 1;
+                                                            return (
+                                                                <>
+                                                                    <div
+                                                                        className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
+                                                                            isGreen ? 'bg-gradient-to-r from-green-400 to-green-500' : 'bg-gradient-to-r from-orange-400 to-orange-500'
+                                                                        }`}
+                                                                        style={{ width: `${efficiencyPercent}%` }}
+                                                                    />
+                                                                    {(slide?.segments || []).map((seg, idx) => {
+                                                                        const width = Math.min(seg.percent * scale, 100 - leftOffset);
+                                                                        const currentLeft = leftOffset;
+                                                                        if (width <= 0) return null;
+                                                                        leftOffset += width;
+                                                                        return (
+                                                                            <div
+                                                                                key={`${seg.category}_${idx}`}
+                                                                                className="absolute top-0 h-full border-r border-slate-300 transition-all duration-500"
+                                                                                style={{ left: `${currentLeft}%`, width: `${width}%`, backgroundColor: seg.color }}
+                                                                                title={`${seg.category}: ${seg.minutes} мин (${seg.percent.toFixed(1)}%)`}
+                                                                            />
+                                                                        );
+                                                                    })}
+                                                                </>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
                             )}
