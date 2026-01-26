@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -15,11 +15,13 @@ import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
 import RawDataView from './components/views/RawDataView';
+import ProductionView from './components/views/ProductionView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+    const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
 
     const {
         step,
@@ -55,6 +57,13 @@ export default function App() {
             // This effect will be handled by DashboardView if needed
         }
     }, [viewMode, selectedDate]);
+
+    useEffect(() => {
+        if (!isExtraMenuOpen) return;
+        const handleClickOutside = () => setIsExtraMenuOpen(false);
+        document.addEventListener('click', handleClickOutside);
+        return () => document.removeEventListener('click', handleClickOutside);
+    }, [isExtraMenuOpen]);
 
 
     const handleNewFile = () => {
@@ -194,18 +203,6 @@ export default function App() {
                                         </button>
                                     </div>
 
-                                    {/* Performance Monitoring Menu Item */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
-                                        <button
-                                            onClick={() => setViewMode('performance')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'performance' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
-                                        >
-                                            <Activity size={16} /> Мониторинг
-                                        </button>
-                                    </div>
-
                                     {/* Plans Menu Item */}
                                     <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
@@ -218,16 +215,63 @@ export default function App() {
                                         </button>
                                     </div>
 
-                                    {/* Raw Data Menu Item */}
+                                    {/* Production Menu Item */}
                                     <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
-                                            onClick={() => setViewMode('raw_data')}
+                                            onClick={() => setViewMode('production')}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'raw_data' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                                viewMode === 'production' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                                             }`}
                                         >
-                                            <Database size={16} /> Исходные данные
+                                            <Factory size={16} /> Производство
                                         </button>
+                                    </div>
+
+                                    {/* Extra Menu (Monitoring + Raw Data) */}
+                                    <div className="relative flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIsExtraMenuOpen((prev) => !prev);
+                                            }}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                                viewMode === 'performance' || viewMode === 'raw_data'
+                                                    ? 'bg-white text-blue-600 shadow-sm'
+                                                    : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            <Activity size={16} /> Дополнительно
+                                            <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
+                                        </button>
+                                        {isExtraMenuOpen && (
+                                            <div
+                                                className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-20 overflow-hidden"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('performance');
+                                                        setIsExtraMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'performance' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Activity size={16} /> Мониторинг
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('raw_data');
+                                                        setIsExtraMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'raw_data' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Database size={16} /> Исходные данные
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                                 {viewMode === 'dashboard' && (
@@ -258,6 +302,7 @@ export default function App() {
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
+                        {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'raw_data' && <RawDataView />}
                     </div>
                 </>

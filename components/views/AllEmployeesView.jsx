@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Users, Search, Edit3, Check, X, Calendar, Zap, AlertTriangle, Clock, ChevronDown, ChevronRight, CheckCircle2, XCircle, Filter } from 'lucide-react';
+import { Users, Search, Edit3, Check, X, Calendar, Zap, AlertTriangle, Clock, ChevronDown, ChevronRight, CheckCircle2, XCircle, Filter, Settings, Trash2, Plus } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
@@ -40,14 +40,35 @@ const AllEmployeesView = () => {
         'Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
         'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'
     ]);
+    const [showManageDepartments, setShowManageDepartments] = useState(false);
+    const [departmentMasterList, setDepartmentMasterList] = useState([]);
+    const [currentPage, setCurrentPage] = useState(1);
+    const PAGE_SIZE = 50;
+    const [isInitializing, setIsInitializing] = useState(true);
 
     const workerRef = useRef(null);
     const requestIdRef = useRef(0);
+    const isInitializingRef = useRef(true);
 
-    // Загружаем данные из localStorage при монтировании
+    // Загружаем данные из localStorage при монтировании (async для неблокирующей инициализации)
     useEffect(() => {
-        const saved = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-        setAllEmployees(saved);
+        // Use setTimeout to allow the browser to paint the loading state first
+        setTimeout(() => {
+            const saved = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
+            setAllEmployees(saved);
+            
+            // Load department master list
+            const masterList = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
+            if (masterList) {
+                setDepartmentMasterList(masterList);
+            } else {
+                // Initialize with defaults
+                const defaults = ['Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
+                                'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'];
+                setDepartmentMasterList(defaults);
+                saveToLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, defaults);
+            }
+        }, 0);
     }, []);
 
     // Синхронизируем данные из workerRegistry и factData
@@ -196,11 +217,23 @@ const AllEmployeesView = () => {
         worker.onmessage = (e) => {
             const { requestId, result } = e.data || {};
             if (requestId !== requestIdRef.current) return;
-            if (result) setWorkerResult(result);
+            if (result) {
+                setWorkerResult(result);
+                // Clear initialization state after first successful result
+                if (isInitializingRef.current) {
+                    isInitializingRef.current = false;
+                    setIsInitializing(false);
+                }
+            }
             setIsCalculating(false);
         };
         worker.onerror = () => {
             setIsCalculating(false);
+            // Clear initialization state on error
+            if (isInitializingRef.current) {
+                isInitializingRef.current = false;
+                setIsInitializing(false);
+            }
         };
         return () => {
             worker.terminate();
@@ -218,16 +251,102 @@ const AllEmployeesView = () => {
                 workerRegistry: workerRegistryLite,
                 factData,
                 savedPlans,
-                allEmployees,
-                search: debouncedSearch,
-                filterRole,
-                filterBrigade,
-                filterStatus
+                allEmployees
             }
         });
-    }, [workerRegistryLite, factData, savedPlans, allEmployees, debouncedSearch, filterRole, filterBrigade, filterStatus]);
+    }, [workerRegistryLite, factData, savedPlans, allEmployees]);
 
-    const { employeesWithStats, filteredEmployees, filterCounts, allRoles } = workerResult;
+    const { employeesWithStats = [], allRoles = [] } = workerResult;
+
+    // Client-side filtering with useMemo
+    const filteredEmployees = useMemo(() => {
+        if (!employeesWithStats || employeesWithStats.length === 0) return [];
+        
+        const searchLower = debouncedSearch.toLowerCase();
+        return employeesWithStats.filter(emp => {
+            // Search filter
+            if (searchLower && !(
+                emp.name.toLowerCase().includes(searchLower) ||
+                emp.role.toLowerCase().includes(searchLower) ||
+                (emp.department || '').toLowerCase().includes(searchLower)
+            )) return false;
+            
+            // Role filter
+            if (filterRole !== 'all' && emp.role !== filterRole) return false;
+            
+            // Brigade filter
+            if (filterBrigade !== 'all') {
+                const hasBrigade = emp.events?.some(event => 
+                    event.planInfo && event.planInfo.shiftId === filterBrigade
+                );
+                if (!hasBrigade) return false;
+            }
+            
+            // Status filter
+            if (filterStatus !== 'all') {
+                switch (filterStatus) {
+                    case 'errors':
+                        if (emp.errorCount === 0) return false;
+                        break;
+                    case 'rv':
+                        if (emp.rvCount === 0) return false;
+                        break;
+                    case 'working':
+                        if (emp.shiftsCount === 0) return false;
+                        break;
+                    case 'idle':
+                        if (emp.shiftsCount > 0 || emp.events?.some(e => e.factInfo)) return false;
+                        break;
+                }
+            }
+            
+            return true;
+        });
+    }, [employeesWithStats, debouncedSearch, filterRole, filterBrigade, filterStatus]);
+
+    const filterCounts = useMemo(() => {
+        const roles = {};
+        const brigades = { '1': 0, '2': 0, '3': 0, '4': 0 };
+        const statuses = { errors: 0, rv: 0, working: 0, idle: 0 };
+        
+        filteredEmployees.forEach(emp => {
+            if (emp.role && emp.role !== 'Не указано') {
+                roles[emp.role] = (roles[emp.role] || 0) + 1;
+            }
+            
+            ['1', '2', '3', '4'].forEach(brigadeId => {
+                if (emp.events?.some(e => e.planInfo?.shiftId === brigadeId)) {
+                    brigades[brigadeId]++;
+                }
+            });
+            
+            if (emp.errorCount > 0) statuses.errors++;
+            if (emp.rvCount > 0) statuses.rv++;
+            if (emp.shiftsCount > 0) statuses.working++;
+            if (emp.shiftsCount === 0 && !emp.events?.some(e => e.factInfo)) statuses.idle++;
+        });
+        
+        return {
+            roles,
+            brigades,
+            statuses,
+            total: filteredEmployees.length
+        };
+    }, [filteredEmployees]);
+
+    // Reset pagination when filters change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [debouncedSearch, filterRole, filterBrigade, filterStatus]);
+
+    // Pagination logic
+    const paginatedEmployees = useMemo(() => {
+        const start = (currentPage - 1) * PAGE_SIZE;
+        const end = start + PAGE_SIZE;
+        return filteredEmployees.slice(start, end);
+    }, [filteredEmployees, currentPage]);
+
+    const totalPages = Math.ceil(filteredEmployees.length / PAGE_SIZE);
 
     const hasActiveFilters = filterRole !== 'all' || filterBrigade !== 'all' || filterStatus !== 'all';
 
@@ -255,6 +374,136 @@ const AllEmployeesView = () => {
         }
     };
 
+    const ManageDepartmentsModal = ({ isOpen, onClose, masterList, onUpdate }) => {
+        const [departments, setDepartments] = useState([]);
+        const [newDeptInput, setNewDeptInput] = useState('');
+
+        useEffect(() => {
+            if (isOpen) {
+                setDepartments([...masterList]);
+                setNewDeptInput('');
+            }
+        }, [isOpen, masterList]);
+
+        const handleAdd = () => {
+            const trimmed = newDeptInput.trim();
+            if (trimmed && !departments.includes(trimmed)) {
+                const updated = [...departments, trimmed].sort();
+                setDepartments(updated);
+                setNewDeptInput('');
+                onUpdate(updated);
+            }
+        };
+
+        const handleDelete = (deptToDelete) => {
+            const updated = departments.filter(d => d !== deptToDelete);
+            setDepartments(updated);
+            onUpdate(updated);
+        };
+
+        if (!isOpen) return null;
+
+        return (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh]">
+                    <div className="bg-blue-50 px-6 py-4 border-b border-blue-100 flex justify-between items-center">
+                        <div>
+                            <h3 className="font-bold text-lg text-blue-800 flex items-center gap-2">
+                                <Settings size={20} /> Управление отделениями
+                            </h3>
+                            <p className="text-xs text-blue-600 mt-1">Добавьте или удалите отделения из списка</p>
+                        </div>
+                        <button onClick={onClose} className="text-blue-400 hover:text-blue-600 transition-colors">
+                            <X size={20} />
+                        </button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-6">
+                        <div className="mb-6">
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                                Добавить новое отделение
+                            </label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    value={newDeptInput}
+                                    onChange={(e) => setNewDeptInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            handleAdd();
+                                        }
+                                    }}
+                                    placeholder="Введите название отделения"
+                                    className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
+                                <button
+                                    onClick={handleAdd}
+                                    disabled={!newDeptInput.trim() || departments.includes(newDeptInput.trim())}
+                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                                >
+                                    <Plus size={16} /> Добавить
+                                </button>
+                            </div>
+                            {newDeptInput.trim() && departments.includes(newDeptInput.trim()) && (
+                                <p className="text-xs text-red-500 mt-1">Это отделение уже существует</p>
+                            )}
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                                Список отделений ({departments.length})
+                            </label>
+                            {departments.length === 0 ? (
+                                <div className="text-center py-8 text-slate-400 text-sm">
+                                    Нет отделений. Добавьте первое отделение выше.
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {departments.map((dept) => (
+                                        <div
+                                            key={dept}
+                                            className="flex items-center justify-between px-4 py-3 bg-slate-50 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors"
+                                        >
+                                            <span className="text-sm font-medium text-slate-700">{dept}</span>
+                                            <button
+                                                onClick={() => handleDelete(dept)}
+                                                className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                                                title="Удалить отделение"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="bg-slate-50 px-6 py-4 border-t border-slate-200 flex justify-end rounded-b-2xl">
+                        <button
+                            onClick={onClose}
+                            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors shadow-sm"
+                        >
+                            Закрыть
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+
+    // Show loading spinner during initialization
+    if (isInitializing) {
+        return (
+            <div className="h-full flex flex-col bg-slate-50 items-center justify-center">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="h-12 w-12 animate-spin rounded-full border-4 border-slate-300 border-t-blue-600" />
+                    <p className="text-slate-600 font-medium">Загрузка данных...</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="h-full flex flex-col bg-slate-50">
@@ -337,6 +586,14 @@ const AllEmployeesView = () => {
                                 Сбросить
                             </button>
                         )}
+                        
+                        {/* Кнопка управления отделениями */}
+                        <button
+                            onClick={() => setShowManageDepartments(true)}
+                            className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 border border-blue-200"
+                        >
+                            <Settings size={16} /> Управление отделениями
+                        </button>
                     </div>
                 </div>
                 {isCalculating && (
@@ -356,7 +613,7 @@ const AllEmployeesView = () => {
                                     : 'Ничего не найдено'}
                         </div>
                     ) : (
-                        filteredEmployees.map(emp => {
+                        paginatedEmployees.map(emp => {
                             const normName = normalizeName(emp.name);
                             const isExpanded = expandedEmployees.has(normName);
                             const isEditing = editingDepartment === normName;
@@ -547,8 +804,45 @@ const AllEmployeesView = () => {
                             );
                         })
                     )}
+                    {filteredEmployees.length > PAGE_SIZE && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mt-4 flex items-center justify-between">
+                            <div className="text-sm text-slate-600">
+                                Показано {((currentPage - 1) * PAGE_SIZE) + 1} - {Math.min(currentPage * PAGE_SIZE, filteredEmployees.length)} из {filteredEmployees.length}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                                    disabled={currentPage === 1}
+                                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                                >
+                                    Назад
+                                </button>
+                                <span className="px-4 py-2 text-sm font-medium text-slate-700">
+                                    Страница {currentPage} из {totalPages}
+                                </span>
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                                    disabled={currentPage === totalPages}
+                                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                                >
+                                    Вперед
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
+            {showManageDepartments && (
+                <ManageDepartmentsModal
+                    isOpen={showManageDepartments}
+                    onClose={() => setShowManageDepartments(false)}
+                    masterList={departmentMasterList}
+                    onUpdate={(updated) => {
+                        setDepartmentMasterList(updated);
+                        saveToLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, updated);
+                    }}
+                />
+            )}
         </div>
     );
 };

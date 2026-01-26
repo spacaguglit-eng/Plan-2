@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle } from 'lucide-react';
+import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle, Edit3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
@@ -40,6 +40,10 @@ const VerificationView = () => {
     const scrollRef = useRef(null);
     const [scrollTop, setScrollTop] = useState(0);
     const [viewportHeight, setViewportHeight] = useState(600);
+    const [editingDepartment, setEditingDepartment] = useState(null);
+    const [departmentInput, setDepartmentInput] = useState('');
+    const originalDepartmentRef = useRef(null);
+    const [departmentMasterList, setDepartmentMasterList] = useState([]);
 
     // Загружаем данные об отделениях из localStorage
     useEffect(() => {
@@ -47,10 +51,22 @@ const VerificationView = () => {
         const saved = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
         setAllEmployeesData(saved);
         
+        // Load department master list
+        const masterList = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
+        if (masterList) {
+            setDepartmentMasterList(masterList);
+        }
+        
         const handleStorageChange = (e) => {
             if (e.key === STORAGE_KEYS.ALL_EMPLOYEES && isMountedRef.current) {
                 const updated = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
                 setAllEmployeesData(updated);
+            }
+            if (e.key === STORAGE_KEYS.DEPARTMENT_MASTER_LIST && isMountedRef.current) {
+                const updated = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
+                if (updated) {
+                    setDepartmentMasterList(updated);
+                }
             }
         };
         
@@ -127,93 +143,228 @@ const VerificationView = () => {
                 const ws = wb.Sheets[wsname];
                 const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-                let dateRowIndex = -1;
-                let foundDates = [];
-
-                for (let i = 0; i < Math.min(10, data.length); i++) {
-                    const row = data[i];
-                    const datesInRow = [];
+                // Initialize storage: { "Employee Name": { "Date": "Raw Value" } }
+                const dataStore = {};
+                
+                // State variable: current date map { column_index: date_string }
+                let currentDateMap = {};
+                
+                // Set to track all unique dates found
+                const allDatesSet = new Set();
+                
+                // Date regex pattern (DD.MM.YYYY format)
+                const dateRegex = /^\d{2}\.\d{2}\.\d{4}$/;
+                
+                // Helper function to check if row should be skipped
+                const isGarbageRow = (row) => {
+                    if (!row || row.length === 0) return true;
+                    const firstFewCells = row.slice(0, 5).join(' ').toLowerCase();
+                    return firstFewCells.includes('отчет') || 
+                           firstFewCells.includes('период с') || 
+                           firstFewCells.includes('страница');
+                };
+                
+                // Helper function to detect date header row and rebuild currentDateMap
+                const detectDateHeader = (row) => {
+                    const dateMap = {};
+                    
                     row.forEach((cell, colIdx) => {
-                        if (typeof cell === 'string' && cell.match(/^\d{2}\.\d{2}\.\d{4}$/)) {
-                            datesInRow.push({ date: cell, colIdx });
+                        if (typeof cell === 'string') {
+                            const trimmed = cell.trim();
+                            if (dateRegex.test(trimmed)) {
+                                dateMap[colIdx] = trimmed;
+                                allDatesSet.add(trimmed);
+                            }
                         }
                     });
-                    if (datesInRow.length > 0) {
-                        dateRowIndex = i;
-                        foundDates = datesInRow;
-                        break;
+                    
+                    // Only update if we found at least one date
+                    if (Object.keys(dateMap).length > 0) {
+                        currentDateMap = dateMap;
+                        return true;
+                    }
+                    return false;
+                };
+                
+                // Helper function to detect employee row
+                // Employee row: starts with integer (sequence number) and has name in ФИО column
+                const detectEmployeeRow = (row) => {
+                    if (!row || row.length < 5) return null;
+                    
+                    // Find first non-empty cell that is an integer (sequence number)
+                    let seqNumFound = false;
+                    for (let i = 0; i < Math.min(3, row.length); i++) {
+                        const cell = String(row[i] || '').trim();
+                        if (cell && /^\d+$/.test(cell)) {
+                            seqNumFound = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!seqNumFound) return null;
+                    
+                    // Look for name in columns 2-6 (ФИО column is typically around index 4-5)
+                    let name = null;
+                    for (let i = 2; i < Math.min(7, row.length); i++) {
+                        const cell = String(row[i] || '').trim();
+                        // Name should be a string with reasonable length (at least 3 chars)
+                        if (cell && cell.length >= 3 && !dateRegex.test(cell) && !/^\d+$/.test(cell)) {
+                            // Additional check: name should contain letters
+                            if (/[а-яА-Яa-zA-Z]/.test(cell)) {
+                                name = cell;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    return name || null;
+                };
+                
+                // Main parsing loop
+                for (let i = 0; i < data.length; i++) {
+                    const row = data[i];
+                    
+                    // Skip garbage rows
+                    if (isGarbageRow(row)) {
+                        continue;
+                    }
+                    
+                    // Try to detect date header row
+                    if (detectDateHeader(row)) {
+                        // Date header detected, currentDateMap updated
+                        continue;
+                    }
+                    
+                    // Try to detect employee row
+                    const employeeName = detectEmployeeRow(row);
+                    if (employeeName) {
+                        // This is an employee row, extract data for all dates in currentDateMap
+                        const normName = normalizeName(employeeName);
+                        
+                        // Initialize employee entry if not exists
+                        if (!dataStore[normName]) {
+                            dataStore[normName] = { rawName: employeeName, dates: {} };
+                        }
+                        
+                        // Extract time values for each date column
+                        Object.entries(currentDateMap).forEach(([colIdxStr, date]) => {
+                            const colIdx = parseInt(colIdxStr, 10);
+                            if (colIdx < row.length) {
+                                const timeVal = row[colIdx];
+                                
+                                // Only update if value is not empty and not "нет"
+                                if (timeVal !== null && timeVal !== undefined && timeVal !== '') {
+                                    const timeStr = String(timeVal).trim().toLowerCase();
+                                    if (timeStr !== 'нет' && timeStr.length > 0) {
+                                        // Merge: if date already has a value, keep the existing one
+                                        // (or you could prefer newer/older based on requirements)
+                                        if (!dataStore[normName].dates[date] || dataStore[normName].dates[date] === '') {
+                                            dataStore[normName].dates[date] = String(timeVal);
+                                        }
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
-
-                if (dateRowIndex === -1) {
+                
+                // Check if we found any dates
+                if (allDatesSet.size === 0) {
                     alert('Не удалось найти даты в файле (формат ДД.ММ.ГГГГ)');
                     setIsLoading(false);
                     return;
                 }
-
+                
+                // Convert dataStore to parsedFact format
                 const parsedFact = {};
-                foundDates.forEach(d => parsedFact[d.date] = {});
-
-                const timelineData = {};
-
-                for (let i = dateRowIndex + 1; i < data.length; i++) {
-                    const row = data[i];
-                    let name = row[3];
-                    if (!name || name.length < 5) name = row[2];
-
-                    if (name && typeof name === 'string' && name.length > 3) {
-                        const normName = normalizeName(name);
-
-                        if (!timelineData[normName]) {
-                            timelineData[normName] = { rawName: name, events: [] };
-                        }
-
-                        foundDates.forEach(({ date, colIdx }) => {
-                            const timeVal = row[colIdx];
-                            timelineData[normName].events.push({ date, val: timeVal });
-                        });
-                    }
-                }
-
-                Object.values(timelineData).forEach(({ rawName, events }) => {
+                const allDates = Array.from(allDatesSet).sort();
+                
+                // Initialize parsedFact for all dates
+                allDates.forEach(date => {
+                    parsedFact[date] = {};
+                });
+                
+                // Process each employee's data
+                Object.values(dataStore).forEach(({ rawName, dates }) => {
                     const normName = normalizeName(rawName);
+                    const timelineData = [];
+                    
+                    // Collect all events for this employee
+                    Object.entries(dates).forEach(([date, val]) => {
+                        timelineData.push({ date, val });
+                    });
+                    
+                    // Sort events by date
+                    timelineData.sort((a, b) => {
+                        const [dA, mA, yA] = a.date.split('.').map(Number);
+                        const [dB, mB, yB] = b.date.split('.').map(Number);
+                        const dateA = new Date(yA, mA - 1, dA);
+                        const dateB = new Date(yB, mB - 1, dB);
+                        return dateA - dateB;
+                    });
+                    
+                    // Process events with overnight shift handling
                     let pendingShift = null;
-
-                    events.forEach((event) => {
+                    
+                    timelineData.forEach((event) => {
                         const { date, val } = event;
                         const { inTime, outTime } = parseCellStrict(val);
-
+                        
                         if (!parsedFact[date]) parsedFact[date] = {};
-
+                        
+                        // If we have a pending shift (from previous day), check if this day has the exit
                         if (pendingShift) {
-                            let exitForNightShift = outTime;
-
-                            if (exitForNightShift) {
+                            if (outTime) {
+                                // This is the exit for the pending night shift
                                 const shiftDate = pendingShift.date;
                                 if (!parsedFact[shiftDate]) parsedFact[shiftDate] = {};
-
+                                
                                 parsedFact[shiftDate][normName] = {
                                     rawName,
-                                    time: `${pendingShift.time} → ${exitForNightShift} (+1)`,
-                                    cleanTime: `${pendingShift.time} → ${exitForNightShift} (+1)`,
+                                    time: `${pendingShift.time} → ${outTime} (+1)`,
+                                    cleanTime: `${pendingShift.time} → ${outTime} (+1)`,
                                     entryTime: pendingShift.time,
                                     exitTime: null,
                                     hasOvernightShift: true,
-                                    nextDayExit: exitForNightShift,
+                                    nextDayExit: outTime,
                                     nextDayDate: date,
                                     primaryDate: shiftDate
                                 };
-
+                                
                                 pendingShift = null;
-                            }
-
-                            if (inTime) {
+                                
+                                // If there's also an entry time on this day, process it
+                                if (inTime) {
+                                    // New entry on the same day - start new pending shift
+                                    pendingShift = { time: inTime, date: date };
+                                    parsedFact[date][normName] = {
+                                        rawName,
+                                        time: `Вход: ${inTime}...`,
+                                        cleanTime: `Вход: ${inTime}`,
+                                        entryTime: inTime,
+                                        exitTime: null,
+                                        hasOvernightShift: true
+                                    };
+                                }
+                            } else if (inTime) {
+                                // No exit found for pending shift, but there's a new entry - start new shift
+                                // Keep the old pending shift for now (might be incomplete data)
                                 pendingShift = { time: inTime, date: date };
+                                parsedFact[date][normName] = {
+                                    rawName,
+                                    time: `Вход: ${inTime}...`,
+                                    cleanTime: `Вход: ${inTime}`,
+                                    entryTime: inTime,
+                                    exitTime: null,
+                                    hasOvernightShift: true
+                                };
                             }
                             return;
                         }
-
+                        
+                        // Normal processing (no pending shift)
                         if (inTime && outTime) {
+                            // Complete shift: entry and exit on same day
                             parsedFact[date][normName] = {
                                 rawName,
                                 time: `${inTime} → ${outTime}`,
@@ -224,8 +375,9 @@ const VerificationView = () => {
                             };
                             pendingShift = null;
                         } else if (inTime && !outTime) {
+                            // Entry only - might be overnight shift
                             pendingShift = { time: inTime, date: date };
-
+                            
                             parsedFact[date][normName] = {
                                 rawName,
                                 time: `Вход: ${inTime}...`,
@@ -237,19 +389,45 @@ const VerificationView = () => {
                         }
                     });
                 });
-
+                
                 setFactData(parsedFact);
-                const dates = foundDates.map(d => d.date);
-                setFactDates(dates);
-
+                setFactDates(allDates);
+                
                 saveToLocalStorage(STORAGE_KEYS.FACT_DATA, parsedFact);
-                saveToLocalStorage(STORAGE_KEYS.FACT_DATES, dates);
-
-                if (dates.length > 0) setSelectedDate(dates[0]);
+                saveToLocalStorage(STORAGE_KEYS.FACT_DATES, allDates);
+                
+                // Sync employees from SCUD data to allEmployeesData
+                const currentEmployees = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
+                let employeesUpdated = false;
+                
+                Object.values(parsedFact).forEach(dateData => {
+                    if (!dateData || typeof dateData !== 'object') return;
+                    Object.values(dateData).forEach(entry => {
+                        if (entry && entry.rawName) {
+                            const normName = normalizeName(entry.rawName);
+                            if (!currentEmployees[normName]) {
+                                currentEmployees[normName] = {
+                                    name: entry.rawName,
+                                    role: 'Не указано',
+                                    department: '',
+                                    source: 'СКУД'
+                                };
+                                employeesUpdated = true;
+                            }
+                        }
+                    });
+                });
+                
+                if (employeesUpdated) {
+                    saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, currentEmployees);
+                    setAllEmployeesData(currentEmployees);
+                }
+                
+                if (allDates.length > 0) setSelectedDate(allDates[0]);
 
             } catch (err) {
                 console.error(err);
-                alert('Ошибка чтения файла');
+                alert('Ошибка чтения файла: ' + (err.message || 'неизвестная ошибка'));
             } finally {
                 setIsLoading(false);
             }
@@ -657,8 +835,57 @@ const VerificationView = () => {
                 deptSet.add(r.department);
             }
         });
+        // Also include departments from allEmployeesData
+        Object.values(allEmployeesData).forEach(emp => {
+            if (emp.department) {
+                deptSet.add(emp.department);
+            }
+        });
         return Array.from(deptSet).sort();
-    }, [comparisonResult]);
+    }, [comparisonResult, allEmployeesData]);
+
+    const departmentSuggestions = useMemo(() => {
+        const defaults = [
+            'Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
+            'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'
+        ];
+        const suggestions = [...(departmentMasterList.length > 0 ? departmentMasterList : defaults)];
+        // Add existing departments from data for backward compatibility
+        departments.forEach(dept => {
+            if (!suggestions.includes(dept)) {
+                suggestions.push(dept);
+            }
+        });
+        return suggestions.sort();
+    }, [departments, departmentMasterList]);
+
+    const handleDepartmentChange = useCallback((employeeName, newDepartment) => {
+        const normName = normalizeName(employeeName);
+        // If input is empty and we have an original value, restore it; otherwise use the new value
+        const finalDepartment = newDepartment.trim() || (originalDepartmentRef.current || '');
+        setAllEmployeesData(prev => {
+            const updated = {
+                ...prev,
+                [normName]: {
+                    ...(prev[normName] || { name: employeeName }),
+                    department: finalDepartment
+                }
+            };
+            saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, updated);
+            return updated;
+        });
+        setEditingDepartment(null);
+        setDepartmentInput('');
+        originalDepartmentRef.current = null;
+    }, []);
+
+    const startEditingDepartment = useCallback((employeeName, currentDepartment) => {
+        setEditingDepartment(employeeName);
+        // Store original value for potential restore
+        originalDepartmentRef.current = currentDepartment || '';
+        // Clear input initially to show all options in datalist
+        setDepartmentInput('');
+    }, []);
 
     const stats = {
         total: comparisonResult.length,
@@ -790,13 +1017,14 @@ const VerificationView = () => {
                                     <th className="px-6 py-3 border-b">Сотрудник</th>
                                     <th className="px-6 py-3 border-b">План (Смена)</th>
                                     <th className="px-6 py-3 border-b">Факт (Время)</th>
+                                    <th className="px-6 py-3 border-b">Отделение</th>
                                     <th className="px-6 py-3 border-b text-center">Статус</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {windowedData.paddingTop > 0 && (
                                     <tr>
-                                        <td colSpan={4} style={{ height: windowedData.paddingTop, padding: 0, border: 0 }} />
+                                        <td colSpan={5} style={{ height: windowedData.paddingTop, padding: 0, border: 0 }} />
                                     </tr>
                                 )}
                                 {visibleData.type === 'grouped' ? (
@@ -804,7 +1032,7 @@ const VerificationView = () => {
                                         if (item.type === 'header') {
                                             return (
                                                 <tr key={`header-${item.department}`} className="bg-slate-100 sticky top-0 z-20">
-                                                    <td colSpan={4} className="px-6 py-2">
+                                                    <td colSpan={5} className="px-6 py-2">
                                                         <div className="flex items-center gap-2">
                                                             <span className="font-bold text-slate-700 text-sm">
                                                                 {item.department === 'Нераспределенные' ? '⚠️ Нераспределенные' : `📁 ${item.department}`}
@@ -873,6 +1101,69 @@ const VerificationView = () => {
                                                         <span className="text-slate-400 italic">Нет данных</span>
                                                     )}
                                                 </td>
+                                                <td className="px-6 py-3">
+                                                    {editingDepartment === row.name ? (
+                                                        <div className="flex items-center gap-2">
+                                                            <input
+                                                                type="text"
+                                                                list={`dept-list-${row.name}`}
+                                                                value={departmentInput}
+                                                                onChange={e => setDepartmentInput(e.target.value)}
+                                                                onBlur={() => handleDepartmentChange(row.name, departmentInput)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'Enter') {
+                                                                        handleDepartmentChange(row.name, departmentInput);
+                                                                    } else if (e.key === 'Escape') {
+                                                                        setEditingDepartment(null);
+                                                                        setDepartmentInput('');
+                                                                        originalDepartmentRef.current = null;
+                                                                    }
+                                                                }}
+                                                                className="px-2 py-1 border border-blue-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none w-40"
+                                                                autoFocus
+                                                            />
+                                                            <datalist id={`dept-list-${row.name}`}>
+                                                                {departmentSuggestions.map(dept => (
+                                                                    <option key={dept} value={dept} />
+                                                                ))}
+                                                            </datalist>
+                                                            <button
+                                                                onClick={() => handleDepartmentChange(row.name, departmentInput)}
+                                                                className="p-1 text-green-600 hover:bg-green-50 rounded"
+                                                                title="Сохранить"
+                                                            >
+                                                                <CheckCircle2 size={14} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => {
+                                                                    setEditingDepartment(null);
+                                                                    setDepartmentInput('');
+                                                                    originalDepartmentRef.current = null;
+                                                                }}
+                                                                className="p-1 text-red-600 hover:bg-red-50 rounded"
+                                                                title="Отмена"
+                                                            >
+                                                                <X size={14} />
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={row.department ? 'text-slate-700' : 'text-slate-300 italic'}>
+                                                                {row.department || 'Не указано'}
+                                                            </span>
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    startEditingDepartment(row.name, row.department);
+                                                                }}
+                                                                className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                                                title="Редактировать отделение"
+                                                            >
+                                                                <Edit3 size={14} />
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </td>
                                                 <td className="px-6 py-3 text-center">{statusBadge}</td>
                                             </tr>
                                         );
@@ -935,6 +1226,69 @@ const VerificationView = () => {
                                                         <span className="text-slate-300">—</span>
                                                     )}
                                                 </td>
+                                                <td className="px-6 py-3">
+                                                    {editingDepartment === row.name ? (
+                                                        <div className="flex items-center gap-2">
+                                                            <input
+                                                                type="text"
+                                                                list={`dept-list-flat-${i}`}
+                                                                value={departmentInput}
+                                                                onChange={e => setDepartmentInput(e.target.value)}
+                                                                onBlur={() => handleDepartmentChange(row.name, departmentInput)}
+                                                                onKeyDown={e => {
+                                                                    if (e.key === 'Enter') {
+                                                                        handleDepartmentChange(row.name, departmentInput);
+                                                                    } else if (e.key === 'Escape') {
+                                                                        setEditingDepartment(null);
+                                                                        setDepartmentInput('');
+                                                                        originalDepartmentRef.current = null;
+                                                                    }
+                                                                }}
+                                                                className="px-2 py-1 border border-blue-300 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none w-40"
+                                                                autoFocus
+                                                            />
+                                                            <datalist id={`dept-list-flat-${i}`}>
+                                                                {departmentSuggestions.map(dept => (
+                                                                    <option key={dept} value={dept} />
+                                                                ))}
+                                                            </datalist>
+                                                            <button
+                                                                onClick={() => handleDepartmentChange(row.name, departmentInput)}
+                                                                className="p-1 text-green-600 hover:bg-green-50 rounded"
+                                                                title="Сохранить"
+                                                            >
+                                                                <CheckCircle2 size={14} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => {
+                                                                    setEditingDepartment(null);
+                                                                    setDepartmentInput('');
+                                                                    originalDepartmentRef.current = null;
+                                                                }}
+                                                                className="p-1 text-red-600 hover:bg-red-50 rounded"
+                                                                title="Отмена"
+                                                            >
+                                                                <X size={14} />
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={row.department ? 'text-slate-700' : 'text-slate-300 italic'}>
+                                                                {row.department || 'Не указано'}
+                                                            </span>
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    startEditingDepartment(row.name, row.department);
+                                                                }}
+                                                                className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                                                title="Редактировать отделение"
+                                                            >
+                                                                <Edit3 size={14} />
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </td>
                                                 <td className="px-6 py-3 text-center">
                                                     {statusBadge}
                                                 </td>
@@ -944,19 +1298,19 @@ const VerificationView = () => {
                                 )}
                                 {windowedData.paddingBottom > 0 && (
                                     <tr>
-                                        <td colSpan={4} style={{ height: windowedData.paddingBottom, padding: 0, border: 0 }} />
+                                        <td colSpan={5} style={{ height: windowedData.paddingBottom, padding: 0, border: 0 }} />
                                     </tr>
                                 )}
                                 {visibleData.data.length === 0 && (
                                     <tr>
-                                        <td colSpan={4} className="text-center py-10 text-slate-400">
+                                        <td colSpan={5} className="text-center py-10 text-slate-400">
                                             Ничего не найдено
                                         </td>
                                     </tr>
                                 )}
                                 {visibleData.total > visibleCount && (
                                     <tr>
-                                        <td colSpan={4} className="px-6 py-4 text-center bg-slate-50">
+                                        <td colSpan={5} className="px-6 py-4 text-center bg-slate-50">
                                             <button
                                                 onClick={() => setVisibleCount(prev => prev + 50)}
                                                 className="px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center gap-2 mx-auto"

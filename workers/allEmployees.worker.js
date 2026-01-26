@@ -96,6 +96,20 @@ const calculateHours = (entryTime, exitTime) => {
     return { hours, minutes, totalMinutes: diffMinutes };
 };
 
+const calculateHoursFromMinutes = (entryMinutes, exitMinutes) => {
+    if (entryMinutes === null || exitMinutes === null) return null;
+    let diffMinutes = exitMinutes - entryMinutes;
+    if (diffMinutes < 0) diffMinutes += 24 * 60;
+    const hours = Math.floor(diffMinutes / 60);
+    const minutes = diffMinutes % 60;
+    return { hours, minutes, totalMinutes: diffMinutes };
+};
+
+const dateToSortKey = (dateStr) => {
+    const [day, month, year] = dateStr.split('.').map(Number);
+    return year * 10000 + month * 100 + day;
+};
+
 const validateFactEntry = (factEntry) => {
     if (!factEntry) return 'missing';
     if (factEntry.cleanTime) return 'ok';
@@ -227,6 +241,103 @@ const matchesStatus = (employee, status) => {
     }
 };
 
+const buildFactDataIndex = (factData) => {
+    if (!factData || typeof factData !== 'object') {
+        return { byNorm: {}, byRaw: {}, dates: [] };
+    }
+    
+    const byNorm = {}; // byNorm[date][normName] = entry
+    const byRaw = {};  // byRaw[date][rawName] = entry
+    const dates = Object.keys(factData).sort();
+    
+    // Pre-parse times to minutes during indexing
+    const parseTimeToMinutes = (timeStr) => {
+        if (!timeStr) return null;
+        const match = String(timeStr).match(/(\d{1,2}):(\d{2})/);
+        if (!match) return null;
+        return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+    };
+    
+    dates.forEach(date => {
+        const dateData = factData[date];
+        if (!dateData || typeof dateData !== 'object') return;
+        
+        byNorm[date] = {};
+        byRaw[date] = {};
+        
+        Object.values(dateData).forEach(entry => {
+            if (!entry || !entry.rawName) return;
+            
+            const normName = normalizeName(entry.rawName);
+            const rawName = entry.rawName;
+            
+            // Store entry with pre-parsed times (keep original entry for UI compatibility)
+            const indexedEntry = {
+                ...entry,
+                entryTimeMinutes: parseTimeToMinutes(entry.entryTime),
+                exitTimeMinutes: parseTimeToMinutes(entry.exitTime)
+            };
+            
+            // Index by normalized name (primary lookup)
+            if (!byNorm[date][normName]) {
+                byNorm[date][normName] = indexedEntry;
+            }
+            
+            // Index by raw name (for exact matches)
+            byRaw[date][rawName] = indexedEntry;
+        });
+    });
+    
+    return { byNorm, byRaw, dates };
+};
+
+const buildPlanAssignmentsIndex = (shiftsByDate, employeesMap) => {
+    const planIndex = {}; // planIndex[date][normName] = planInfo
+    
+    Object.entries(shiftsByDate).forEach(([date, shifts]) => {
+        planIndex[date] = {};
+        
+        shifts.forEach(shift => {
+            shift.lineTasks.forEach(task => {
+                task.slots.forEach(slot => {
+                    if ((slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') && slot.assigned) {
+                        const assignedName = slot.assigned.name;
+                        const normName = normalizeName(assignedName);
+                        
+                        // Check if this employee exists in our map
+                        if (employeesMap.has(normName)) {
+                            if (!planIndex[date][normName]) {
+                                planIndex[date][normName] = {
+                                    shiftId: shift.id,
+                                    shiftName: shift.name,
+                                    lineName: task.displayName,
+                                    role: slot.roleTitle,
+                                    isRv: slot.assigned.type === 'external'
+                                };
+                            }
+                        } else {
+                            // Try fuzzy match for employees not in registry
+                            employeesMap.forEach((employee, empNormName) => {
+                                if (matchNames(assignedName, employee.name) && !planIndex[date][empNormName]) {
+                                    planIndex[date][empNormName] = {
+                                        shiftId: shift.id,
+                                        shiftName: shift.name,
+                                        lineName: task.displayName,
+                                        role: slot.roleTitle,
+                                        isRv: slot.assigned.type === 'external'
+                                    };
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+        });
+    });
+    
+    return planIndex;
+};
+
 const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmployees }) => {
     const operationalPlan = savedPlans?.find(p => p.type === 'Operational');
     const employeesMap = new Map();
@@ -270,29 +381,34 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
 
     if (!operationalPlan?.data) {
         if (factData && typeof factData === 'object' && Object.keys(factData).length > 0) {
+            const factIndex = buildFactDataIndex(factData);
+            
             employeesMap.forEach((employee, normName) => {
                 const events = [];
                 let errorCount = 0;
                 let totalMinutes = 0;
-                Object.keys(factData).sort().forEach(date => {
-                    let factEntry = factData[date]?.[normName];
-                    if (!factEntry && factData[date]) {
-                        Object.values(factData[date]).forEach(entry => {
-                            if (entry && entry.rawName && matchNames(entry.rawName, employee.name)) {
-                                factEntry = entry;
-                            }
-                        });
+                
+                factIndex.dates.forEach(date => {
+                    // O(1) lookup by normalized name
+                    let factEntry = factIndex.byNorm[date]?.[normName];
+                    
+                    // Fallback: try raw name lookup (O(1))
+                    if (!factEntry && employee.name) {
+                        factEntry = factIndex.byRaw[date]?.[employee.name];
                     }
+                    
                     const factStatus = validateFactEntry(factEntry);
                     if (factStatus === 'incomplete') errorCount++;
+                    
                     let duration = null;
-                    if (factEntry) {
-                        const exitTime = factEntry.exitTime;
-                        if (factEntry.entryTime && exitTime) {
-                            duration = calculateHours(factEntry.entryTime, exitTime);
-                            if (duration) totalMinutes += duration.totalMinutes;
-                        }
+                    if (factEntry && factEntry.entryTimeMinutes !== null && factEntry.exitTimeMinutes !== null) {
+                        duration = calculateHoursFromMinutes(
+                            factEntry.entryTimeMinutes,
+                            factEntry.exitTimeMinutes
+                        );
+                        if (duration) totalMinutes += duration.totalMinutes;
                     }
+                    
                     events.push({
                         date,
                         planInfo: null,
@@ -301,9 +417,10 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
                         status: factStatus
                     });
                 });
+                
                 employee.errorCount = errorCount;
                 employee.hoursTotal = totalMinutes;
-                employee.events = events;
+                employee.events = events.sort((a, b) => dateToSortKey(a.date) - dateToSortKey(b.date));
             });
         }
         return Array.from(employeesMap.values());
@@ -315,62 +432,47 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
         shiftsByDate[date] = getShiftsFromSavedPlan(operationalPlan, date);
     });
 
+    // Pre-index plan assignments
+    const planIndex = buildPlanAssignmentsIndex(shiftsByDate, employeesMap);
+
+    // Pre-index fact data
+    const factIndex = buildFactDataIndex(factData);
+
     employeesMap.forEach((employee, normName) => {
         const events = [];
         let shiftsCount = 0;
         let rvCount = 0;
         let errorCount = 0;
         let totalMinutes = 0;
-
+        
         scheduleDates.forEach(date => {
-            const shifts = shiftsByDate[date] || [];
+            // O(1) lookup for plan assignment
+            const planInfo = planIndex[date]?.[normName];
             let hasPlanAssignment = false;
-            let planInfo = null;
-
-            shifts.forEach(shift => {
-                shift.lineTasks.forEach(task => {
-                    task.slots.forEach(slot => {
-                        if ((slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') && slot.assigned) {
-                            const assignedName = slot.assigned.name;
-                            if (normalizeName(assignedName) === normName || matchNames(assignedName, employee.name)) {
-                                hasPlanAssignment = true;
-                                const isRv = slot.assigned.type === 'external';
-                                if (isRv) rvCount++;
-                                else shiftsCount++;
-                                planInfo = {
-                                    shiftId: shift.id,
-                                    shiftName: shift.name,
-                                    lineName: task.displayName,
-                                    role: slot.roleTitle,
-                                    isRv
-                                };
-                            }
-                        }
-                    });
-                });
-            });
-
-            let factEntry = factData?.[date]?.[normName];
-            if (!factEntry && factData?.[date]) {
-                const dateData = factData[date];
-                Object.values(dateData).forEach(entry => {
-                    if (entry && entry.rawName && matchNames(entry.rawName, employee.name)) {
-                        factEntry = entry;
-                    }
-                });
+            if (planInfo) {
+                hasPlanAssignment = true;
+                if (planInfo.isRv) rvCount++;
+                else shiftsCount++;
             }
+            
+            // O(1) lookup for fact entry
+            let factEntry = factIndex.byNorm[date]?.[normName];
+            if (!factEntry && employee.name) {
+                factEntry = factIndex.byRaw[date]?.[employee.name];
+            }
+            
             const factStatus = validateFactEntry(factEntry);
             if (factStatus === 'incomplete') errorCount++;
-
+            
             let duration = null;
-            if (factEntry) {
-                const exitTime = factEntry.exitTime;
-                if (factEntry.entryTime && exitTime) {
-                    duration = calculateHours(factEntry.entryTime, exitTime);
-                    if (duration) totalMinutes += duration.totalMinutes;
-                }
+            if (factEntry && factEntry.entryTimeMinutes !== null && factEntry.exitTimeMinutes !== null) {
+                duration = calculateHoursFromMinutes(
+                    factEntry.entryTimeMinutes,
+                    factEntry.exitTimeMinutes
+                );
+                if (duration) totalMinutes += duration.totalMinutes;
             }
-
+            
             events.push({
                 date,
                 planInfo: hasPlanAssignment ? planInfo : null,
@@ -379,16 +481,12 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
                 status: factStatus
             });
         });
-
+        
         employee.shiftsCount = shiftsCount;
         employee.rvCount = rvCount;
         employee.errorCount = errorCount;
         employee.hoursTotal = totalMinutes;
-        employee.events = events.sort((a, b) => {
-            const [dA, mA] = a.date.split('.');
-            const [dB, mB] = b.date.split('.');
-            return new Date(2024, parseInt(mA, 10) - 1, parseInt(dA, 10)) - new Date(2024, parseInt(mB, 10) - 1, parseInt(dB, 10));
-        });
+        employee.events = events.sort((a, b) => dateToSortKey(a.date) - dateToSortKey(b.date));
     });
 
     return Array.from(employeesMap.values());
@@ -397,7 +495,7 @@ const buildEmployeesWithStats = ({ workerRegistry, factData, savedPlans, allEmpl
 self.onmessage = (e) => {
     const { requestId, payload } = e.data || {};
     if (!payload) return;
-    const { workerRegistry, factData, savedPlans, allEmployees, search, filterRole, filterBrigade, filterStatus } = payload;
+    const { workerRegistry, factData, savedPlans, allEmployees } = payload;
 
     const employeesWithStats = buildEmployeesWithStats({
         workerRegistry,
@@ -412,55 +510,11 @@ self.onmessage = (e) => {
     });
     const allRoles = Array.from(allRolesSet).sort();
 
-    const roles = {};
-    const brigades = { '1': 0, '2': 0, '3': 0, '4': 0 };
-    const statuses = { errors: 0, rv: 0, working: 0, idle: 0 };
-    const baseList = employeesWithStats.filter(emp => matchesSearch(emp, search));
-
-    const listForRoles = baseList.filter(emp => (
-        matchesBrigade(emp, filterBrigade) && matchesStatus(emp, filterStatus)
-    ));
-    listForRoles.forEach(emp => {
-        if (emp.role && emp.role !== 'Не указано') {
-            roles[emp.role] = (roles[emp.role] || 0) + 1;
-        }
-    });
-
-    const listForBrigades = baseList.filter(emp => (
-        matchesRole(emp, filterRole) && matchesStatus(emp, filterStatus)
-    ));
-    ['1', '2', '3', '4'].forEach(brigadeId => {
-        brigades[brigadeId] = listForBrigades.filter(emp => matchesBrigade(emp, brigadeId)).length;
-    });
-
-    const listForStatuses = baseList.filter(emp => (
-        matchesRole(emp, filterRole) && matchesBrigade(emp, filterBrigade)
-    ));
-    statuses.errors = listForStatuses.filter(emp => matchesStatus(emp, 'errors')).length;
-    statuses.rv = listForStatuses.filter(emp => matchesStatus(emp, 'rv')).length;
-    statuses.working = listForStatuses.filter(emp => matchesStatus(emp, 'working')).length;
-    statuses.idle = listForStatuses.filter(emp => matchesStatus(emp, 'idle')).length;
-
-    const total = baseList.filter(emp => (
-        matchesRole(emp, filterRole) &&
-        matchesBrigade(emp, filterBrigade) &&
-        matchesStatus(emp, filterStatus)
-    )).length;
-
-    const filteredEmployees = employeesWithStats.filter(emp => (
-        matchesSearch(emp, search) &&
-        matchesRole(emp, filterRole) &&
-        matchesBrigade(emp, filterBrigade) &&
-        matchesStatus(emp, filterStatus)
-    ));
-
     self.postMessage({
         requestId,
         result: {
             employeesWithStats,
-            allRoles,
-            filterCounts: { roles, brigades, statuses, total },
-            filteredEmployees
+            allRoles
         }
     });
 };

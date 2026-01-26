@@ -424,8 +424,40 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore }) => {
-    if (!stats) return null;
+export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore }) => {
+    if (!stats || !shiftsData || shiftsData.length === 0) return null;
+    
+    // Calculate per-shift statistics
+    const shiftStats = shiftsData.map(shift => {
+        const vacancies = shift.totalRequired - shift.filledSlots;
+        const freeStaff = shift.unassignedPeople?.filter(p => p.isAvailable).length || 0;
+        const floatersAvailable = shift.floaters?.length || 0;
+        
+        // Count manual edits for this shift
+        // Slot IDs format: ${date}_${shiftId}_${lineName}_${role}_${index}
+        let manualEdits = 0;
+        if (manualAssignments) {
+            const shiftIdStr = String(shift.id);
+            Object.keys(manualAssignments).forEach(slotId => {
+                if (slotId.startsWith(date + '_' + shiftIdStr + '_')) {
+                    manualEdits++;
+                }
+            });
+        }
+        
+        return {
+            id: shift.id,
+            name: shift.name,
+            type: shift.type,
+            totalSlots: shift.totalRequired,
+            filledSlots: shift.filledSlots,
+            vacancies,
+            freeStaff,
+            floatersAvailable,
+            manualEdits
+        };
+    });
+    
     return (
         <div className="mb-6 space-y-3 animate-in fade-in slide-in-from-top-4 duration-300">
             <div className="flex items-center justify-between">
@@ -458,12 +490,53 @@ export const DayStatusHeader = ({ stats, date, autoReassignEnabled, onToggleAuto
                     </button>
                 </div>
             </div>
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-slate-100 p-2 rounded-lg text-slate-600"><Briefcase size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Всего мест</div><div className="text-lg font-bold text-slate-800">{stats.totalSlots}</div></div></div>
-                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className={`p-2 rounded-lg ${stats.vacancies > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}><AlertTriangle size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Вакансии</div><div className={`text-lg font-bold ${stats.vacancies > 0 ? 'text-red-600' : 'text-green-600'}`}>{stats.vacancies} <span className="text-xs text-slate-400 font-normal">({Math.round((stats.vacancies / stats.totalSlots) * 100 || 0)}%)</span></div></div></div>
-                <div className="flex items-center gap-3 border-r border-slate-100 pr-4"><div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ресурс</div><div className="text-sm font-bold text-slate-700">{stats.freeStaff} <span className="text-slate-400 font-normal">штат</span> + {stats.floatersAvailable} <span className="text-slate-400 font-normal">резерв</span></div></div></div>
-                <div className="flex items-center gap-3"><div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><Edit3 size={20} /></div><div><div className="text-xs text-slate-500 font-medium">Ручные правки</div><div className="text-lg font-bold text-indigo-600">{stats.manualEdits}</div></div></div>
-            </div>
+            {shiftStats.map((shiftStat, idx) => (
+                <div key={shiftStat.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                    <div className="text-xs font-semibold text-slate-600 mb-3 flex items-center gap-2">
+                        <span className="bg-blue-600 text-white px-2 py-0.5 rounded text-[10px] font-bold">{shiftStat.name}</span>
+                        <span className="text-slate-500">{shiftStat.type}</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="flex items-center gap-3 border-r border-slate-100 pr-4">
+                            <div className="bg-slate-100 p-2 rounded-lg text-slate-600"><Briefcase size={20} /></div>
+                            <div>
+                                <div className="text-xs text-slate-500 font-medium">Всего мест</div>
+                                <div className="text-lg font-bold text-slate-800">{shiftStat.totalSlots}</div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3 border-r border-slate-100 pr-4">
+                            <div className={`p-2 rounded-lg ${shiftStat.vacancies > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                <AlertTriangle size={20} />
+                            </div>
+                            <div>
+                                <div className="text-xs text-slate-500 font-medium">Вакансии</div>
+                                <div className={`text-lg font-bold ${shiftStat.vacancies > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                    {shiftStat.vacancies} 
+                                    <span className="text-xs text-slate-400 font-normal">
+                                        ({shiftStat.totalSlots > 0 ? Math.round((shiftStat.vacancies / shiftStat.totalSlots) * 100) : 0}%)
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3 border-r border-slate-100 pr-4">
+                            <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Users size={20} /></div>
+                            <div>
+                                <div className="text-xs text-slate-500 font-medium">Ресурс</div>
+                                <div className="text-sm font-bold text-slate-700">
+                                    {shiftStat.freeStaff} <span className="text-slate-400 font-normal">штат</span> + {shiftStat.floatersAvailable} <span className="text-slate-400 font-normal">резерв</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <div className="bg-indigo-100 p-2 rounded-lg text-indigo-600"><Edit3 size={20} /></div>
+                            <div>
+                                <div className="text-xs text-slate-500 font-medium">Ручные правки</div>
+                                <div className="text-lg font-bold text-indigo-600">{shiftStat.manualEdits}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ))}
         </div>
     );
 };

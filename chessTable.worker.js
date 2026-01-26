@@ -410,6 +410,10 @@ function buildChessTable(payload) {
             verificationStatus = 'missing';
             if (!color.includes('ring-')) color = color.replace(/border-\\w+-\\d+/g, '').trim() + ' ring-2 ring-red-500';
           }
+        } else {
+          // Человек был в плане, но факт отсутствует - это прогул
+          verificationStatus = 'missing';
+          if (!color.includes('ring-')) color = color.replace(/border-\\w+-\\d+/g, '').trim() + ' ring-2 ring-red-500';
         }
       } else if (idleWorkers.has(worker.name)) {
         text = '—';

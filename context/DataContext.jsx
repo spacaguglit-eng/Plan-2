@@ -1021,7 +1021,7 @@ export const DataProvider = ({ children }) => {
         e.dataTransfer.dropEffect = 'move';
     }, []);
 
-    const handleDrop = useCallback((e, targetSlotId) => {
+    const handleDrop = useCallback((e, targetSlotId, targetBaseWorkerName = null) => {
         e.preventDefault();
         if (!draggedWorker) return;
         
@@ -1044,22 +1044,36 @@ export const DataProvider = ({ children }) => {
             
             // Если целевой слот занят - меняем местами
             if (targetWorker && targetWorker.type !== 'vacancy') {
+                // Target slot has a manual assignment - swap them
                 const swappedEntry = {
                     ...targetWorker,
                     id: `assigned_${sourceSlotId}_${Date.now()}`,
-                    movedFrom: targetSlotId, // Сохраняем откуда перенесли
+                    movedFrom: targetSlotId,
                     movedAt: Date.now()
                 };
                 newAssignments[sourceSlotId] = swappedEntry;
+            } else if (targetBaseWorkerName) {
+                // Target slot is occupied by a roster worker (not in manualAssignments)
+                // Create a manual assignment for the roster worker in the source slot
+                const rosterWorkerEntry = {
+                    name: targetBaseWorkerName,
+                    role: workerRegistry[targetBaseWorkerName]?.role || 'Не указано',
+                    homeLine: workerRegistry[targetBaseWorkerName]?.homeLine || '',
+                    id: `assigned_${sourceSlotId}_${Date.now()}`,
+                    movedFrom: targetSlotId,
+                    movedAt: Date.now(),
+                    type: 'roster' // Mark as roster worker moved to manual
+                };
+                newAssignments[sourceSlotId] = rosterWorkerEntry;
             } else {
                 // Если целевой слот пустой - освобождаем исходный (создаем вакансию)
-                // Это нужно чтобы явно удалить работника из базовой расстановки
+                // This handles the case where source slot had a roster worker
                 newAssignments[sourceSlotId] = { 
                     type: 'vacancy', 
                     id: `moved_vacancy_${sourceSlotId}_${Date.now()}`,
-                    reason: 'moved', // Помечаем что это вакансия из-за переноса
-                    movedTo: targetSlotId, // Куда был перенесен работник
-                    movedWorker: draggedWorker.name, // Кто был перенесен
+                    reason: 'moved',
+                    movedTo: targetSlotId,
+                    movedWorker: draggedWorker.name,
                     movedAt: Date.now()
                 };
             }
@@ -1078,7 +1092,7 @@ export const DataProvider = ({ children }) => {
         
         updateAssignments(newAssignments);
         setDraggedWorker(null);
-    }, [draggedWorker, manualAssignments, updateAssignments]);
+    }, [draggedWorker, manualAssignments, updateAssignments, workerRegistry]);
 
     const handleAssignRv = useCallback((worker, slotId) => {
         const assignmentEntry = {

@@ -1,9 +1,10 @@
-import React from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
+import { normalizeName } from '../../utils';
 
 const DashboardView = () => {
     const {
@@ -29,10 +30,59 @@ const DashboardView = () => {
         backupAssignments,
         restoreAssignments,
         draggedWorker,
-        viewMode
+        viewMode,
+        updateAssignments,
+        manualAssignments
     } = useData();
 
     useRenderTime('dashboard', logPerformanceMetric, viewMode === 'dashboard');
+
+    const [contextMenu, setContextMenu] = useState(null);
+    const [contextMenuSearch, setContextMenuSearch] = useState('');
+
+    // Create normalized registry map for robust lookup
+    const normalizedRegistry = useMemo(() => {
+        const map = new Map();
+        if (!workerRegistry) return map;
+        
+        Object.entries(workerRegistry).forEach(([key, value]) => {
+            const normalizedKey = normalizeName(key);
+            // Store both the original key and normalized key for lookup
+            if (!map.has(normalizedKey)) {
+                map.set(normalizedKey, { originalKey: key, worker: value });
+            }
+        });
+        
+        return map;
+    }, [workerRegistry]);
+
+    // Robust worker lookup function
+    const findWorkerInRegistry = useMemo(() => {
+        return (workerName) => {
+            if (!workerName || !workerRegistry) return null;
+            
+            // First, try direct lookup
+            if (workerRegistry[workerName]) {
+                return workerRegistry[workerName];
+            }
+            
+            // Then, try normalized lookup
+            const normalizedName = normalizeName(workerName);
+            const found = normalizedRegistry.get(normalizedName);
+            if (found) {
+                return found.worker;
+            }
+            
+            // Fallback: iterate through registry to find match
+            for (const [key, value] of Object.entries(workerRegistry)) {
+                if (normalizeName(key) === normalizedName) {
+                    return value;
+                }
+            }
+            
+            return null;
+        };
+    }, [workerRegistry, normalizedRegistry]);
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
@@ -41,11 +91,46 @@ const DashboardView = () => {
         return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
     }
 
+    const handleAssignFromContextMenu = (worker, slotId) => {
+        const assignmentEntry = {
+            ...worker,
+            originalId: worker.id,
+            id: `assigned_${slotId}_${Date.now()}`
+        };
+        updateAssignments({ ...manualAssignments, [slotId]: assignmentEntry });
+        setContextMenu(null);
+        setContextMenuSearch('');
+    };
+
+    const filteredContextMenuEmployees = contextMenu?.availableEmployees?.filter(emp => {
+        if (!contextMenuSearch) return true;
+        const searchLower = contextMenuSearch.toLowerCase();
+        return emp.name.toLowerCase().includes(searchLower) || 
+               (emp.role && emp.role.toLowerCase().includes(searchLower)) ||
+               (emp.homeLine && emp.homeLine.toLowerCase().includes(searchLower));
+    }) || [];
+
+    // Close context menu on click outside
+    useEffect(() => {
+        const handleClickOutside = () => {
+            if (contextMenu) {
+                setContextMenu(null);
+                setContextMenuSearch('');
+            }
+        };
+        if (contextMenu) {
+            document.addEventListener('click', handleClickOutside);
+            return () => document.removeEventListener('click', handleClickOutside);
+        }
+    }, [contextMenu]);
+
     return (
         <div className="pb-20">
             <DayStatusHeader 
                 stats={dayStats} 
                 date={selectedDate}
+                shiftsData={shiftsData}
+                manualAssignments={manualAssignments}
                 autoReassignEnabled={autoReassignEnabled}
                 onToggleAutoReassign={setAutoReassignEnabled}
                 onBackup={backupAssignments}
@@ -76,15 +161,6 @@ const DashboardView = () => {
                                 </div>
                             </div>
                             <div className="flex items-center gap-3">
-                                <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors select-none">
-                                    <input
-                                        type="checkbox"
-                                        className="accent-blue-600"
-                                        checked={autoReassignEnabled}
-                                        onChange={(e) => setAutoReassignEnabled(e.target.checked)}
-                                    />
-                                    <span>Автоподстановка</span>
-                                </label>
                                 <label className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors select-none">
                                     {isGlobalFill ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />} <span>Заполнить глобально</span> <input type="checkbox" className="hidden" checked={isGlobalFill} onChange={(e) => setIsGlobalFill(e.target.checked)} />
                                 </label>
@@ -106,10 +182,22 @@ const DashboardView = () => {
                                         <div className="p-3 space-y-2 flex-1">
                                             {task.slots.map((slot, sIdx) => {
                                                 const wName = slot.assigned?.name;
-                                                const reg = wName ? workerRegistry[wName] : null;
-                                                const isCompFill = reg && reg.competencies.has(slot.roleTitle);
+                                                const reg = wName ? findWorkerInRegistry(wName) : null;
+                                                const isCompFill = reg && reg.competencies && (
+                                                    (reg.competencies instanceof Set && reg.competencies.has(slot.roleTitle)) ||
+                                                    (Array.isArray(reg.competencies) && reg.competencies.includes(slot.roleTitle))
+                                                );
 
                                                 if (slot.assigned?.type === 'external') {
+                                                    // For external workers, also look up competencies from registry
+                                                    const extWorkerName = slot.assigned?.name;
+                                                    const extRegistryWorker = extWorkerName ? findWorkerInRegistry(extWorkerName) : null;
+                                                    const extCompetencies = extRegistryWorker?.competencies;
+                                                    const extCompetenciesList = extCompetencies 
+                                                        ? (Array.isArray(extCompetencies) ? extCompetencies : Array.from(extCompetencies || []))
+                                                        : [];
+                                                    const extHasCompetencies = extCompetenciesList.length > 0;
+                                                    
                                                     return (
                                                         <div 
                                                             key={sIdx} 
@@ -122,7 +210,7 @@ const DashboardView = () => {
                                                                 handleDragStart(e, workerForDrag);
                                                             }}
                                                             onDragOver={handleDragOver}
-                                                            onDrop={(e) => handleDrop(e, slot.slotId)}
+                                                            onDrop={(e) => handleDrop(e, slot.slotId, slot.currentWorkerName)}
                                                             className={`bg-orange-50 border-orange-200 border-2 p-2 rounded-lg relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
                                                         >
                                                             <GripVertical size={14} className="text-orange-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1 top-2" />
@@ -134,58 +222,91 @@ const DashboardView = () => {
                                                                 <div className="w-8 h-8 bg-orange-200 text-orange-700 rounded-full flex items-center justify-center font-bold text-xs">{slot.assigned.name[0]}</div>
                                                                 <div className="min-w-0">
                                                                     <div className="font-semibold text-slate-700 text-sm truncate">{slot.assigned.name}</div>
-                                                                    <div className="text-xs text-slate-500 truncate">{slot.assigned.role}</div>
+                                                                    <div className="text-xs text-slate-500 truncate">{slot.assigned.role || extRegistryWorker?.role || 'Не указано'}</div>
+                                                                    {extHasCompetencies && (
+                                                                        <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={extCompetenciesList.join(', ')}>
+                                                                            {extCompetenciesList.join(', ')}
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         </div>
                                                     );
                                                 }
 
-                                                const renderFilled = (statusColor, borderColor, iconBg, iconColor, assignedWorker, isManual = false) => (
-                                                    <div 
-                                                        draggable 
-                                                        onDragStart={(e) => {
-                                                            // Создаем worker объект из слота для перетаскивания
-                                                            const workerForDrag = {
-                                                                ...assignedWorker,
-                                                                sourceSlotId: slot.slotId // Запоминаем откуда тащим
-                                                            };
-                                                            handleDragStart(e, workerForDrag);
-                                                        }}
-                                                        onDragOver={handleDragOver}
-                                                        onDrop={(e) => {
-                                                            // Если тащат на занятый слот - меняем местами
-                                                            handleDrop(e, slot.slotId);
-                                                        }}
-                                                        className={`flex items-center gap-3 p-2 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
-                                                    >
-                                                        <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
-                                                        <div className="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                                                            <button
-                                                                onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
-                                                                className="bg-orange-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-orange-600"
-                                                                title="Назначить РВ"
-                                                            >
-                                                                <UserPlus size={12} />
-                                                            </button>
-                                                            {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
-                                                                <button onClick={() => handleRemoveAssignment(slot.slotId)} className="bg-red-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-red-600">
-                                                                    <X size={12} />
+                                                const renderFilled = (statusColor, borderColor, iconBg, iconColor, assignedWorker, isManual = false) => {
+                                                    // Get worker data from registry using robust lookup
+                                                    const workerName = assignedWorker?.name;
+                                                    const registryWorker = workerName ? findWorkerInRegistry(workerName) : null;
+                                                    
+                                                    // Use role from registry if available, otherwise fall back to assignedWorker.role
+                                                    // This ensures roster workers (which only have { name }) get their role from registry
+                                                    const displayRole = registryWorker?.role || assignedWorker?.role || 'Не указано';
+                                                    
+                                                    // Safe competency handling (works with both Set and Array)
+                                                    const competencies = registryWorker?.competencies;
+                                                    const competenciesList = competencies 
+                                                        ? (Array.isArray(competencies) ? competencies : Array.from(competencies || []))
+                                                        : [];
+                                                    const hasCompetencies = competenciesList.length > 0;
+                                                    
+                                                    // Check if worker has competency for this role
+                                                    const isCompFill = registryWorker && competencies && (
+                                                        (competencies instanceof Set && competencies.has(slot.roleTitle)) ||
+                                                        (Array.isArray(competencies) && competencies.includes(slot.roleTitle))
+                                                    );
+                                                    
+                                                    return (
+                                                        <div 
+                                                            draggable 
+                                                            onDragStart={(e) => {
+                                                                // Создаем worker объект из слота для перетаскивания
+                                                                const workerForDrag = {
+                                                                    ...assignedWorker,
+                                                                    sourceSlotId: slot.slotId // Запоминаем откуда тащим
+                                                                };
+                                                                handleDragStart(e, workerForDrag);
+                                                            }}
+                                                            onDragOver={handleDragOver}
+                                                            onDrop={(e) => {
+                                                                // Если тащат на занятый слот - меняем местами
+                                                                handleDrop(e, slot.slotId, slot.currentWorkerName);
+                                                            }}
+                                                            className={`flex items-center gap-3 p-2 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+                                                        >
+                                                            <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
+                                                            <div className="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                                                <button
+                                                                    onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
+                                                                    className="bg-orange-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-orange-600"
+                                                                    title="Назначить РВ"
+                                                                >
+                                                                    <UserPlus size={12} />
                                                                 </button>
-                                                            )}
-                                                        </div>
-                                                        <div className={`w-8 h-8 rounded-full ${iconBg} ${iconColor} flex items-center justify-center text-xs font-bold flex-shrink-0`}>
-                                                            {typeof assignedWorker.name === 'string' ? assignedWorker.name.substring(0, 1) : '?'}
-                                                        </div>
-                                                        <div className="min-w-0 flex-1">
-                                                            <div className="text-sm font-semibold text-slate-700 truncate">{typeof assignedWorker.name === 'string' ? assignedWorker.name : 'Error'}</div>
-                                                            <div className="text-[10px] text-slate-500 truncate flex items-center gap-1">
-                                                                {assignedWorker.role} {isManual && <span className="text-blue-600 font-bold ml-1">★</span>}
-                                                                {isCompFill && <span title="По компетенции"><GraduationCap size={10} className="text-blue-500 ml-1 inline" /></span>}
+                                                                {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
+                                                                    <button onClick={() => handleRemoveAssignment(slot.slotId)} className="bg-red-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-red-600">
+                                                                        <X size={12} />
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                            <div className={`w-8 h-8 rounded-full ${iconBg} ${iconColor} flex items-center justify-center text-xs font-bold flex-shrink-0`}>
+                                                                {typeof assignedWorker.name === 'string' ? assignedWorker.name.substring(0, 1) : '?'}
+                                                            </div>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="text-sm font-semibold text-slate-700 truncate">{typeof assignedWorker.name === 'string' ? assignedWorker.name : 'Error'}</div>
+                                                                <div className="text-[10px] text-slate-500 truncate flex items-center gap-1">
+                                                                    {displayRole} {isManual && <span className="text-blue-600 font-bold ml-1">★</span>}
+                                                                    {isCompFill && <span title="По компетенции"><GraduationCap size={10} className="text-blue-500 ml-1 inline" /></span>}
+                                                                </div>
+                                                                {hasCompetencies && (
+                                                                    <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={competenciesList.join(', ')}>
+                                                                        {competenciesList.join(', ')}
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         </div>
-                                                    </div>
-                                                );
+                                                    );
+                                                };
 
                                                 if (slot.status === 'filled') {
                                                     return <div key={sIdx}>{renderFilled('bg-green-50', 'border-green-100', 'bg-green-200', 'text-green-700', slot.assigned)}</div>;
@@ -203,7 +324,30 @@ const DashboardView = () => {
                                                     return <div key={sIdx}>{renderFilled('bg-indigo-50', 'border-indigo-200', 'bg-indigo-200', 'text-indigo-700', slot.assigned, true)}</div>;
                                                 } else {
                                                     return (
-                                                        <div key={sIdx} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, slot.slotId)} className={`flex items-center gap-3 p-2 rounded-lg border-2 border-dashed ${draggedWorker ? 'border-blue-400 bg-blue-50' : 'border-red-200 bg-red-50/30'} transition-colors relative group`}>
+                                                        <div 
+                                                            key={sIdx} 
+                                                            onDragOver={handleDragOver} 
+                                                            onDrop={(e) => handleDrop(e, slot.slotId)}
+                                                            onContextMenu={(e) => {
+                                                                e.preventDefault();
+                                                                if (slot.status === 'vacancy' && !slot.isManualVacancy) {
+                                                                    const currentShift = shiftsData.find(s => s.id === shift.id);
+                                                                    const availableEmployees = [
+                                                                        ...(currentShift?.unassignedPeople || []).filter(p => p.isAvailable),
+                                                                        ...(currentShift?.floaters || [])
+                                                                    ];
+                                                                    setContextMenu({
+                                                                        x: e.clientX,
+                                                                        y: e.clientY,
+                                                                        slotId: slot.slotId,
+                                                                        roleTitle: slot.roleTitle,
+                                                                        availableEmployees
+                                                                    });
+                                                                    setContextMenuSearch('');
+                                                                }
+                                                            }}
+                                                            className={`flex items-center gap-3 p-2 rounded-lg border-2 border-dashed ${draggedWorker ? 'border-blue-400 bg-blue-50' : 'border-red-200 bg-red-50/30'} transition-colors relative group`}
+                                                        >
                                                             {slot.isManualVacancy && (
                                                                 <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute -top-2 -right-2 bg-gray-400 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10">
                                                                     <X size={12} />
@@ -263,11 +407,21 @@ const DashboardView = () => {
                                     </h4>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-2">
                                         {shift.unassignedPeople.map(p => (
-                                            <div key={p.id} draggable={p.isAvailable} onDragStart={(e) => handleDragStart(e, p)} className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'}`} title={!p.isAvailable ? p.statusReason : (workerRegistry[p.name]?.competencies.size > 0 ? `Компетенции: ${Array.from(workerRegistry[p.name].competencies).join(', ')}` : '')}>
+                                            <div key={p.id} draggable={p.isAvailable} onDragStart={(e) => handleDragStart(e, p)} className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'}`} title={!p.isAvailable ? p.statusReason : (() => {
+                                                const regWorker = findWorkerInRegistry(p.name);
+                                                const comps = regWorker?.competencies;
+                                                return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) 
+                                                    ? `Компетенции: ${Array.isArray(comps) ? comps.join(', ') : Array.from(comps).join(', ')}` 
+                                                    : '';
+                                            })()}>
                                                 {p.isAvailable ? <GripVertical size={14} className="text-slate-300" /> : <Ban size={14} className="text-red-400" />}
                                                 <div className="min-w-0">
                                                     <div className="text-xs font-semibold text-slate-700 truncate flex items-center gap-1">
-                                                        {p.name} {workerRegistry[p.name]?.competencies.size > 0 && <GraduationCap size={10} className="text-blue-400" />}
+                                                        {p.name} {(() => {
+                                                            const regWorker = findWorkerInRegistry(p.name);
+                                                            const comps = regWorker?.competencies;
+                                                            return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) && <GraduationCap size={10} className="text-blue-400" />;
+                                                        })()}
                                                     </div>
                                                     <div className="text-[9px] text-slate-400 truncate">
                                                         {!p.isAvailable ? <span className="text-red-500 font-bold">{p.statusReason}</span> : `${p.role} (${p.homeLine})`}
@@ -282,6 +436,64 @@ const DashboardView = () => {
                     </div>
                 ))}
             </div>
+            {contextMenu && (
+                <div 
+                    className="fixed bg-white border border-slate-200 rounded-lg shadow-xl z-50 min-w-[280px] max-w-[400px]"
+                    style={{ 
+                        left: `${contextMenu.x}px`, 
+                        top: `${contextMenu.y}px`,
+                        transform: 'translate(-10px, -10px)'
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <div className="p-3 border-b border-slate-200 bg-slate-50">
+                        <div className="text-xs font-semibold text-slate-600 mb-2">Назначить на: {contextMenu.roleTitle}</div>
+                        <div className="relative">
+                            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input
+                                type="text"
+                                placeholder="Поиск сотрудника..."
+                                value={contextMenuSearch}
+                                onChange={(e) => setContextMenuSearch(e.target.value)}
+                                className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                                autoFocus
+                            />
+                        </div>
+                    </div>
+                                    <div className="max-h-[300px] overflow-y-auto">
+                                        {filteredContextMenuEmployees.length === 0 ? (
+                                            <div className="p-4 text-center text-sm text-slate-400">
+                                                {contextMenuSearch ? 'Ничего не найдено' : 'Нет доступных сотрудников'}
+                                            </div>
+                                        ) : (
+                                            filteredContextMenuEmployees.map(emp => {
+                                                const regWorker = findWorkerInRegistry(emp.name);
+                                                const comps = regWorker?.competencies;
+                                                const hasComps = comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0);
+                                                return (
+                                                    <button
+                                                        key={emp.id || emp.name}
+                                                        onClick={() => handleAssignFromContextMenu(emp, contextMenu.slotId)}
+                                                        className="w-full px-4 py-2 text-left hover:bg-blue-50 transition-colors border-b border-slate-100 last:border-b-0"
+                                                    >
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="text-sm font-semibold text-slate-700 truncate flex items-center gap-1">
+                                                                    {emp.name}
+                                                                    {hasComps && <GraduationCap size={12} className="text-blue-400" />}
+                                                                </div>
+                                                                <div className="text-xs text-slate-500 truncate">
+                                                                    {emp.role} {emp.homeLine && `(${emp.homeLine})`}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                );
+                                            })
+                                        )}
+                                    </div>
+                </div>
+            )}
         </div>
     );
 };
