@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
@@ -14,9 +14,11 @@ import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
+import PinModal from './components/common/PinModal';
 
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
+    const [isPinModalOpen, setIsPinModalOpen] = useState(false);
 
     const {
         step,
@@ -62,6 +64,11 @@ export default function App() {
     return (
         <div className="h-screen bg-slate-100 font-sans text-slate-800 flex flex-col overflow-hidden">
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
+            <PinModal
+                isOpen={isPinModalOpen}
+                onClose={() => setIsPinModalOpen(false)}
+                onSuccess={() => unlockWithCode('1234')}
+            />
             {editingWorker && (
                 <EditWorkerModal
                     worker={editingWorker === 'new' ? null : editingWorker}
@@ -110,16 +117,14 @@ export default function App() {
                                 </div>
                                 <button
                                     onClick={() => {
-                                        if (!isLocked) return;
-                                        const code = window.prompt('Введите PIN-код для разблокировки:');
-                                        if (code !== null && !unlockWithCode(code)) {
-                                            alert('Неверный PIN-код.');
+                                        if (isLocked) {
+                                            setIsPinModalOpen(true);
                                         }
                                     }}
-                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
                                         isLocked
-                                            ? 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100'
-                                            : 'bg-green-50 text-green-700 border-green-200'
+                                            ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                                            : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
                                     }`}
                                     title={isLocked ? 'Мастер-план защищен' : 'Редактирование разрешено'}
                                 >
