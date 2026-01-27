@@ -76,6 +76,7 @@ const buildCostMatrix = (products, transitions, cipDurations) => {
         cip3: Number(cipDurations?.cip3 || 0)
     };
     console.log('[Worker] CIP durations:', durations);
+    const missingRules = new Set();
     const n = products.length;
     const matrix = Array.from({ length: n }, () => Array(n).fill(0));
     for (let i = 0; i < n; i += 1) {
@@ -84,6 +85,20 @@ const buildCostMatrix = (products, transitions, cipDurations) => {
             const from = products[i];
             const to = products[j];
             const rule = rules.get(from);
+            const toRule = rules.get(to);
+            if (!rule || !toRule) {
+                if (!rule && !missingRules.has(from)) {
+                    missingRules.add(from);
+                    console.warn('[Worker] Missing transition rule for product:', from);
+                }
+                if (!toRule && !missingRules.has(to)) {
+                    missingRules.add(to);
+                    console.warn('[Worker] Missing transition rule for product:', to);
+                }
+                // Не считаем переходы, если нет правил хотя бы для одного продукта
+                matrix[i][j] = 0;
+                continue;
+            }
             const cipKey = getCipKeyForPair(rule, to);
             if (i < 3 && j < 3) {
                 console.log(`[Worker] ${from} → ${to} | rule:`, rule ? 'found' : 'NOT FOUND', '| cip:', cipKey, '| duration:', durations[cipKey] || 0);
@@ -263,7 +278,7 @@ const solveHeuristicTimed = (matrix, options = {}) => {
         const progress = Math.min(0.95, elapsed / timeBudgetMs);
         if (force || progress - lastProgress >= 0.02) {
             lastProgress = progress;
-            onProgress(progress);
+            onProgress({ progress });
         }
     };
 
@@ -292,31 +307,70 @@ const solveHeuristicTimed = (matrix, options = {}) => {
         reportProgress();
     }
 
-    if (onProgress) onProgress(1);
+    if (onProgress) onProgress({ progress: 1 });
     return best;
+};
+
+const resolveOptimization = (matrix, algorithm, timeBudgetMs, onProgress) => {
+    const n = matrix.length;
+    const algo = String(algorithm || 'auto').trim();
+    if (algo === 'heldKarp') return solveHeldKarp(matrix);
+    if (algo === 'heuristic') {
+        return solveHeuristicTimed(matrix, { timeBudgetMs, onProgress });
+    }
+    if (n <= 10) return solveHeldKarp(matrix);
+    return solveHeuristicTimed(matrix, { timeBudgetMs, onProgress });
 };
 
 self.onmessage = (event) => {
     const { type, payload } = event.data || {};
-    if (type !== 'optimize') return;
     const products = payload?.products || [];
     const transitions = payload?.transitions || [];
     const cipDurations = payload?.cipDurations || {};
     const timeBudgetMs = payload?.timeBudgetMs;
+    const algorithm = payload?.algorithm;
+    if (!type) return;
     if (!Array.isArray(products) || products.length === 0) {
         self.postMessage({ type: 'result', payload: { order: [], totalCost: 0 } });
         return;
     }
     const normalizedProducts = products.map(name => normalizeTransitionValue(name));
     const matrix = buildCostMatrix(normalizedProducts, transitions, cipDurations);
-    const result = products.length <= 10
-        ? solveHeldKarp(matrix)
-        : solveHeuristicTimed(matrix, {
+    if (type === 'compare') {
+        const heldKarp = solveHeldKarp(matrix);
+        const heuristic = solveHeuristicTimed(matrix, {
             timeBudgetMs,
-            onProgress: (progress) => {
-                self.postMessage({ type: 'progress', payload: { progress } });
+            onProgress: (data) => {
+                const payload = typeof data === 'number'
+                    ? { progress: data }
+                    : { progress: data?.progress ?? 0, nodesExplored: data?.nodesExplored };
+                self.postMessage({ type: 'progress', payload });
             }
         });
-    const orderNames = result.order.map(index => normalizedProducts[index]).filter(Boolean);
-    self.postMessage({ type: 'result', payload: { order: orderNames, totalCost: result.totalCost } });
+        const heldKarpOrder = heldKarp.order.map(index => normalizedProducts[index]).filter(Boolean);
+        const heuristicOrder = heuristic.order.map(index => normalizedProducts[index]).filter(Boolean);
+        self.postMessage({
+            type: 'compare',
+            payload: {
+                heldKarp: { ...heldKarp, order: heldKarpOrder },
+                heuristic: { ...heuristic, order: heuristicOrder }
+            }
+        });
+        return;
+    }
+    if (type === 'optimize') {
+        const result = resolveOptimization(
+            matrix,
+            algorithm,
+            timeBudgetMs,
+            (data) => {
+                const payload = typeof data === 'number'
+                    ? { progress: data }
+                    : { progress: data?.progress ?? 0, nodesExplored: data?.nodesExplored };
+                self.postMessage({ type: 'progress', payload });
+            }
+        );
+        const orderNames = result.order.map(index => normalizedProducts[index]).filter(Boolean);
+        self.postMessage({ type: 'result', payload: { order: orderNames, totalCost: result.totalCost } });
+    }
 };

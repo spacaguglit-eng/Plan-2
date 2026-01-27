@@ -459,13 +459,19 @@ const PlanningView = () => {
     const [transitionStatus, setTransitionStatus] = useState('idle');
     const [transitionError, setTransitionError] = useState('');
     const [transitionProgress, setTransitionProgress] = useState(0);
+    const [transitionProgressNodes, setTransitionProgressNodes] = useState(null);
+    const [transitionCompareResult, setTransitionCompareResult] = useState(null);
     const [transitionSaveStatus, setTransitionSaveStatus] = useState('');
     const [transitionSearchQuery, setTransitionSearchQuery] = useState('');
+    const [transitionAlgorithm, setTransitionAlgorithm] = useState(
+        () => storedPlanning.transitionAlgorithm || 'auto'
+    );
     const [hoveredTransitionRuleId, setHoveredTransitionRuleId] = useState(null);
     const [activeTransitionCell, setActiveTransitionCell] = useState(null);
     const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
     const transitionWorkerRef = useRef(null);
     const transitionSaveTimeoutRef = useRef(null);
+    const normalizedLinesRef = useRef(false);
     const baseProductByName = useMemo(
         () => new Map(baseProducts.map((product) => [product.name, product])),
         [baseProducts]
@@ -523,10 +529,41 @@ const PlanningView = () => {
 
     const currentTransitionOrder = useMemo(() => (
         products
-            .filter(product => (product.line || selectedPlanLine) === selectedPlanLine)
+            .filter(product => product.line === selectedPlanLine)
             .map(product => getTransitionKeyForName(product.name))
             .filter(Boolean)
     ), [products, selectedPlanLine, getTransitionKeyForName]);
+
+    const bestCompareResult = useMemo(() => {
+        if (!transitionCompareResult) return null;
+        const hk = transitionCompareResult.heldKarp;
+        const heur = transitionCompareResult.heuristic;
+        if (!hk || !heur) return null;
+        const hkCost = hk.totalCost ?? Infinity;
+        const heurCost = heur.totalCost ?? Infinity;
+        if (heurCost < hkCost) {
+            return { label: 'Эвристика', order: heur.order || [], totalCost: heurCost };
+        }
+        return { label: 'Held–Karp', order: hk.order || [], totalCost: hkCost };
+    }, [transitionCompareResult]);
+
+    const missingTransitionByIndex = useMemo(() => {
+        const map = new Map();
+        const lineProducts = products
+            .map((product, index) => ({ product, index }))
+            .filter(({ product }) => product.line === selectedPlanLine);
+        for (let i = 0; i < lineProducts.length - 1; i += 1) {
+            const from = lineProducts[i];
+            const to = lineProducts[i + 1];
+            const fromKey = getTransitionKeyForName(from.product.name);
+            const toKey = getTransitionKeyForName(to.product.name);
+            const rule = transitionRuleMap.get(fromKey);
+            if (!rule || !transitionRuleMap.has(toKey)) {
+                map.set(from.index, true);
+            }
+        }
+        return map;
+    }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName]);
 
     const transitionAnalytics = useMemo(() => {
         const getCipDuration = (cipKey) => {
@@ -547,21 +584,28 @@ const PlanningView = () => {
         const getTransitions = (order) => {
             const rows = [];
             let total = 0;
-            let missing = 0;
+            let missingDurations = 0;
+            let missingRules = 0;
             for (let i = 0; i < order.length - 1; i += 1) {
                 const from = order[i];
                 const to = order[i + 1];
                 const rule = transitionRuleMap.get(from);
+                const hasToRule = transitionRuleMap.has(to);
+                if (!rule || !hasToRule) {
+                    rows.push({ from, to, cipKey: null, duration: null, reason: 'missing-rule' });
+                    missingRules += 1;
+                    continue;
+                }
                 const cipKey = getTransitionCipKey(rule, to);
                 const duration = getCipDuration(cipKey);
-                rows.push({ from, to, cipKey, duration });
+                rows.push({ from, to, cipKey, duration, reason: duration === null ? 'missing-duration' : null });
                 if (duration === null) {
-                    missing += 1;
+                    missingDurations += 1;
                 } else {
                     total += duration;
                 }
             }
-            return { rows, total, missing };
+            return { rows, total, missingDurations, missingRules };
         };
         const was = getTransitions(currentTransitionOrder);
         const now = getTransitions(transitionResult?.order || []);
@@ -585,7 +629,7 @@ const PlanningView = () => {
         });
     }, [transitionRules, transitionSearchQuery]);
 
-    useEffect(() => {
+    const createTransitionWorker = () => {
         const worker = new Worker(
             new URL('../../workers/transitionOptimizer.worker.js', import.meta.url),
             { type: 'module' }
@@ -595,18 +639,48 @@ const PlanningView = () => {
             const { type, payload } = event.data || {};
             if (type === 'result') {
                 setTransitionResult(payload);
+                setTransitionCompareResult(null);
                 setTransitionStatus('done');
                 setTransitionProgress(1);
+                setTransitionProgressNodes(payload?.nodesExplored ?? null);
+            }
+            if (type === 'compare') {
+                setTransitionCompareResult(payload);
+                setTransitionResult(null);
+                setTransitionStatus('done');
+                setTransitionProgress(1);
+                setTransitionProgressNodes(null);
             }
             if (type === 'progress') {
                 setTransitionProgress(payload?.progress || 0);
+                if (payload?.nodesExplored !== undefined) {
+                    setTransitionProgressNodes(payload.nodesExplored);
+                } else {
+                    setTransitionProgressNodes(null);
+                }
             }
         };
+        return worker;
+    };
+
+    useEffect(() => {
+        const worker = createTransitionWorker();
         return () => {
             worker.terminate();
             transitionWorkerRef.current = null;
         };
     }, []);
+
+    const stopTransitionOptimization = () => {
+        if (transitionWorkerRef.current) {
+            transitionWorkerRef.current.terminate();
+            transitionWorkerRef.current = null;
+        }
+        setTransitionStatus('idle');
+        setTransitionProgress(0);
+        setTransitionProgressNodes(null);
+        createTransitionWorker();
+    };
 
     useEffect(() => {
         setTransitionRules((prev) => {
@@ -647,6 +721,26 @@ const PlanningView = () => {
     }, []);
 
     useEffect(() => {
+        if (normalizedLinesRef.current) return;
+        let changed = false;
+        const nextProducts = products.map((product) => {
+            if (product.line) return product;
+            changed = true;
+            return { ...product, line: selectedPlanLine };
+        });
+        const nextCipBetween = cipBetween.map((cip) => {
+            if (cip.line) return cip;
+            changed = true;
+            return { ...cip, line: selectedPlanLine };
+        });
+        if (changed) {
+            setProducts(nextProducts);
+            setCipBetween(nextCipBetween);
+        }
+        normalizedLinesRef.current = true;
+    }, [products, cipBetween, selectedPlanLine]);
+
+    useEffect(() => {
         if (!useStoredTransitionRules) {
             setTransitionRules(TRANSITION_RULES_BASE);
         }
@@ -667,7 +761,8 @@ const PlanningView = () => {
             selectedPlanLine,
             transitionRules,
             transitionRulesVersion: TRANSITION_RULES_VERSION,
-            lineEvents
+            lineEvents,
+            transitionAlgorithm
         });
     }, [
         activeTab,
@@ -679,6 +774,7 @@ const PlanningView = () => {
         selectedPlanLine,
         transitionRules,
         lineEvents,
+        transitionAlgorithm,
         savePlanningState
     ]);
 
@@ -921,9 +1017,12 @@ const PlanningView = () => {
     };
 
     const runTransitionOptimization = () => {
+        if (transitionStatus === 'running') {
+            stopTransitionOptimization();
+        }
         if (!transitionWorkerRef.current) return;
         const lineProducts = products
-            .filter(product => (product.line || selectedPlanLine) === selectedPlanLine)
+            .filter(product => product.line === selectedPlanLine)
             .map(product => getTransitionKeyForName(product.name))
             .filter(Boolean);
         const timeBudgetMs = 2500;
@@ -951,8 +1050,56 @@ const PlanningView = () => {
         setTransitionStatus('running');
         setTransitionError('');
         setTransitionProgress(0);
+        setTransitionProgressNodes(null);
+        setTransitionCompareResult(null);
         transitionWorkerRef.current.postMessage({
             type: 'optimize',
+            payload: {
+                products: lineProducts,
+                transitions: transitionRules,
+                cipDurations: cipDurationsForOptimization,
+                timeBudgetMs,
+                algorithm: transitionAlgorithm
+            }
+        });
+    };
+
+    const runTransitionCompare = () => {
+        if (transitionStatus === 'running') {
+            stopTransitionOptimization();
+        }
+        if (!transitionWorkerRef.current) return;
+        const lineProducts = products
+            .filter(product => product.line === selectedPlanLine)
+            .map(product => getTransitionKeyForName(product.name))
+            .filter(Boolean);
+        const timeBudgetMs = 2500;
+        const cipDurationsForOptimization = {
+            cip1: (() => {
+                const event = lineEvents.find(e => e.event === 'CIP1c' || e.event === 'CIP1h');
+                return event?.durations?.[selectedPlanLine] || 0;
+            })(),
+            cip2: (() => {
+                const event = lineEvents.find(e => e.event === 'CIP2');
+                return event?.durations?.[selectedPlanLine] || 0;
+            })(),
+            cip3: (() => {
+                const event = lineEvents.find(e => e.event === 'CIP3');
+                return event?.durations?.[selectedPlanLine] || 0;
+            })()
+        };
+        if (lineProducts.length === 0) {
+            setTransitionError('Нет продуктов для выбранной линии.');
+            return;
+        }
+        setTransitionStatus('running');
+        setTransitionError('');
+        setTransitionProgress(0);
+        setTransitionProgressNodes(null);
+        setTransitionCompareResult(null);
+        setTransitionResult(null);
+        transitionWorkerRef.current.postMessage({
+            type: 'compare',
             payload: {
                 products: lineProducts,
                 transitions: transitionRules,
@@ -960,6 +1107,137 @@ const PlanningView = () => {
                 timeBudgetMs
             }
         });
+    };
+
+    const applyOptimizedOrder = (orderKeys) => {
+        if (!Array.isArray(orderKeys) || orderKeys.length === 0) return;
+        const lineItems = [];
+        const lineIndices = [];
+        products.forEach((product, index) => {
+            if (product.line !== selectedPlanLine) return;
+            lineIndices.push(index);
+            lineItems.push({
+                index,
+                product,
+                cip: cipBetween[index]
+            });
+        });
+        if (lineItems.length === 0) return;
+
+        const queues = new Map();
+        lineItems.forEach((item) => {
+            const key = getTransitionKeyForName(item.product.name);
+            if (!queues.has(key)) queues.set(key, []);
+            queues.get(key).push(item);
+        });
+
+        const reordered = [];
+        orderKeys.forEach((key) => {
+            const queue = queues.get(key);
+            if (queue && queue.length) {
+                reordered.push(queue.shift());
+            }
+        });
+
+        queues.forEach((queue) => {
+            while (queue.length) reordered.push(queue.shift());
+        });
+
+        if (reordered.length < lineItems.length) {
+            const used = new Set(reordered.map(item => item.index));
+            lineItems.forEach((item) => {
+                if (!used.has(item.index)) reordered.push(item);
+            });
+        }
+
+        const nextProducts = [...products];
+        const nextCipBetween = [...cipBetween];
+        lineIndices.forEach((idx, i) => {
+            const item = reordered[i];
+            if (!item) return;
+            nextProducts[idx] = { ...item.product };
+            if (idx < nextCipBetween.length) {
+                nextCipBetween[idx] = item.cip ? { ...item.cip } : item.cip;
+            }
+        });
+
+        const lineProducts = nextProducts
+            .map((product, index) => ({ product, index }))
+            .filter(({ product }) => product.line === selectedPlanLine);
+        let missingRules = 0;
+        for (let i = 0; i < lineProducts.length - 1; i += 1) {
+            const from = lineProducts[i];
+            const to = lineProducts[i + 1];
+            const fromKey = getTransitionKeyForName(from.product.name);
+            const toKey = getTransitionKeyForName(to.product.name);
+            const rule = transitionRuleMap.get(fromKey);
+            if (!rule || !transitionRuleMap.has(toKey)) {
+                missingRules += 1;
+                continue;
+            }
+            if (!nextCipBetween[from.index]) {
+                nextCipBetween[from.index] = {
+                    id: `cip_${Date.now()}_${from.index}`,
+                    date: from.product.date || nextProducts[0]?.date || '27.01.2026',
+                    manualDate: false,
+                    start: '',
+                    end: '',
+                    manualStart: false,
+                    manualEnd: false,
+                    line: selectedPlanLine,
+                    eventKey: ''
+                };
+            }
+            const cipKey = getTransitionCipKey(rule, toKey);
+            const eventKey = getEventKeyForCipKey(cipKey);
+            nextCipBetween[from.index] = {
+                ...nextCipBetween[from.index],
+                line: selectedPlanLine,
+                eventKey
+            };
+        }
+
+        setProducts(nextProducts);
+        setCipBetween(nextCipBetween);
+        if (missingRules > 0) {
+            setTransitionError(`Нет правил перехода для ${missingRules} переход(ов).`);
+        }
+    };
+
+    const applyTransitionsForCurrentOrder = () => {
+        setTransitionError('');
+        const lineProducts = products
+            .map((product, index) => ({ product, index }))
+            .filter(({ product }) => product.line === selectedPlanLine);
+        if (lineProducts.length < 2) {
+            setTransitionError('Недостаточно продуктов для расстановки переходов.');
+            return;
+        }
+        let missingRules = 0;
+        const nextCipBetween = [...cipBetween];
+        for (let i = 0; i < lineProducts.length - 1; i += 1) {
+            const from = lineProducts[i];
+            const to = lineProducts[i + 1];
+            const fromKey = getTransitionKeyForName(from.product.name);
+            const toKey = getTransitionKeyForName(to.product.name);
+            const rule = transitionRuleMap.get(fromKey);
+            if (!rule || !transitionRuleMap.has(toKey)) {
+                missingRules += 1;
+                continue;
+            }
+            if (!nextCipBetween[from.index]) continue;
+            const cipKey = getTransitionCipKey(rule, toKey);
+            const eventKey = getEventKeyForCipKey(cipKey);
+            nextCipBetween[from.index] = {
+                ...nextCipBetween[from.index],
+                line: selectedPlanLine,
+                eventKey
+            };
+        }
+        setCipBetween(nextCipBetween);
+        if (missingRules > 0) {
+            setTransitionError(`Нет правил перехода для ${missingRules} переход(ов).`);
+        }
     };
 
     const handleSaveTransitionBase = () => {
@@ -1042,6 +1320,21 @@ const PlanningView = () => {
         });
     }, [lineEvents]);
 
+    const getEventKeyForCipKey = (cipKey) => {
+        const targetsByCip = {
+            cip1: ['CIP1c', 'CIP1h'],
+            cip2: ['CIP2'],
+            cip3: ['CIP3']
+        };
+        const targets = targetsByCip[cipKey] || [];
+        for (let i = 0; i < targets.length; i += 1) {
+            const target = targets[i];
+            const match = lineEvents.find((item) => item.event === target);
+            if (match) return `${match.category}__${match.event || ''}`;
+        }
+        return eventOptions[0]?.key || '';
+    };
+
     const eventDurationByKey = useMemo(() => {
         return lineEvents.reduce((acc, item) => {
             const key = `${item.category}__${item.event || ''}`;
@@ -1050,11 +1343,21 @@ const PlanningView = () => {
         }, {});
     }, [lineEvents]);
 
+    const CIP_FALLBACK_DURATION_MIN = 15;
+
     const getEventDurationMinutes = (eventKey, lineName) => {
         const durations = eventDurationByKey[eventKey];
         if (!durations) return 0;
         const value = durations[lineName];
-        return Number.isFinite(value) ? value : parseNumeric(value);
+        if (value !== undefined && value !== null && value !== '') {
+            const n = Number.isFinite(value) ? value : parseNumeric(value);
+            if (Number.isFinite(n)) return Math.max(0, n);
+        }
+        const fallback = Object.values(durations).find((v) => {
+            const n = Number.isFinite(v) ? v : parseNumeric(v);
+            return Number.isFinite(n) && n > 0;
+        });
+        return fallback != null ? (Number.isFinite(fallback) ? fallback : parseNumeric(fallback)) : 0;
     };
 
     const getProductDurationMinutes = (product) => {
@@ -1067,6 +1370,7 @@ const PlanningView = () => {
     const buildRows = (nextProducts, nextCipBetween) => {
         const rows = [];
         nextProducts.forEach((p, i) => {
+            if (p.line !== selectedPlanLine) return;
             rows.push({
                 kind: 'product',
                 index: i,
@@ -1075,15 +1379,19 @@ const PlanningView = () => {
             });
             if (i < nextCipBetween.length) {
                 const cip = nextCipBetween[i];
+                if (!cip) return;
                 const rowLine = cip.line || p.line || selectedPlanLine;
+                if (rowLine !== selectedPlanLine) return;
                 const eventKey = cip.eventKey || (eventOptions[0]?.key ?? '');
+                const rawCipMinutes = getEventDurationMinutes(eventKey, rowLine);
                 rows.push({
                     kind: 'cip',
                     index: i,
                     ...cip,
                     line: rowLine,
                     eventKey,
-                    durationMinutes: getEventDurationMinutes(eventKey, rowLine)
+                    missingTransition: missingTransitionByIndex.get(i) === true,
+                    durationMinutes: rawCipMinutes > 0 ? rawCipMinutes : CIP_FALLBACK_DURATION_MIN
                 });
             }
         });
@@ -1806,6 +2114,33 @@ const PlanningView = () => {
                 {activeTab === 'schedule' && (
                     <>
                         <div className="flex items-center justify-end gap-2">
+                            <label className="flex items-center gap-2 text-xs text-slate-600">
+                                Алгоритм:
+                                <select
+                                    value={transitionAlgorithm}
+                                    onChange={(e) => setTransitionAlgorithm(e.target.value)}
+                                    className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                                >
+                                    <option value="auto">Авто</option>
+                                    <option value="heldKarp">Held–Karp</option>
+                                    <option value="heuristic">Эвристика</option>
+                                </select>
+                            </label>
+                            <button
+                                onClick={applyTransitionsForCurrentOrder}
+                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                            >
+                                Расставить переходы
+                            </button>
+                            <button
+                                onClick={() => {
+                                    runTransitionCompare();
+                                    setIsTransitionModalOpen(true);
+                                }}
+                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-slate-700 text-white rounded-lg hover:bg-slate-800"
+                            >
+                                Сверить HK и эвристику
+                            </button>
                             <button
                                 onClick={() => {
                                     runTransitionOptimization();
@@ -1849,8 +2184,9 @@ const PlanningView = () => {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
-                                        {allRows.map((row) => {
+                                        {allRows.map((row, displayIndex) => {
                                             const isCip = row.kind === 'cip';
+                                            const isMissingTransition = isCip && row.missingTransition;
                                             const durationLabel = row.durationMinutes > 0 ? `${row.durationMinutes} мин` : '—';
                                             return (
                                                 <tr
@@ -1863,9 +2199,11 @@ const PlanningView = () => {
                                                         moveProduct(dragIndex, row.index);
                                                         setDragIndex(null);
                                                     }}
-                                                    className={`hover:bg-slate-50/60 ${isCip ? 'bg-blue-50/40' : ''}`}
+                                                    className={`hover:bg-slate-50/60 ${
+                                                        isMissingTransition ? 'bg-red-50/70' : isCip ? 'bg-blue-50/40' : ''
+                                                    }`}
                                                 >
-                                                    <td className="px-6 py-3 text-slate-500">{row.id}</td>
+                                                    <td className="px-6 py-3 text-slate-500">{displayIndex + 1}</td>
                                                     <td className="px-2 py-3 text-slate-300">
                                                         {!isCip && <GripVertical size={14} />}
                                                     </td>
@@ -1905,7 +2243,11 @@ const PlanningView = () => {
                                                         <select
                                                             value={row.eventKey || eventOptions[0]?.key || ''}
                                                             onChange={(e) => handleCipTypeChange(row.index, e.target.value)}
-                                                            className="h-8 rounded-md border border-blue-200 bg-blue-50 px-2 text-sm text-blue-700"
+                                                            className={`h-8 rounded-md border px-2 text-sm ${
+                                                                isMissingTransition
+                                                                    ? 'border-red-300 bg-red-50 text-red-700'
+                                                                    : 'border-blue-200 bg-blue-50 text-blue-700'
+                                                            }`}
                                                         >
                                                             {eventOptions.map(option => (
                                                                 <option key={option.key} value={option.key}>
@@ -1913,9 +2255,15 @@ const PlanningView = () => {
                                                                 </option>
                                                             ))}
                                                         </select>
-                                                        <span className="inline-flex items-center rounded-full bg-blue-100 text-blue-700 text-[10px] font-semibold px-2 py-0.5">
-                                                            Событие
-                                                        </span>
+                                                        {isMissingTransition ? (
+                                                            <span className="inline-flex items-center rounded-full bg-red-100 text-red-700 text-[10px] font-semibold px-2 py-0.5">
+                                                                Нет правил
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-flex items-center rounded-full bg-blue-100 text-blue-700 text-[10px] font-semibold px-2 py-0.5">
+                                                                Событие
+                                                            </span>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     row.name
@@ -2061,7 +2409,9 @@ const PlanningView = () => {
                                     <div className="mt-2 space-y-1">
                                         <div className="flex items-center justify-between text-[11px] text-slate-500">
                                             <span>Прогресс</span>
-                                            <span>{Math.round(transitionProgress * 100)}%</span>
+                                            {transitionProgressNodes !== null
+                                                ? <span>Узлов: {transitionProgressNodes}</span>
+                                                : <span>{Math.round(transitionProgress * 100)}%</span>}
                                         </div>
                                         <div className="h-1.5 w-full rounded-full bg-slate-200">
                                             <div
@@ -2076,23 +2426,51 @@ const PlanningView = () => {
                                 <div className="text-xs text-red-600">{transitionError}</div>
                             )}
                             {transitionStatus === 'done' && (
-                                transitionResult?.order?.length > 0 ? (
+                                transitionCompareResult ? (
+                                    <div className="space-y-3">
+                                        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                                            <div className="text-xs text-slate-500">Сравнение алгоритмов</div>
+                                            <div className="mt-2 space-y-1 text-sm">
+                                                <div>Held–Karp: {transitionCompareResult.heldKarp?.totalCost ?? 0} мин</div>
+                                                <div>Эвристика: {transitionCompareResult.heuristic?.totalCost ?? 0} мин</div>
+                                                <div className="text-xs text-slate-500">
+                                                    Разница: {(transitionCompareResult.heuristic?.totalCost ?? 0) - (transitionCompareResult.heldKarp?.totalCost ?? 0)} мин
+                                                </div>
+                                                {bestCompareResult && (
+                                                    <div className="text-xs text-emerald-600">
+                                                        Лучший: {bestCompareResult.label} ({bestCompareResult.totalCost} мин)
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : transitionResult?.order?.length > 0 ? (
                                     <div className="space-y-4">
                                         <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                                             <div className="text-xs text-slate-500">Время</div>
                                             <div className="mt-1 text-sm">
                                                 Было: {transitionAnalytics.was.total} мин
-                                                {transitionAnalytics.was.missing > 0 && (
+                                                {transitionAnalytics.was.missingRules > 0 && (
                                                     <span className="text-xs text-slate-500">
-                                                        {' '}({transitionAnalytics.was.missing} без норм)
+                                                        {' '}({transitionAnalytics.was.missingRules} без правил)
+                                                    </span>
+                                                )}
+                                                {transitionAnalytics.was.missingDurations > 0 && (
+                                                    <span className="text-xs text-slate-500">
+                                                        {' '}({transitionAnalytics.was.missingDurations} без норм)
                                                     </span>
                                                 )}
                                             </div>
                                             <div className="text-sm">
                                                 Стало: {transitionAnalytics.now.total} мин
-                                                {transitionAnalytics.now.missing > 0 && (
+                                                {transitionAnalytics.now.missingRules > 0 && (
                                                     <span className="text-xs text-slate-500">
-                                                        {' '}({transitionAnalytics.now.missing} без норм)
+                                                        {' '}({transitionAnalytics.now.missingRules} без правил)
+                                                    </span>
+                                                )}
+                                                {transitionAnalytics.now.missingDurations > 0 && (
+                                                    <span className="text-xs text-slate-500">
+                                                        {' '}({transitionAnalytics.now.missingDurations} без норм)
                                                     </span>
                                                 )}
                                             </div>
@@ -2104,15 +2482,20 @@ const PlanningView = () => {
                                             <ol className="mt-2 space-y-1">
                                                 {transitionAnalytics.now.rows.map((row, idx) => (
                                                     <li key={`${row.from}_${row.to}_${idx}`} className="text-sm">
-                                                        {idx + 1}. {row.from} → {row.to} — {row.cipKey.toUpperCase()} (
+                                                        {idx + 1}. {row.from} → {row.to} — {row.cipKey ? row.cipKey.toUpperCase() : 'НЕТ ПРАВИЛ'} (
                                                         {row.duration === null ? '—' : `${row.duration} мин`}
                                                         )
                                                     </li>
                                                 ))}
                                             </ol>
-                                            {transitionAnalytics.now.missing > 0 && (
+                                            {transitionAnalytics.now.missingDurations > 0 && (
                                                 <div className="mt-2 text-xs text-slate-500">
                                                     Для точного времени заполните нормы CIP в таблице «CIP».
+                                                </div>
+                                            )}
+                                            {transitionAnalytics.now.missingRules > 0 && (
+                                                <div className="mt-1 text-xs text-slate-500">
+                                                    В базе переходов нет правил для некоторых продуктов.
                                                 </div>
                                             )}
                                         </div>
@@ -2122,7 +2505,31 @@ const PlanningView = () => {
                                 )
                             )}
                         </div>
-                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end">
+                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                            {transitionStatus === 'done' && transitionResult?.order?.length > 0 && (
+                                <button
+                                    onClick={() => applyOptimizedOrder(transitionResult.order)}
+                                    className="px-4 py-2 text-sm font-semibold text-emerald-700 hover:text-emerald-800"
+                                >
+                                    Применить
+                                </button>
+                            )}
+                            {transitionStatus === 'done' && bestCompareResult?.order?.length > 0 && (
+                                <button
+                                    onClick={() => applyOptimizedOrder(bestCompareResult.order)}
+                                    className="px-4 py-2 text-sm font-semibold text-emerald-700 hover:text-emerald-800"
+                                >
+                                    Применить лучшее
+                                </button>
+                            )}
+                            {transitionStatus === 'running' && (
+                                <button
+                                    onClick={stopTransitionOptimization}
+                                    className="px-4 py-2 text-sm font-semibold text-red-600 hover:text-red-700"
+                                >
+                                    Остановить
+                                </button>
+                            )}
                             <button
                                 onClick={() => setIsTransitionModalOpen(false)}
                                 className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
