@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -16,12 +16,14 @@ import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
 import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
+import PlanningView from './components/views/PlanningView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
+    const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
 
     const {
         step,
@@ -59,11 +61,17 @@ export default function App() {
     }, [viewMode, selectedDate]);
 
     useEffect(() => {
-        if (!isExtraMenuOpen) return;
-        const handleClickOutside = () => setIsExtraMenuOpen(false);
+        if (!isExtraMenuOpen && !isStaffMenuOpen) return;
+        const handleClickOutside = () => {
+            setIsExtraMenuOpen(false);
+            setIsStaffMenuOpen(false);
+        };
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
-    }, [isExtraMenuOpen]);
+    }, [isExtraMenuOpen, isStaffMenuOpen]);
+
+    const isStaffView = ['dashboard', 'chess', 'employees_list', 'employees_roster', 'verification', 'all_employees']
+        .includes(viewMode);
 
 
     const handleNewFile = () => {
@@ -142,65 +150,93 @@ export default function App() {
                                     {isLocked ? 'Мастер (Защищено)' : 'Редактирование'}
                                 </button>
                                 <div className="bg-slate-100 p-1 rounded-lg flex border border-slate-200">
-                                    <button
-                                        onClick={() => setViewMode('dashboard')}
-                                        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                            viewMode === 'dashboard' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                        }`}
-                                    >
-                                        <LayoutGrid size={16} /> Смены
-                                    </button>
-                                    <button
-                                        onClick={() => setViewMode('chess')}
-                                        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                            viewMode === 'chess' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                        }`}
-                                    >
-                                        <Grid3X3 size={16} /> Табель
-                                    </button>
-
-                                    {/* Split Employees Menu */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2 gap-1">
+                                    {/* Staff Menu */}
+                                    <div className="relative flex items-center">
                                         <button
-                                            onClick={() => setViewMode('employees_list')}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIsStaffMenuOpen((prev) => !prev);
+                                            }}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'employees_list' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                                isStaffView ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                                             }`}
                                         >
-                                            <Users size={16} /> Список
+                                            <Users size={16} /> Штат
+                                            <ChevronDown size={14} className={`transition-transform ${isStaffMenuOpen ? 'rotate-180' : ''}`} />
                                         </button>
-                                        <button
-                                            onClick={() => setViewMode('employees_roster')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'employees_roster' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
-                                        >
-                                            <LayoutGrid size={16} /> Распределение
-                                        </button>
-                                    </div>
-
-                                    {/* Verification Menu Item */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
-                                        <button
-                                            onClick={() => setViewMode('verification')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'verification' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
-                                        >
-                                            <FileCheck size={16} /> Сверка
-                                        </button>
-                                    </div>
-
-                                    {/* All Employees Menu Item */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
-                                        <button
-                                            onClick={() => setViewMode('all_employees')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'all_employees' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
-                                        >
-                                            <Users size={16} /> Все сотрудники
-                                        </button>
+                                        {isStaffMenuOpen && (
+                                            <div
+                                                className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-20 overflow-hidden"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('dashboard');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <LayoutGrid size={16} /> Смены
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('chess');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'chess' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Grid3X3 size={16} /> Табель
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('employees_list');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'employees_list' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Users size={16} /> Список
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('employees_roster');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'employees_roster' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <LayoutGrid size={16} /> Распределение
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('verification');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'verification' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <FileCheck size={16} /> Сверка
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('all_employees');
+                                                        setIsStaffMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'all_employees' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Users size={16} /> Все сотрудники
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Plans Menu Item */}
@@ -224,6 +260,18 @@ export default function App() {
                                             }`}
                                         >
                                             <Factory size={16} /> Производство
+                                        </button>
+                                    </div>
+
+                                    {/* Planning Menu Item */}
+                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={() => setViewMode('planning')}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                                                viewMode === 'planning' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                        >
+                                            <Calendar size={16} /> Планирование
                                         </button>
                                     </div>
 
@@ -303,6 +351,7 @@ export default function App() {
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
                         {viewMode === 'production' && <ProductionView />}
+                        {viewMode === 'planning' && <PlanningView />}
                         {viewMode === 'raw_data' && <RawDataView />}
                     </div>
                 </>
