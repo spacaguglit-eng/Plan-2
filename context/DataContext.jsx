@@ -1901,6 +1901,189 @@ export const DataProvider = ({ children }) => {
         XLSX.writeFile(wb, fileName);
     };
 
+    const exportScheduleByLinesToExcel = useCallback(async () => {
+        if (!scheduleDates.length) {
+            notify({ type: 'error', message: 'Нет данных для экспорта' });
+            return;
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('График по линиям');
+
+        const headerRow1 = ['Линия', 'Должность'];
+        const headerRow2 = ['', ''];
+
+        scheduleDates.forEach(date => {
+            const [day, month] = date.split('.');
+            const shortDate = month ? `${day}.${month}` : date;
+            headerRow1.push(shortDate, '');
+            headerRow2.push('День', 'Ночь');
+        });
+
+        const r1 = worksheet.addRow(headerRow1);
+        const r2 = worksheet.addRow(headerRow2);
+
+        let colIndex = 3;
+        scheduleDates.forEach(() => {
+            worksheet.mergeCells(1, colIndex, 1, colIndex + 1);
+            colIndex += 2;
+        });
+
+        const applyBorder = (cell) => {
+            cell.border = {
+                top: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+                left: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+                bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+                right: { style: 'thin', color: { argb: 'FFCCCCCC' } }
+            };
+        };
+
+        const dayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+        const nightFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
+
+        [r1, r2].forEach((row) => {
+            row.eachCell((cell, colNumber) => {
+                cell.font = { bold: true };
+                cell.alignment = { horizontal: colNumber <= 2 ? 'left' : 'center', vertical: 'middle' };
+                applyBorder(cell);
+            });
+        });
+
+        scheduleDates.forEach((_, idx) => {
+            const dayCol = 3 + idx * 2;
+            const nightCol = dayCol + 1;
+            r2.getCell(dayCol).fill = dayFill;
+            r2.getCell(nightCol).fill = nightFill;
+        });
+
+        const resolveWorkerName = (shift, lineName, role, slotIndex) => {
+            if (!shift) return '';
+            const lineTask = shift.lineTasks.find(lt => isLineMatch(lt.displayName, lineName));
+            if (!lineTask) return '';
+            const slotsForRole = lineTask.slots.filter(s => s.roleTitle === role);
+            const slot = slotsForRole[slotIndex];
+            if (!slot || !slot.assigned) return '';
+            if (slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') {
+                return slot.assigned.name || '';
+            }
+            return '';
+        };
+
+        Object.entries(lineTemplates).forEach(([lineName, positions]) => {
+            let isFirstLineRow = true;
+            positions.forEach(pos => {
+                const count = parseInt(pos.count) || 1;
+                for (let i = 0; i < count; i++) {
+                    const roleLabel = `${pos.role}${count > 1 ? ` ${i + 1}` : ''}`.trim();
+                    const rowData = [isFirstLineRow ? lineName : '', roleLabel];
+
+                    scheduleDates.forEach(date => {
+                        const shifts = getShiftsForDate(date);
+                        const dayShift = shifts.find(s => String(s.type || '').toLowerCase().includes('день'));
+                        const nightShift = shifts.find(s => String(s.type || '').toLowerCase().includes('ночь'));
+                        rowData.push(resolveWorkerName(dayShift, lineName, pos.role, i));
+                        rowData.push(resolveWorkerName(nightShift, lineName, pos.role, i));
+                    });
+
+                    const row = worksheet.addRow(rowData);
+                    row.eachCell((cell, colNumber) => {
+                        applyBorder(cell);
+                        cell.alignment = { horizontal: colNumber <= 2 ? 'left' : 'center', vertical: 'middle' };
+                        if (colNumber === 1 && rowData[0]) {
+                            cell.font = { bold: true };
+                        }
+                    });
+
+                    scheduleDates.forEach((_, idx) => {
+                        const dayCol = 3 + idx * 2;
+                        const nightCol = dayCol + 1;
+                        row.getCell(dayCol).fill = dayFill;
+                        row.getCell(nightCol).fill = nightFill;
+                    });
+
+                    isFirstLineRow = false;
+                }
+            });
+        });
+
+        const collectFreeHands = (shift) => {
+            if (!shift) return [];
+            const items = [];
+            (shift.unassignedPeople || []).forEach(p => {
+                if (p?.isAvailable && p?.name) {
+                    const role = p.role ? ` — ${p.role}` : '';
+                    items.push(`${p.name}${role}`);
+                }
+            });
+            (shift.floaters || []).forEach(f => {
+                if (f?.name) {
+                    const role = f.role ? ` — ${f.role}` : '';
+                    items.push(`${f.name}${role}`);
+                }
+            });
+            return Array.from(new Set(items));
+        };
+
+        const emptyRow = Array(2 + scheduleDates.length * 2).fill('');
+        const spacerRow = worksheet.addRow(emptyRow);
+        spacerRow.eachCell((cell) => applyBorder(cell));
+
+        const labelRowData = ['Свободные руки', '', ...Array(scheduleDates.length * 2).fill('')];
+        const labelRow = worksheet.addRow(labelRowData);
+        worksheet.mergeCells(labelRow.number, 1, labelRow.number, 2);
+        labelRow.getCell(1).font = { bold: true };
+        labelRow.eachCell((cell) => applyBorder(cell));
+
+        const freeHandsRow = ['', ''];
+        scheduleDates.forEach(date => {
+            const shifts = getShiftsForDate(date);
+            const dayShift = shifts.find(s => String(s.type || '').toLowerCase().includes('день'));
+            const nightShift = shifts.find(s => String(s.type || '').toLowerCase().includes('ночь'));
+            const dayNames = collectFreeHands(dayShift).join('\n');
+            const nightNames = collectFreeHands(nightShift).join('\n');
+            freeHandsRow.push(dayNames, nightNames);
+        });
+
+        const freeHandsDataRow = worksheet.addRow(freeHandsRow);
+        freeHandsDataRow.eachCell((cell, colNumber) => {
+            applyBorder(cell);
+            if (colNumber > 2) {
+                cell.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
+            }
+        });
+        scheduleDates.forEach((_, idx) => {
+            const dayCol = 3 + idx * 2;
+            const nightCol = dayCol + 1;
+            freeHandsDataRow.getCell(dayCol).fill = dayFill;
+            freeHandsDataRow.getCell(nightCol).fill = nightFill;
+        });
+
+        const autoFitColumn = (column, minWidth = 10, maxWidth = 40) => {
+            let maxLen = minWidth;
+            column.eachCell({ includeEmpty: true }, (cell) => {
+                const value = cell.value;
+                if (value == null) return;
+                const text = typeof value === 'string' ? value : String(value);
+                maxLen = Math.max(maxLen, text.length + 2);
+            });
+            column.width = Math.min(Math.max(maxLen, minWidth), maxWidth);
+        };
+
+        worksheet.columns.forEach((column, idx) => {
+            const isTextColumn = idx === 0 || idx === 1;
+            autoFitColumn(column, isTextColumn ? 12 : 8, isTextColumn ? 45 : 22);
+        });
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `График_по_линиям_${new Date().toISOString().split('T')[0]}.xlsx`;
+        link.click();
+        window.URL.revokeObjectURL(url);
+    }, [scheduleDates, lineTemplates, getShiftsForDate, notify]);
+
     const exportChessTableToExcel = useCallback(async () => {
         if (USE_CHESS_WORKER && chessTableWorkerStatus.status === 'calculating') {
             notify({ type: 'info', message: 'Идёт расчёт табеля, подождите несколько секунд.' });
@@ -1958,7 +2141,7 @@ export const DataProvider = ({ children }) => {
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         backupAssignments, restoreAssignments,
-        calculateChessTable, exportChessTableToExcel,
+        calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
         unlockWithCode
         // Performance metrics are stored outside of Context to avoid app-wide render storms.
     }), [
@@ -1996,6 +2179,7 @@ export const DataProvider = ({ children }) => {
         globalWorkSchedule,
         calculateChessTable,
         exportChessTableToExcel,
+        exportScheduleByLinesToExcel,
         unlockWithCode,
         backupAssignments,
         restoreAssignments

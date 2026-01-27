@@ -23,6 +23,7 @@ const DashboardView = () => {
         handleDragOver,
         handleDrop,
         handleAutoFillFloaters,
+        exportScheduleByLinesToExcel,
         isGlobalFill,
         setIsGlobalFill,
         autoReassignEnabled,
@@ -135,6 +136,7 @@ const DashboardView = () => {
                 onToggleAutoReassign={setAutoReassignEnabled}
                 onBackup={backupAssignments}
                 onRestore={restoreAssignments}
+                onExportLines={exportScheduleByLinesToExcel}
             />
             {rvModalData && (
                 <RvPickerModal

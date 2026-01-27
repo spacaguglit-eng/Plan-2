@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
+import { generateProductionReportHtml } from './productionReportHtml';
 
 const FILE_HANDLE_DB = 'productionFileHandlesDB';
 const FILE_HANDLE_STORE = 'handles';
@@ -102,6 +103,9 @@ const ProductionView = () => {
     const [filterDate, setFilterDate] = useState('');
     const [filterProduct, setFilterProduct] = useState('');
     const [activeTab, setActiveTab] = useState('production');
+    const [reportError, setReportError] = useState('');
+    const [reportDates, setReportDates] = useState([]);
+    const [reportTargets, setReportTargets] = useState({});
     const [excludedDowntimeTypes, setExcludedDowntimeTypes] = useState(() => {
         const stored = localStorage.getItem('productionExcludedDowntimeTypes');
         return stored ? new Set(JSON.parse(stored)) : new Set();
@@ -419,23 +423,24 @@ const ProductionView = () => {
         });
     }, [flatDowntimeRows, filterLine, filterDate, filterProduct]);
 
-    const lineSlides = useMemo(() => {
-        if (!filterDate) return [];
-        const rowsForDate = flatRows.filter(row => row.date === filterDate);
-        const downtimesForDate = flatDowntimeRows.filter(row => row.date === filterDate);
-        const lines = Array.from(new Set(rowsForDate.map(r => r.line))).sort();
+    const buildLineSlidesForDates = useCallback((dates) => {
+        if (!dates || dates.length === 0) return [];
+        const dateSet = new Set(dates);
+        const rowsForDates = flatRows.filter(row => dateSet.has(row.date));
+        const downtimesForDates = flatDowntimeRows.filter(row => dateSet.has(row.date));
+        const lines = Array.from(new Set(rowsForDates.map(r => r.line))).sort();
         return lines.map((line) => {
-            const lineRows = rowsForDate.filter(r => r.line === line);
-            const lineDowntimes = downtimesForDate.filter(d => d.line === line);
+            const lineRows = rowsForDates.filter(r => r.line === line);
+            const lineDowntimes = downtimesForDates.filter(d => d.line === line);
             const plan = lineRows.reduce((sum, r) => sum + (r.plan || 0), 0);
             const fact = lineRows.reduce((sum, r) => sum + (typeof r.qty === 'number' ? r.qty : 0), 0);
-            
+
             // Рассчитываем среднюю скорость линии (среднее арифметическое всех скоростей продуктов)
             const speeds = lineRows.map(r => r.speed || 0).filter(s => s > 0);
-            const avgSpeed = speeds.length > 0 
-                ? speeds.reduce((sum, s) => sum + s, 0) / speeds.length 
+            const avgSpeed = speeds.length > 0
+                ? speeds.reduce((sum, s) => sum + s, 0) / speeds.length
                 : 0;
-            
+
             const downtimeMap = new Map();
             const downtimeDescriptions = new Map();
             lineDowntimes
@@ -451,8 +456,8 @@ const ProductionView = () => {
             const downtimeList = Array.from(downtimeMap.entries())
                 .map(([category, minutes]) => {
                     // Рассчитываем недовыпуск: минуты / 60 * средняя скорость
-                    const underproduction = avgSpeed > 0 
-                        ? Math.round((minutes / 60) * avgSpeed) 
+                    const underproduction = avgSpeed > 0
+                        ? Math.round((minutes / 60) * avgSpeed)
                         : 0;
                     return {
                         category,
@@ -480,7 +485,83 @@ const ProductionView = () => {
                 totalDowntimeMinutes
             };
         });
-    }, [flatRows, flatDowntimeRows, filterDate, excludedDowntimeTypes]);
+    }, [flatRows, flatDowntimeRows, excludedDowntimeTypes]);
+
+    const lineSlides = useMemo(() => {
+        if (!filterDate) return [];
+        return buildLineSlidesForDates([filterDate]);
+    }, [buildLineSlidesForDates, filterDate]);
+
+    const sortedReportDates = useMemo(() => {
+        if (reportDates.length === 0) return [];
+        const dateSet = new Set(reportDates);
+        return uniqueDates.filter(date => dateSet.has(date));
+    }, [reportDates, uniqueDates]);
+
+    const reportLineSlides = useMemo(() => {
+        return buildLineSlidesForDates(sortedReportDates);
+    }, [buildLineSlidesForDates, sortedReportDates]);
+
+    const lineDailySeries = useMemo(() => {
+        if (sortedReportDates.length === 0 || reportLineSlides.length === 0) return {};
+        const dateSet = new Set(sortedReportDates);
+        const rowsForDates = flatRows.filter(row => dateSet.has(row.date));
+        const lineMap = new Map();
+
+        rowsForDates.forEach((row) => {
+            if (!lineMap.has(row.line)) {
+                lineMap.set(row.line, new Map());
+            }
+            const dateMap = lineMap.get(row.line);
+            const entry = dateMap.get(row.date) || { plan: 0, fact: 0 };
+            entry.plan += row.plan || 0;
+            entry.fact += typeof row.qty === 'number' ? row.qty : 0;
+            dateMap.set(row.date, entry);
+        });
+
+        const getDayLabel = (date) => {
+            const parts = String(date).split(/[\.\-\/]/).filter(Boolean);
+            if (parts.length > 0) {
+                if (parts[0].length <= 2) {
+                    return String(parseInt(parts[0], 10));
+                }
+                if (parts.length >= 3) {
+                    return String(parseInt(parts[2], 10));
+                }
+            }
+            const match = String(date).match(/(\d{1,2})/);
+            return match ? String(parseInt(match[1], 10)) : String(date);
+        };
+
+        return reportLineSlides.reduce((acc, line) => {
+            const dateMap = lineMap.get(line.line) || new Map();
+            acc[line.line] = sortedReportDates.map((date) => {
+                const entry = dateMap.get(date) || { plan: 0, fact: 0 };
+                const efficiency = entry.plan > 0 ? Math.round((entry.fact / entry.plan) * 100) : 0;
+                return {
+                    date,
+                    dayLabel: getDayLabel(date),
+                    plan: Math.round(entry.plan),
+                    fact: Math.round(entry.fact),
+                    efficiency
+                };
+            });
+            return acc;
+        }, {});
+    }, [flatRows, reportLineSlides, sortedReportDates]);
+
+    useEffect(() => {
+        if (reportLineSlides.length === 0) return;
+        setReportTargets((prev) => {
+            const next = { ...prev };
+            reportLineSlides.forEach((line) => {
+                if (next[line.line] === undefined || next[line.line] === null || next[line.line] === '') {
+                    next[line.line] = 85;
+                }
+            });
+            return next;
+        });
+    }, [reportLineSlides]);
 
     useEffect(() => {
         setLineSlideIndex(0);
@@ -491,6 +572,81 @@ const ProductionView = () => {
         const id = setTimeout(() => setIsLineSlideVisible(true), 50);
         return () => clearTimeout(id);
     }, [lineSlideIndex, filterDate]);
+
+    useEffect(() => {
+        if (!filterDate) {
+            setReportError('');
+        }
+    }, [filterDate]);
+
+    useEffect(() => {
+        if (reportDates.length === 0) {
+            setReportError('');
+        }
+    }, [reportDates]);
+
+    useEffect(() => {
+        if (reportDates.length === 0) return;
+        const allowed = new Set(uniqueDates);
+        const nextDates = reportDates.filter(date => allowed.has(date));
+        if (nextDates.length !== reportDates.length) {
+            setReportDates(nextDates);
+        }
+    }, [reportDates, uniqueDates]);
+
+    const getReportPayload = useCallback(() => {
+        if (sortedReportDates.length === 0) {
+            setReportError('Выберите даты для формирования отчета.');
+            return;
+        }
+        if (reportLineSlides.length === 0) {
+            setReportError('Нет данных для выбранного периода.');
+            return;
+        }
+
+        setReportError('');
+        try {
+            const normalizedTargets = reportLineSlides.reduce((acc, line) => {
+                const rawValue = reportTargets[line.line];
+                const numericValue = typeof rawValue === 'number' ? rawValue : parseFloat(rawValue);
+                const safeValue = Number.isFinite(numericValue) ? numericValue : 85;
+                acc[line.line] = Math.max(0, Math.min(100, safeValue));
+                return acc;
+            }, {});
+            return generateProductionReportHtml({
+                dates: sortedReportDates,
+                lineSlides: reportLineSlides,
+                lineDailySeries,
+                lineTargets: normalizedTargets
+            });
+        } catch (error) {
+            console.error('Ошибка генерации отчета HTML', error);
+            setReportError('Не удалось сформировать HTML-отчет. Попробуйте еще раз.');
+        }
+    }, [lineDailySeries, reportLineSlides, reportTargets, sortedReportDates]);
+
+    const openHtmlReport = useCallback(() => {
+        const payload = getReportPayload();
+        if (!payload) return;
+        const blob = new Blob([payload.html], { type: 'text/html;charset=utf-8' });
+        const url = window.URL.createObjectURL(blob);
+        window.open(url, '_blank', 'noopener,noreferrer');
+        setTimeout(() => window.URL.revokeObjectURL(url), 30000);
+    }, [getReportPayload]);
+
+    const downloadHtmlReport = useCallback(() => {
+        const payload = getReportPayload();
+        if (!payload) return;
+        const blob = new Blob([payload.html], { type: 'text/html;charset=utf-8' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = payload.fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+    }, [getReportPayload]);
 
     // Данные для графиков
     const chartData = useMemo(() => {
@@ -1133,6 +1289,16 @@ const ProductionView = () => {
                             >
                                 Линии
                             </button>
+                            <button
+                                onClick={() => setActiveTab('reports')}
+                                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
+                                    activeTab === 'reports'
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                }`}
+                            >
+                                Отчеты
+                            </button>
                         </div>
                         <div className="flex-1 overflow-auto">
                             {activeTab === 'production' && (
@@ -1711,6 +1877,139 @@ const ProductionView = () => {
                                             </div>
                                         </>
                                     )}
+                                </div>
+                            )}
+                            {activeTab === 'reports' && (
+                                <div className="p-6 space-y-6">
+                                    <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                                        <div className="space-y-3 mb-6">
+                                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                                <div className="text-sm font-semibold text-slate-700">Выбор дат для отчета</div>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setReportDates(uniqueDates)}
+                                                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                                        disabled={uniqueDates.length === 0}
+                                                    >
+                                                        Выбрать все
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setReportDates([])}
+                                                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                                        disabled={reportDates.length === 0}
+                                                    >
+                                                        Сбросить
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {uniqueDates.length === 0 ? (
+                                                <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
+                                                    Нет доступных дат для выбора.
+                                                </div>
+                                            ) : (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-40 overflow-auto border border-slate-200 rounded-lg p-3">
+                                                    {uniqueDates.map((date) => {
+                                                        const isSelected = reportDates.includes(date);
+                                                        return (
+                                                            <label key={date} className="flex items-center gap-2 text-sm text-slate-700">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={isSelected}
+                                                                    onChange={() => {
+                                                                        setReportDates((prev) => (
+                                                                            prev.includes(date)
+                                                                                ? prev.filter(item => item !== date)
+                                                                                : [...prev, date]
+                                                                        ));
+                                                                    }}
+                                                                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                                                />
+                                                                <span>{date}</span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                            {sortedReportDates.length > 0 && (
+                                                <div className="text-xs text-slate-500">
+                                                    Выбрано дат: {sortedReportDates.length}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="space-y-3 mb-6">
+                                            <div className="text-sm font-semibold text-slate-700">Цель эффективности (MTD) по линиям</div>
+                                            {reportLineSlides.length === 0 ? (
+                                                <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
+                                                    Выберите даты, чтобы задать цели по линиям.
+                                                </div>
+                                            ) : (
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                                    {reportLineSlides.map((line) => (
+                                                        <label key={line.line} className="flex items-center gap-3 text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                                                            <span className="flex-1 font-medium">{line.line}</span>
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                max="100"
+                                                                step="1"
+                                                                value={reportTargets[line.line] ?? 85}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    setReportTargets((prev) => ({
+                                                                        ...prev,
+                                                                        [line.line]: value === '' ? '' : Number(value)
+                                                                    }));
+                                                                }}
+                                                                className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm"
+                                                            />
+                                                            <span className="text-xs text-slate-500">%</span>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                            <div>
+                                                <h3 className="text-lg font-bold text-slate-800">HTML-отчет</h3>
+                                                <p className="text-sm text-slate-500 mt-1">
+                                                    Скачайте отчет по эффективности за выбранный период.
+                                                </p>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                <button
+                                                    onClick={openHtmlReport}
+                                                    disabled={sortedReportDates.length === 0 || reportLineSlides.length === 0}
+                                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Открыть отчет
+                                                </button>
+                                                <button
+                                                    onClick={downloadHtmlReport}
+                                                    disabled={sortedReportDates.length === 0 || reportLineSlides.length === 0}
+                                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Скачать HTML
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {sortedReportDates.length === 0 && (
+                                            <div className="mt-4 text-sm text-amber-600 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
+                                                Выберите хотя бы одну дату, чтобы сформировать отчет.
+                                            </div>
+                                        )}
+                                        {sortedReportDates.length > 0 && reportLineSlides.length === 0 && (
+                                            <div className="mt-4 text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
+                                                Нет данных по линиям для выбранного периода.
+                                            </div>
+                                        )}
+                                        {reportError && (
+                                            <div className="mt-4 text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
+                                                {reportError}
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
                             )}
                             {activeTab === 'lines' && (

@@ -3,7 +3,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
     X, Search, ArrowRightLeft, Plus, CheckCircle2, 
     UserPlus, ToggleRight, ToggleLeft, Ban, GraduationCap, 
-    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2, Save, Undo2 
+    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2, Save, Undo2,
+    FileSpreadsheet
 } from 'lucide-react';
 import { checkWorkerAvailability, getRealNeighborDateStrings } from './utils';
 
@@ -424,7 +425,7 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore }) => {
+export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore, onExportLines }) => {
     if (!stats || !shiftsData || shiftsData.length === 0) return null;
     
     // Calculate per-shift statistics
@@ -488,6 +489,16 @@ export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, au
                         <Undo2 size={14} />
                         Восстановить из бэкапа
                     </button>
+                    {onExportLines && (
+                        <button
+                            onClick={onExportLines}
+                            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
+                            title="Экспорт графика по линиям"
+                        >
+                            <FileSpreadsheet size={14} />
+                            Экспорт (Линии)
+                        </button>
+                    )}
                 </div>
             </div>
             {shiftStats.map((shiftStat, idx) => (
