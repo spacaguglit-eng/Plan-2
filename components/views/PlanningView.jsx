@@ -1189,7 +1189,7 @@ const PlanningView = () => {
         const rows = buildRows(products, cipBetween);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         return applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
-    }, [products, cipBetween, cipDurations]);
+    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents]);
 
     useEffect(() => {
         const rows = buildRows(products, cipBetween);
@@ -1202,7 +1202,7 @@ const PlanningView = () => {
         if (needsUpdate) {
             syncRowsToState(scheduled);
         }
-    }, [products, cipBetween, cipDurations]);
+    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents]);
 
     const handleTimeChange = (row, field, value) => {
         const rows = buildRows(products, cipBetween);
@@ -1252,7 +1252,7 @@ const PlanningView = () => {
                 </div>
                 <div className="flex-1">
                     <h2 className="text-lg font-bold text-slate-800">Планирование очередности розлива</h2>
-                    <div className="text-xs text-slate-500">Макет для линии 1</div>
+                    <div className="text-xs text-slate-500">{`Макет для ${selectedPlanLine}`}</div>
                 </div>
                 <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-100 px-3 py-2 rounded-lg border border-slate-200">
                     <Droplet size={14} className="text-blue-600" />
