@@ -16,6 +16,8 @@ export const STORAGE_KEYS = {
     CURRENT_PLAN_ID: 'plan_current_plan_id',
     AUTO_REASSIGN_ENABLED: 'plan_auto_reassign_enabled',
     ASSIGNMENTS_BACKUP: 'plan_assignments_backup',
+    MANUAL_LINES: 'plan_manual_lines',
+    ASSIGNMENT_CLONES: 'plan_assignment_clones',
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',
     PLANNING_STATE: 'plan_planning_state'
 };

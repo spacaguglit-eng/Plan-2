@@ -1,5 +1,14 @@
 import { cleanVal, extractShiftNumber, normalizeName, matchNames, isLineMatch, checkWorkerAvailability } from './utils.js';
 
+const normalizeManualRoleForId = (roleTitle) => {
+  return String(roleTitle || 'role').replace(/\s+/g, '_');
+};
+
+const createManualSlotId = (date, shiftId, lineId, roleTitle, index) => {
+  const roleKey = normalizeManualRoleForId(roleTitle);
+  return `${date}_${shiftId}_manual_${lineId}_${roleKey}_${index}`;
+};
+
 const getSurnameNorm = (fullName) => {
   const first = String(fullName || '').trim().split(/\s+/)[0] || '';
   return normalizeName(first);
@@ -41,16 +50,18 @@ function buildDemandIndex(demandTable) {
   return { headers, brigadesByDate };
 }
 
-function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache, autoReassignEnabled }) {
+function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache, autoReassignEnabled, manualLines, assignmentClones }) {
   if (!brigadesMap) return [];
 
-  const getAvailabilityCached = (name) => {
+    const getAvailabilityCached = (name) => {
     const k = `${name}|${targetDate}`;
     if (availabilityCache.has(k)) return availabilityCache.get(k);
     const v = checkWorkerAvailability(name, targetDate, workerRegistry);
     availabilityCache.set(k, v);
     return v;
   };
+
+    const clonesForDate = (assignmentClones || {})[targetDate] || {};
 
   return Object.values(brigadesMap).map((brigade) => {
     const shiftTypeLower = brigade.type ? String(brigade.type).toLowerCase() : '';
@@ -149,6 +160,34 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
       lineTasks.push({ slots: tasksForLine, displayName: templateName || activeLineName });
     });
 
+    const manualLineKey = `${targetDate}_${brigade.id}`;
+    const manualLineDefs = (manualLines || {})[manualLineKey] || [];
+    manualLineDefs.forEach((manualLine) => {
+      const tasksForLine = [];
+      manualLine.positions.forEach((pos) => {
+        const slotCount = Math.max(1, parseInt(pos.count, 10) || 1);
+        for (let slotIdx = 0; slotIdx < slotCount; slotIdx++) {
+          const slotId = createManualSlotId(targetDate, brigade.id, manualLine.id, pos.roleTitle, slotIdx);
+          const manual = manualAssignments?.[slotId];
+          const status = manual?.type === 'vacancy' ? 'vacancy' : (manual ? 'manual' : 'vacancy');
+          tasksForLine.push({
+            status,
+            roleTitle: pos.roleTitle || 'Роль',
+            slotId,
+            isManualVacancy: manual?.type === 'vacancy',
+            currentWorkerName: null,
+            assigned: manual || null
+          });
+        }
+      });
+      lineTasks.push({
+        slots: tasksForLine,
+        displayName: manualLine.displayName,
+        manualLineId: manualLine.id,
+        isManualLine: true
+      });
+    });
+
     const freeAgents = allShiftWorkers.filter((w) => !w.isBusy && w.isAvailable);
     
     // Автоподстановка работает только если включена
@@ -179,12 +218,29 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
     const totalRequired = lineTasks.reduce((sum, lt) => sum + lt.slots.length, 0);
     const filledSlots = lineTasks.reduce((sum, lt) => sum + lt.slots.filter((s) => s.status !== 'vacancy' && s.status !== 'unknown').length, 0);
 
+    const shiftClones = clonesForDate[brigade.id] || [];
+      const availableClones = shiftClones.filter((clone) => clone.status === 'available');
+    const cloneEntries = availableClones.map((clone) => ({
+      ...clone,
+      cloneId: clone.id,
+      isClone: true,
+      isAvailable: true,
+        statusReason: clone.statusReason || 'Совмещение',
+      role: clone.role || '',
+      name: clone.name || '',
+      homeLine: clone.homeLine || ''
+    }));
+    const unassignedPeople = [
+      ...cloneEntries,
+      ...allShiftWorkers.filter((w) => !w.isBusy)
+    ];
+
     return {
       id: brigade.id,
       name: brigade.name,
       type: brigade.type,
       lineTasks,
-      unassignedPeople: allShiftWorkers.filter((w) => !w.isBusy),
+      unassignedPeople,
       floaters: freeFloaters,
       totalRequired,
       filledSlots,
@@ -193,7 +249,7 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
 }
 
 function buildChessTable(payload) {
-  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData, autoReassignEnabled } = payload;
+  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData, autoReassignEnabled, manualLines, assignmentClones } = payload;
   const dates = Array.isArray(scheduleDates) ? scheduleDates : [];
   if (!demand || dates.length === 0) return null;
 
@@ -217,9 +273,21 @@ function buildChessTable(payload) {
         manualAssignments,
         workerRegistry,
         availabilityCache,
-        autoReassignEnabled
+        autoReassignEnabled,
+        manualLines,
+        assignmentClones
       })
     );
+  });
+
+  const cloneCountsByName = {};
+  Object.values(assignmentClones || {}).forEach((dateMap) => {
+    Object.values(dateMap || {}).forEach((cloneList) => {
+      cloneList.forEach((clone) => {
+        if (!clone?.name) return;
+        cloneCountsByName[clone.name] = (cloneCountsByName[clone.name] || 0) + 1;
+      });
+    });
   });
 
   // --- Build workers list ---
@@ -444,7 +512,7 @@ function buildChessTable(payload) {
     homeBrigades: Array.from(w.homeBrigades || []),
   }));
 
-  return { dates, workers: workersOut };
+  return { dates, workers: workersOut, cloneCountsByName };
 }
 
 self.onmessage = (e) => {

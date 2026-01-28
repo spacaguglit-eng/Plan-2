@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown } from 'lucide-react';
+import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
@@ -21,6 +21,8 @@ const TimesheetView = () => {
         setViewMode,
         setTargetScrollBrigadeId,
         factData,
+        cloneCountsByName,
+        cloneDatesByName,
         viewMode
     } = useData();
 
@@ -290,6 +292,10 @@ const TimesheetView = () => {
                         <div className="flex items-center gap-1"><div className="w-3 h-3 bg-orange-100 border border-orange-200 rounded"></div> РВ</div>
                         <div className="flex items-center gap-1"><div className="w-3 h-3 bg-yellow-100 border border-yellow-200 rounded"></div> Простой</div>
                         <div className="flex items-center gap-1"><div className="w-3 h-3 bg-emerald-50 border border-emerald-200 rounded"></div> Отпуск</div>
+                        <div className="flex items-center gap-1">
+                            <Copy size={12} className="text-yellow-500" />
+                            <span>Совмещение</span>
+                        </div>
                     </div>
                     {factData && (
                         <div className="flex items-center gap-2 pl-2 border-l border-slate-300">
@@ -332,7 +338,15 @@ const TimesheetView = () => {
                         {visibleWorkers.slice(virtual.start, virtual.end).map((w, i) => (
                             <tr key={`${virtual.start + i}-${w.name}`} className="border-b border-slate-100 hover:bg-slate-50 transition-colors group">
                                 <td className="px-4 py-2 font-medium text-slate-900 sticky left-0 bg-white border-r border-slate-100 z-20 whitespace-nowrap group-hover:bg-slate-50 shadow-[2px_0_4px_rgba(0,0,0,0.05)]" title={workerRegistry[w.name]?.competencies.size > 0 ? `Компетенции: ${Array.from(workerRegistry[w.name].competencies).join(', ')}` : ''}>
-                                    {w.name} {workerRegistry[w.name]?.competencies.size > 0 && <GraduationCap size={10} className="inline text-blue-400 ml-1" />}
+                                    <div className="text-xs font-semibold text-slate-700 truncate flex items-center gap-1">
+                                        <span className="flex-1 min-w-0 truncate">{w.name}</span>
+                                        {cloneCountsByName[w.name] > 0 && (
+                                            <Copy size={12} className="text-yellow-500" title="Сотрудник представлен на несколько линий" />
+                                        )}
+                                        {workerRegistry[w.name]?.competencies.size > 0 && (
+                                            <GraduationCap size={10} className="text-blue-400" />
+                                        )}
+                                    </div>
                                 </td>
                                 <td className="px-1 py-2 sticky left-[200px] bg-white border-r border-slate-100 z-20 text-center group-hover:bg-slate-50 shadow-[2px_0_4px_rgba(0,0,0,0.05)]">
                                     <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border bg-slate-100 text-slate-500 border-slate-200 inline-block">
@@ -342,6 +356,7 @@ const TimesheetView = () => {
                                 <td className="px-2 py-2 text-slate-500 sticky left-[260px] bg-white border-r border-slate-100 z-20 truncate max-w-[150px] group-hover:bg-slate-50 shadow-[2px_0_4px_rgba(0,0,0,0.05)]">{w.role}</td>
                                 {dates.map(d => {
                                     const cell = w.cells[d] || { text: '', color: 'bg-white', verificationStatus: null };
+                                    const hasCloneOnDate = cloneDatesByName?.[d]?.[w.name];
                                     return (
                                         <td
                                             key={d}
@@ -389,6 +404,11 @@ const TimesheetView = () => {
                                                         <div className="bg-orange-500 rounded-full p-0.5 shadow-md border-2 border-white">
                                                             <AlertTriangle size={6} className="text-white" strokeWidth={2.5} fill="currentColor" />
                                                         </div>
+                                                    </div>
+                                                )}
+                                                {hasCloneOnDate && (
+                                                    <div className="absolute top-6 right-1 pointer-events-none text-slate-500">
+                                                        <Copy size={10} className="text-yellow-500" title="Есть совмещение на эту дату" />
                                                     </div>
                                                 )}
                                             </div>

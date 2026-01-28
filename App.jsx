@@ -166,7 +166,7 @@ export default function App() {
                                         </button>
                                         {isStaffMenuOpen && (
                                             <div
-                                                className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-20 overflow-hidden"
+                                                className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
                                                 <button
@@ -293,7 +293,7 @@ export default function App() {
                                         </button>
                                         {isExtraMenuOpen && (
                                             <div
-                                                className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-20 overflow-hidden"
+                                                className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
                                                 <button

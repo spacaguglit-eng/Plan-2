@@ -2,49 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
 
-const FILE_HANDLE_DB = 'productionFileHandlesDB';
-const FILE_HANDLE_STORE = 'handles';
-
-const openHandlesDb = () => new Promise((resolve, reject) => {
-    const request = indexedDB.open(FILE_HANDLE_DB, 1);
-    request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains(FILE_HANDLE_STORE)) {
-            db.createObjectStore(FILE_HANDLE_STORE, { keyPath: 'id' });
-        }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-});
-
-const saveFileHandles = async (handles, snapshots = null) => {
-    const db = await openHandlesDb();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(FILE_HANDLE_STORE, 'readwrite');
-        const store = tx.objectStore(FILE_HANDLE_STORE);
-        store.put({ id: 'production', handles, snapshots: snapshots || null });
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
-};
-
-const loadFileHandles = async () => {
-    const db = await openHandlesDb();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(FILE_HANDLE_STORE, 'readonly');
-        const store = tx.objectStore(FILE_HANDLE_STORE);
-        const req = store.get('production');
-        req.onsuccess = () => {
-            const result = req.result || {};
-            resolve({ 
-                handles: result.handles || [], 
-                snapshots: result.snapshots || null 
-            });
-        };
-        req.onerror = () => reject(req.error);
-    });
-};
-
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
     const colors = [
@@ -95,7 +52,6 @@ const buildConicGradient = (segments) => {
 const ProductionView = () => {
     const STORAGE_KEY = 'productionParsedResults';
     const fileInputRef = useRef(null);
-    const filePickerWindowRef = useRef(null);
     const [results, setResults] = useState([]);
     const [isParsing, setIsParsing] = useState(false);
     const [parseError, setParseError] = useState('');
@@ -110,10 +66,6 @@ const ProductionView = () => {
         const stored = localStorage.getItem('productionExcludedDowntimeTypes');
         return stored ? new Set(JSON.parse(stored)) : new Set();
     });
-    const [fileHandles, setFileHandles] = useState([]);
-    const fileSnapshotsRef = useRef(new Map());
-    const [pollState, setPollState] = useState({ inProgress: false, lastCheck: null });
-    const isInitialLoadRef = useRef(true);
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
     
@@ -216,132 +168,6 @@ const ProductionView = () => {
             setIsParsing(false);
         }
     }, []);
-
-    const readFilesFromHandles = useCallback(async (handles) => {
-        const files = [];
-        for (const handle of handles) {
-            if (!handle || handle.kind !== 'file') continue;
-            try {
-                const permission = await handle.queryPermission({ mode: 'read' });
-                if (permission !== 'granted') {
-                    const request = await handle.requestPermission({ mode: 'read' });
-                    if (request !== 'granted') continue;
-                }
-                const file = await handle.getFile();
-                files.push(file);
-            } catch (err) {
-                console.warn('Не удалось прочитать файл из handle:', err);
-            }
-        }
-        return files;
-    }, []);
-
-    const updateSnapshots = useCallback((files) => {
-        const next = new Map();
-        files.forEach((file) => {
-            next.set(file.name, file.lastModified);
-        });
-        fileSnapshotsRef.current = next;
-        // Сохраняем snapshots в IndexedDB
-        if (fileHandles.length > 0) {
-            saveFileHandles(fileHandles, Object.fromEntries(next)).catch(err => 
-                console.warn('Не удалось сохранить snapshots:', err)
-            );
-        }
-    }, [fileHandles]);
-
-    const checkForUpdates = useCallback(async () => {
-        if (!fileHandles || fileHandles.length === 0) return;
-        setPollState((prev) => ({ ...prev, inProgress: true }));
-        const files = await readFilesFromHandles(fileHandles);
-        if (files.length === 0) {
-            setPollState((prev) => ({ ...prev, inProgress: false, lastCheck: new Date() }));
-            return;
-        }
-        const snapshots = fileSnapshotsRef.current;
-        // Находим только измененные файлы
-        const changedFiles = files.filter((file) => {
-            const savedModified = snapshots.get(file.name);
-            return savedModified === undefined || savedModified !== file.lastModified;
-        });
-        
-        if (changedFiles.length > 0) {
-            // Обновляем snapshots только для измененных файлов
-            changedFiles.forEach((file) => {
-                snapshots.set(file.name, file.lastModified);
-            });
-            fileSnapshotsRef.current = snapshots;
-            // Сохраняем обновленные snapshots
-            await saveFileHandles(fileHandles, Object.fromEntries(snapshots));
-            // Обрабатываем только измененные файлы
-            await processFiles(changedFiles);
-        }
-        setPollState((prev) => ({ ...prev, inProgress: false, lastCheck: new Date() }));
-    }, [fileHandles, processFiles, readFilesFromHandles]);
-
-    const openFilePickerWindow = () => {
-        const existing = filePickerWindowRef.current;
-        if (existing && !existing.closed) {
-            existing.focus();
-            return;
-        }
-
-        const win = window.open('', 'production-file-picker', 'width=520,height=420');
-        if (!win) return;
-        filePickerWindowRef.current = win;
-        win.document.title = 'Выбор файлов производства';
-        win.document.body.innerHTML = `
-            <div style="font-family: sans-serif; padding: 16px;">
-                <h3 style="margin: 0 0 12px;">Выбор файлов</h3>
-                <p style="margin: 0 0 12px; color: #555;">Выберите один или несколько Excel-файлов.</p>
-                <input id="file-input" type="file" multiple accept=".xls,.xlsx" />
-                <div style="margin-top: 12px; display: flex; gap: 8px;">
-                    <button id="pick-handles">Выбрать через доступ к файлам</button>
-                    <button id="close-window">Закрыть</button>
-                </div>
-                <p style="margin-top: 12px; color: #777; font-size: 12px;">
-                    Рекомендуется использовать "доступ к файлам" для фонового обновления.
-                </p>
-            </div>
-        `;
-
-        const pickHandlesBtn = win.document.getElementById('pick-handles');
-        const fileInput = win.document.getElementById('file-input');
-        const closeBtn = win.document.getElementById('close-window');
-
-        pickHandlesBtn?.addEventListener('click', async () => {
-            if (!win.showOpenFilePicker) {
-                win.alert('Браузер не поддерживает доступ к файлам. Используйте обычный выбор.');
-                return;
-            }
-            try {
-                const handles = await win.showOpenFilePicker({
-                    multiple: true,
-                    types: [{ description: 'Excel', accept: { 'application/vnd.ms-excel': ['.xls'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }]
-                });
-                if (typeof win.opener?.__receiveProductionHandles === 'function') {
-                    win.opener.__receiveProductionHandles(handles);
-                } else {
-                    win.opener?.postMessage({ type: 'productionFileHandles', handles }, win.location.origin);
-                }
-            } catch (err) {
-                console.warn('Выбор файлов отменен или неудачен:', err);
-            }
-        });
-
-        fileInput?.addEventListener('change', () => {
-            const files = Array.from(fileInput.files || []);
-            if (files.length > 0) {
-                if (typeof win.opener?.__receiveProductionFiles === 'function') {
-                    win.opener.__receiveProductionFiles(files);
-                } else {
-                    win.opener?.postMessage({ type: 'productionFiles', files }, win.location.origin);
-                }
-            }
-        });
-
-        closeBtn?.addEventListener('click', () => win.close());
-    };
 
 
     const uniqueLines = useMemo(() => {
@@ -874,53 +700,6 @@ const ProductionView = () => {
         };
     }, []);
 
-    // Загрузка сохраненных файлов из IndexedDB
-    useEffect(() => {
-        let isActive = true;
-        loadFileHandles()
-            .then(async ({ handles, snapshots }) => {
-                if (!isActive || !handles || handles.length === 0) return;
-                setFileHandles(handles);
-                
-                // Восстанавливаем snapshots из IndexedDB
-                if (snapshots) {
-                    const snapshotsMap = new Map(Object.entries(snapshots));
-                    fileSnapshotsRef.current = snapshotsMap;
-                }
-                
-                // Читаем файлы и проверяем изменения
-                const files = await readFilesFromHandles(handles);
-                if (files.length === 0) return;
-                
-                const savedSnapshots = fileSnapshotsRef.current;
-                // Находим только измененные файлы
-                const changedFiles = files.filter((file) => {
-                    const savedModified = savedSnapshots.get(file.name);
-                    return savedModified === undefined || savedModified !== file.lastModified;
-                });
-                
-                // Обновляем snapshots для всех файлов (включая неизмененные)
-                files.forEach((file) => {
-                    savedSnapshots.set(file.name, file.lastModified);
-                });
-                fileSnapshotsRef.current = savedSnapshots;
-                await saveFileHandles(handles, Object.fromEntries(savedSnapshots));
-                
-                // Обрабатываем только измененные файлы
-                if (changedFiles.length > 0) {
-                    await processFiles(changedFiles);
-                } else if (isInitialLoadRef.current && results.length === 0) {
-                    // При первой загрузке, если нет изменений, но нет данных - загружаем все
-                    await processFiles(files);
-                }
-                isInitialLoadRef.current = false;
-            })
-            .catch((err) => console.warn('Не удалось загрузить сохраненные файлы:', err));
-        return () => {
-            isActive = false;
-        };
-    }, [processFiles, readFilesFromHandles]);
-
     // Прием данных напрямую от окна выбора файлов
     useEffect(() => {
         window.__receiveProductionFiles = async (files) => {
@@ -928,28 +707,8 @@ const ProductionView = () => {
                 await processFiles(files);
             }
         };
-        window.__receiveProductionHandles = async (handles) => {
-            if (!Array.isArray(handles)) return;
-            setFileHandles(handles);
-            const resolvedFiles = await readFilesFromHandles(handles);
-            if (resolvedFiles.length > 0) {
-                // Создаем snapshots для новых файлов
-                const snapshots = new Map();
-                resolvedFiles.forEach((file) => {
-                    snapshots.set(file.name, file.lastModified);
-                });
-                fileSnapshotsRef.current = snapshots;
-                try {
-                    await saveFileHandles(handles, Object.fromEntries(snapshots));
-                } catch (err) {
-                    console.warn('Не удалось сохранить handle файлов:', err);
-                }
-                await processFiles(resolvedFiles);
-            }
-        };
         return () => {
             delete window.__receiveProductionFiles;
-            delete window.__receiveProductionHandles;
         };
     }, [processFiles]);
 
@@ -957,40 +716,14 @@ const ProductionView = () => {
     useEffect(() => {
         const onMessage = async (event) => {
             if (event.origin !== window.location.origin) return;
-            const { type, handles, files } = event.data || {};
-            if (type === 'productionFileHandles' && Array.isArray(handles)) {
-                setFileHandles(handles);
-                const resolvedFiles = await readFilesFromHandles(handles);
-                if (resolvedFiles.length > 0) {
-                    // Создаем snapshots для новых файлов
-                    const snapshots = new Map();
-                    resolvedFiles.forEach((file) => {
-                        snapshots.set(file.name, file.lastModified);
-                    });
-                    fileSnapshotsRef.current = snapshots;
-                    try {
-                        await saveFileHandles(handles, Object.fromEntries(snapshots));
-                    } catch (err) {
-                        console.warn('Не удалось сохранить handle файлов:', err);
-                    }
-                    await processFiles(resolvedFiles);
-                }
-            } else if (type === 'productionFiles' && Array.isArray(files)) {
+            const { type, files } = event.data || {};
+            if (type === 'productionFiles' && Array.isArray(files)) {
                 await processFiles(files);
             }
         };
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
     }, [processFiles]);
-
-    // Фоновая проверка изменений файлов
-    useEffect(() => {
-        if (!fileHandles || fileHandles.length === 0) return;
-        const intervalId = setInterval(() => {
-            checkForUpdates().catch((err) => console.warn('Ошибка проверки обновлений:', err));
-        }, 30000);
-        return () => clearInterval(intervalId);
-    }, [fileHandles, checkForUpdates]);
 
     // Загрузка данных из localStorage при монтировании
     useEffect(() => {
@@ -1074,29 +807,6 @@ const ProductionView = () => {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
-                        <button
-                            onClick={openFilePickerWindow}
-                            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200 transition-colors"
-                        >
-                            <FileUp size={16} />
-                            Выбрать файлы
-                        </button>
-                        <span
-                            title={
-                                fileHandles.length === 0
-                                    ? 'Файлы не выбраны для фонового опроса'
-                                    : `Опрос каждые 30с. Последняя проверка: ${
-                                        pollState.lastCheck
-                                            ? new Date(pollState.lastCheck).toLocaleTimeString()
-                                            : 'еще не было'
-                                    }`
-                            }
-                            className={`inline-flex h-2.5 w-2.5 rounded-full ${
-                                fileHandles.length === 0
-                                    ? 'bg-slate-300'
-                                    : 'bg-green-500'
-                            } ${pollState.inProgress ? 'animate-pulse' : ''}`}
-                        />
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"

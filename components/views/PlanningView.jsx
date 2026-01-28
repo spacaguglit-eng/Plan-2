@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Droplet, Plus, Clock4, Database, GripVertical, Trash2 } from 'lucide-react';
 import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from '../../utils';
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
+import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 
 const LINE_OPTIONS = [
     'Линия 1',
@@ -158,7 +159,7 @@ const DEFAULT_PRODUCTS = [
 
 const TRANSITION_RULES_VERSION = 'rules_sets_2026_01_27';
 
-const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*[«"](?<brand>[^"»]+)[»"])?(?:\s*[-–—]\s*(?<qty>[\d\s]+)\s*шт)?/iu;
+const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*[«"](?<brand>[^"»]+)[»"])?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)\s*(?:шт|шт\.|штук))?/iu;
 
 const extractTypeFlavor = (value) => {
     if (!value) return { type: '', flavor: '' };
@@ -469,6 +470,15 @@ const PlanningView = () => {
     const [hoveredTransitionRuleId, setHoveredTransitionRuleId] = useState(null);
     const [activeTransitionCell, setActiveTransitionCell] = useState(null);
     const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
+    const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+    const [exportType, setExportType] = useState(() => storedPlanning.exportType || 'html');
+    const [exportLines, setExportLines] = useState(() => {
+        const stored = (storedPlanning.exportLines || [])
+            .map(resolveLineOption)
+            .filter(Boolean);
+        if (stored.length > 0) return stored;
+        return [resolveLineOption(storedPlanning.selectedPlanLine || LINE_OPTIONS[0])];
+    });
     const transitionWorkerRef = useRef(null);
     const transitionSaveTimeoutRef = useRef(null);
     const normalizedLinesRef = useRef(false);
@@ -547,11 +557,11 @@ const PlanningView = () => {
         return { label: 'Held–Karp', order: hk.order || [], totalCost: hkCost };
     }, [transitionCompareResult]);
 
-    const missingTransitionByIndex = useMemo(() => {
+    const buildMissingTransitionMap = useCallback((line) => {
         const map = new Map();
         const lineProducts = products
             .map((product, index) => ({ product, index }))
-            .filter(({ product }) => product.line === selectedPlanLine);
+            .filter(({ product }) => product.line === line);
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
@@ -563,7 +573,12 @@ const PlanningView = () => {
             }
         }
         return map;
-    }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName]);
+    }, [products, transitionRuleMap, getTransitionKeyForName]);
+
+    const missingTransitionByIndex = useMemo(
+        () => buildMissingTransitionMap(selectedPlanLine),
+        [buildMissingTransitionMap, selectedPlanLine]
+    );
 
     const transitionAnalytics = useMemo(() => {
         const getCipDuration = (cipKey) => {
@@ -762,6 +777,8 @@ const PlanningView = () => {
             transitionRules,
             transitionRulesVersion: TRANSITION_RULES_VERSION,
             lineEvents,
+            exportLines,
+            exportType,
             transitionAlgorithm
         });
     }, [
@@ -774,6 +791,8 @@ const PlanningView = () => {
         selectedPlanLine,
         transitionRules,
         lineEvents,
+        exportLines,
+        exportType,
         transitionAlgorithm,
         savePlanningState
     ]);
@@ -877,7 +896,8 @@ const PlanningView = () => {
             const brand = match.groups.brand ? match.groups.brand.trim() : '';
             const type = match.groups.type.trim();
             const flavor = match.groups.flavor.trim();
-            const qty = includeQty && match.groups.qty ? match.groups.qty.replace(/\s+/g, ' ').trim() : '';
+            const rawQty = includeQty && match.groups.qty ? match.groups.qty : '';
+            const qty = rawQty ? rawQty.replace(/\s+/g, ' ').trim() : '';
             const name = [
                 type,
                 flavor,
@@ -1320,6 +1340,13 @@ const PlanningView = () => {
         });
     }, [lineEvents]);
 
+    const eventLabelByKey = useMemo(() => {
+        return eventOptions.reduce((acc, option) => {
+            acc[option.key] = option.label;
+            return acc;
+        }, {});
+    }, [eventOptions]);
+
     const getEventKeyForCipKey = (cipKey) => {
         const targetsByCip = {
             cip1: ['CIP1c', 'CIP1h'],
@@ -1367,10 +1394,16 @@ const PlanningView = () => {
         return Math.max(0, Math.round((qty / speed) * 60));
     };
 
-    const buildRows = (nextProducts, nextCipBetween) => {
+    const buildRows = (
+        nextProducts,
+        nextCipBetween,
+        lineFilter = selectedPlanLine,
+        missingMap = missingTransitionByIndex
+    ) => {
         const rows = [];
+        const safeMissing = missingMap || new Map();
         nextProducts.forEach((p, i) => {
-            if (p.line !== selectedPlanLine) return;
+            if (p.line !== lineFilter) return;
             rows.push({
                 kind: 'product',
                 index: i,
@@ -1380,8 +1413,8 @@ const PlanningView = () => {
             if (i < nextCipBetween.length) {
                 const cip = nextCipBetween[i];
                 if (!cip) return;
-                const rowLine = cip.line || p.line || selectedPlanLine;
-                if (rowLine !== selectedPlanLine) return;
+                const rowLine = cip.line || p.line || lineFilter;
+                if (rowLine !== lineFilter) return;
                 const eventKey = cip.eventKey || (eventOptions[0]?.key ?? '');
                 const rawCipMinutes = getEventDurationMinutes(eventKey, rowLine);
                 rows.push({
@@ -1390,7 +1423,7 @@ const PlanningView = () => {
                     ...cip,
                     line: rowLine,
                     eventKey,
-                    missingTransition: missingTransitionByIndex.get(i) === true,
+                    missingTransition: safeMissing.get(i) === true,
                     durationMinutes: rawCipMinutes > 0 ? rawCipMinutes : CIP_FALLBACK_DURATION_MIN
                 });
             }
@@ -1494,13 +1527,51 @@ const PlanningView = () => {
     };
 
     const allRows = useMemo(() => {
-        const rows = buildRows(products, cipBetween);
+        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         return applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
-    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents]);
+    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex]);
+
+    const exportSections = useMemo(() => {
+        return exportLines
+            .map((line) => {
+                const missing = buildMissingTransitionMap(line);
+                const rows = buildRows(products, cipBetween, line, missing);
+                const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
+                const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
+                if (!scheduled.length) return null;
+                const summary = {
+                    totalDuration: scheduled.reduce((sum, row) => sum + (row.durationMinutes || 0), 0),
+                    productDuration: scheduled
+                        .filter(row => row.kind === 'product')
+                        .reduce((sum, row) => sum + (row.durationMinutes || 0), 0),
+                    cipDuration: scheduled
+                        .filter(row => row.kind === 'cip')
+                        .reduce((sum, row) => sum + (row.durationMinutes || 0), 0),
+                    start: scheduled[0]?.start || '—',
+                    end: scheduled[scheduled.length - 1]?.end || '—',
+                    date: scheduled[0]?.date || '—'
+                };
+                const formattedRows = scheduled.map((row, index) => ({
+                    ...row,
+                    label: row.kind === 'cip'
+                        ? eventLabelByKey[row.eventKey] || row.eventKey || 'CIP'
+                        : row.name,
+                    displayIndex: index + 1,
+                    quantityLabel: row.qty || '—',
+                    displayDuration: row.durationMinutes ? `${row.durationMinutes} мин` : '—'
+                }));
+                return {
+                    line,
+                    rows: formattedRows,
+                    summary
+                };
+            })
+            .filter(Boolean);
+    }, [exportLines, products, cipBetween, buildMissingTransitionMap, eventLabelByKey]);
 
     useEffect(() => {
-        const rows = buildRows(products, cipBetween);
+        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
         const needsUpdate = scheduled.some((row) => {
@@ -1510,10 +1581,10 @@ const PlanningView = () => {
         if (needsUpdate) {
             syncRowsToState(scheduled);
         }
-    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents]);
+    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex]);
 
     const handleTimeChange = (row, field, value) => {
-        const rows = buildRows(products, cipBetween);
+        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const index = rows.findIndex(r => r.kind === row.kind && r.index === row.index);
         if (index === -1) return;
         rows[index] = {
@@ -1527,7 +1598,7 @@ const PlanningView = () => {
     };
 
     const handleDateChange = (row, value) => {
-        const rows = buildRows(products, cipBetween);
+        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const index = rows.findIndex(r => r.kind === row.kind && r.index === row.index);
         if (index === -1) return;
         rows[index] = {
@@ -1550,6 +1621,31 @@ const PlanningView = () => {
         const [item] = next.splice(from, 1);
         next.splice(to, 0, item);
         setProducts(next);
+    };
+
+    const toggleExportLine = (line) => {
+        setExportLines((prev) => {
+            if (prev.includes(line)) {
+                return prev.filter(item => item !== line);
+            }
+            return [...prev, line];
+        });
+    };
+
+    const handleExportReport = () => {
+        if (exportSections.length === 0) return;
+        const metadata = {
+            title: 'Очередность розлива',
+            lines: exportSections.map(section => section.line),
+            generatedAt: new Date(),
+            description: exportType === 'pdf' ? 'PDF-выгрузка' : 'Предпросмотр HTML'
+        };
+        if (exportType === 'pdf') {
+            exportReportAsPdf(exportSections, metadata);
+        } else {
+            openReportPreview(exportSections, metadata);
+        }
+        setIsExportModalOpen(false);
     };
 
     return (
@@ -2160,6 +2256,12 @@ const PlanningView = () => {
                             >
                                 Импорт в план
                             </button>
+                                <button
+                                    onClick={() => setIsExportModalOpen(true)}
+                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
+                                >
+                                    Выгрузить
+                                </button>
                         </div>
 
                         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -2327,6 +2429,97 @@ const PlanningView = () => {
                                 className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                             >
                                 Импортировать
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {isExportModalOpen && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
+                        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+                            <div>
+                                <div className="text-lg font-semibold text-slate-800">Выгрузка отчета</div>
+                                <div className="text-xs text-slate-500">Формируйте отчеты по выбранным линиям</div>
+                            </div>
+                            <button
+                                onClick={() => setIsExportModalOpen(false)}
+                                className="text-slate-400 hover:text-slate-600 text-sm"
+                            >
+                                Закрыть
+                            </button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div className="text-sm text-slate-600">Выберите линии для экспорта</div>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                                {LINE_OPTIONS.map(line => (
+                                    <label
+                                        key={line}
+                                        className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:border-slate-400 transition-colors"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={exportLines.includes(line)}
+                                            onChange={() => toggleExportLine(line)}
+                                            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                        />
+                                        <span>{line}</span>
+                                    </label>
+                                ))}
+                            </div>
+                            <div>
+                                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Тип отчета</div>
+                                <div className="mt-2 flex flex-wrap gap-3">
+                                    <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                                        <input
+                                            type="radio"
+                                            name="exportType"
+                                            value="html"
+                                            checked={exportType === 'html'}
+                                            onChange={() => setExportType('html')}
+                                            className="h-4 w-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                                        />
+                                        HTML-просмотр
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                                        <input
+                                            type="radio"
+                                            name="exportType"
+                                            value="pdf"
+                                            checked={exportType === 'pdf'}
+                                            onChange={() => setExportType('pdf')}
+                                            className="h-4 w-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                                        />
+                                        PDF-выгрузка
+                                    </label>
+                                </div>
+                            </div>
+                            <div className="text-sm text-slate-500">
+                                <div>Выбраны линии: {exportLines.length > 0 ? exportLines.join(', ') : 'не выбрано'}</div>
+                                <div className="text-xs text-slate-400">
+                                    {exportSections.length > 0
+                                        ? `Данные готовы для ${exportSections.length} секций.`
+                                        : 'Нет позиций для выбранных линий.'}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                            <button
+                                onClick={() => setIsExportModalOpen(false)}
+                                className="px-3 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={handleExportReport}
+                                disabled={exportSections.length === 0}
+                                className={`px-3 py-2 text-sm font-semibold rounded-lg ${
+                                    exportSections.length === 0
+                                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                                }`}
+                            >
+                                {exportType === 'pdf' ? 'Скачать PDF' : 'Открыть HTML'}
                             </button>
                         </div>
                     </div>

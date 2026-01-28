@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
@@ -23,6 +23,8 @@ const DashboardView = () => {
         handleDragOver,
         handleDrop,
         handleAutoFillFloaters,
+        cloneAssignedWorker,
+        removeCloneEntry,
         exportScheduleByLinesToExcel,
         isGlobalFill,
         setIsGlobalFill,
@@ -33,13 +35,17 @@ const DashboardView = () => {
         draggedWorker,
         viewMode,
         updateAssignments,
-        manualAssignments
+        manualAssignments,
+        manualLines,
+        addManualLine,
+        removeManualLine
     } = useData();
 
     useRenderTime('dashboard', logPerformanceMetric, viewMode === 'dashboard');
 
     const [contextMenu, setContextMenu] = useState(null);
     const [contextMenuSearch, setContextMenuSearch] = useState('');
+    const [manualLineForm, setManualLineForm] = useState({ shiftId: null, templateName: '', displayName: '', templateOptions: [] });
 
     // Create normalized registry map for robust lookup
     const normalizedRegistry = useMemo(() => {
@@ -125,6 +131,70 @@ const DashboardView = () => {
         }
     }, [contextMenu]);
 
+    const getManualTemplateOptionsForShift = useCallback((shiftId) => {
+        if (!shiftId || !selectedDate) return [];
+        const templates = Object.keys(lineTemplates);
+        if (templates.length === 0) return [];
+        const key = `${selectedDate}_${shiftId}`;
+        const existing = manualLines[key] || [];
+        const used = new Set(existing.map(line => line.templateName));
+        return templates.filter(template => !used.has(template));
+    }, [lineTemplates, manualLines, selectedDate]);
+
+    const openManualLineForm = (shiftId) => {
+        const options = getManualTemplateOptionsForShift(shiftId);
+        if (options.length === 0) return;
+        const defaultTemplate = options[0];
+        setManualLineForm({
+            shiftId,
+            templateName: defaultTemplate,
+            displayName: defaultTemplate,
+            templateOptions: options
+        });
+    };
+
+    const closeManualLineForm = () => {
+        setManualLineForm({ shiftId: null, templateName: '', displayName: '', templateOptions: [] });
+    };
+
+    const handleManualLineTemplateChange = (e) => {
+        const nextTemplate = e.target.value;
+        setManualLineForm(prev => {
+            const shouldSyncDisplayName = !prev.displayName || prev.displayName === prev.templateName;
+            return {
+                ...prev,
+                templateName: nextTemplate,
+                displayName: shouldSyncDisplayName ? nextTemplate : prev.displayName
+            };
+        });
+    };
+
+    const handleManualLineDisplayNameChange = (e) => {
+        const nextName = e.target.value;
+        setManualLineForm(prev => ({ ...prev, displayName: nextName }));
+    };
+
+    const handleManualLineSubmit = (event, shiftId) => {
+        event.preventDefault();
+        if (!manualLineForm.templateName) return;
+        const displayName = manualLineForm.displayName.trim() || manualLineForm.templateName;
+        const templatePositions = lineTemplates[manualLineForm.templateName] || [];
+        const positions = templatePositions.length > 0
+            ? templatePositions.map(pos => ({
+                roleTitle: pos?.role || pos?.roleTitle || displayName,
+                count: Math.max(1, parseInt(pos?.count, 10) || 1)
+            }))
+            : [{ roleTitle: displayName, count: 1 }];
+        addManualLine({
+            date: selectedDate,
+            shiftId,
+            displayName,
+            templateName: manualLineForm.templateName,
+            positions
+        });
+        closeManualLineForm();
+    };
+
     return (
         <div className="pb-20">
             <DayStatusHeader 
@@ -171,14 +241,83 @@ const DashboardView = () => {
                                         <Wand2 size={18} /> Заполнить подсобниками
                                     </button>
                                 )}
+                                {(() => {
+                                    const availableTemplates = getManualTemplateOptionsForShift(shift.id);
+                                    const isDisabled = availableTemplates.length === 0;
+                                    return (
+                                        <button
+                                            type="button"
+                                            disabled={isDisabled}
+                                            onClick={() => openManualLineForm(shift.id)}
+                                            title={isDisabled ? 'Нет доступных шаблонов для этой смены' : 'Добавить ручную линию'}
+                                            className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-semibold text-sm transition-colors ${isDisabled ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
+                                        >
+                                            <Plus size={16} /> Добавить линию
+                                        </button>
+                                    );
+                                })()}
                             </div>
                         </div>
+                        {manualLineForm.shiftId === shift.id && (
+                            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+                                <form onSubmit={(e) => handleManualLineSubmit(e, shift.id)} className="grid gap-3 md:grid-cols-[220px_1fr_auto] md:items-end">
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Шаблон</label>
+                                        <select
+                                            value={manualLineForm.templateName}
+                                            onChange={handleManualLineTemplateChange}
+                                            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                        >
+                                            {manualLineForm.templateOptions.map(template => (
+                                                <option key={template} value={template}>{template}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Название</label>
+                                        <input
+                                            value={manualLineForm.displayName}
+                                            onChange={handleManualLineDisplayNameChange}
+                                            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                            placeholder="Например, «Линия 3»"
+                                        />
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="submit"
+                                            className="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+                                        >
+                                            Сохранить
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={closeManualLineForm}
+                                            className="flex-1 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm font-semibold hover:border-slate-300 hover:text-slate-800 transition-colors"
+                                        >
+                                            Отмена
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        )}
                         <div className="p-6 bg-slate-100/50">
                             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                                 {shift.lineTasks.map((task, idx) => (
                                     <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
                                         <div className="bg-slate-50 px-4 py-2 border-b border-slate-100 flex justify-between items-center">
-                                            <h3 className="font-bold text-slate-700 text-sm truncate" title={task.displayName}>{task.displayName}</h3>
+                                            <div className="flex items-center gap-2">
+                                                <h3 className="font-bold text-slate-700 text-sm truncate" title={task.displayName}>{task.displayName}</h3>
+                                                {task.isManualLine && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeManualLine({ date: selectedDate, shiftId: shift.id, lineId: task.manualLineId })}
+                                                        className="text-slate-400 hover:text-slate-700 p-1 rounded-full transition-colors"
+                                                        title="Удалить линию"
+                                                    >
+                                                        <X size={12} />
+                                                    </button>
+                                                )}
+                                            </div>
                                             <span className="text-xs font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500">{task.slots.length} мест</span>
                                         </div>
                                         <div className="p-3 space-y-2 flex-1">
@@ -284,6 +423,13 @@ const DashboardView = () => {
                                                                     title="Назначить РВ"
                                                                 >
                                                                     <UserPlus size={12} />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => cloneAssignedWorker({ date: selectedDate, shiftId: shift.id, slotId: slot.slotId, worker: assignedWorker, roleTitle: slot.roleTitle })}
+                                                                    className="bg-slate-100 text-slate-600 rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-slate-200"
+                                                                    title="Создать дубликат сотрудника"
+                                                                >
+                                                                    <Copy size={12} />
                                                                 </button>
                                                                 {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
                                                                     <button onClick={() => handleRemoveAssignment(slot.slotId)} className="bg-red-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-red-600">
@@ -409,17 +555,42 @@ const DashboardView = () => {
                                     </h4>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto pr-2">
                                         {shift.unassignedPeople.map(p => (
-                                            <div key={p.id} draggable={p.isAvailable} onDragStart={(e) => handleDragStart(e, p)} className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'}`} title={!p.isAvailable ? p.statusReason : (() => {
-                                                const regWorker = findWorkerInRegistry(p.name);
-                                                const comps = regWorker?.competencies;
-                                                return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) 
-                                                    ? `Компетенции: ${Array.isArray(comps) ? comps.join(', ') : Array.from(comps).join(', ')}` 
-                                                    : '';
-                                            })()}>
+                                            <div
+                                                key={p.id}
+                                                draggable={p.isAvailable}
+                                                onDragStart={(e) => handleDragStart(e, p)}
+                                                className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'} ${p.isClone ? 'border-blue-200 bg-blue-50 text-blue-700' : ''}`}
+                                                title={p.isClone ? 'Совмещение сотрудника, уже занятое на линии' : (!p.isAvailable ? p.statusReason : (() => {
+                                                    const regWorker = findWorkerInRegistry(p.name);
+                                                    const comps = regWorker?.competencies;
+                                                    return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) 
+                                                        ? `Компетенции: ${Array.isArray(comps) ? comps.join(', ') : Array.from(comps).join(', ')}` 
+                                                        : '';
+                                                })())}
+                                            >
                                                 {p.isAvailable ? <GripVertical size={14} className="text-slate-300" /> : <Ban size={14} className="text-red-400" />}
                                                 <div className="min-w-0">
                                                     <div className="text-xs font-semibold text-slate-700 truncate flex items-center gap-1">
-                                                        {p.name} {(() => {
+                                                        <span className="truncate">{p.name}</span>
+                                                        {p.isClone && (
+                                                            <>
+                                                                <Copy size={12} className="text-blue-500" title="Совмещение уже на линии" />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        e.preventDefault();
+                                                                        e.stopPropagation();
+                                                                        if (!p.cloneId) return;
+                                                                        removeCloneEntry({ date: selectedDate, shiftId: shift.id, cloneId: p.cloneId });
+                                                                    }}
+                                                                    className="text-slate-400 hover:text-slate-800 p-0.5"
+                                                                    title="Удалить клон"
+                                                                >
+                                                                    <X size={10} />
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                        {(() => {
                                                             const regWorker = findWorkerInRegistry(p.name);
                                                             const comps = regWorker?.competencies;
                                                             return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) && <GraduationCap size={10} className="text-blue-400" />;

@@ -50,6 +50,8 @@ export const DataProvider = ({ children }) => {
     // UI State that needs to be global
     const [targetScrollBrigadeId, setTargetScrollBrigadeId] = useState(null);
     const [manualAssignments, setManualAssignments] = useState({});
+    const [manualLines, setManualLines] = useState({});
+    const [assignmentClones, setAssignmentClones] = useState(() => loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, {}));
     const [draggedWorker, setDraggedWorker] = useState(null);
     const [updateReport, setUpdateReport] = useState(null);
     const [rvModalData, setRvModalData] = useState(null);
@@ -134,8 +136,31 @@ export const DataProvider = ({ children }) => {
         lineTemplates,
         floaters,
         workerRegistry: serializeWorkerRegistry(workerRegistry),
-        manualAssignments
-    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments]);
+        manualAssignments,
+        manualLines,
+        assignmentClones
+    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments, manualLines, assignmentClones]);
+
+    const normalizeManualRoleForId = (roleTitle) => {
+        return String(roleTitle || 'role').replace(/\s+/g, '_');
+    };
+
+    const createManualSlotId = (date, shiftId, lineId, roleTitle, index) => {
+        const roleKey = normalizeManualRoleForId(roleTitle);
+        return `${date}_${shiftId}_manual_${lineId}_${roleKey}_${index}`;
+    };
+
+    const buildManualLineSlotIds = (date, shiftId, manualLine) => {
+        if (!manualLine?.positions || manualLine.positions.length === 0) return [];
+        const ids = [];
+        manualLine.positions.forEach(pos => {
+            const count = Math.max(1, parseInt(pos.count, 10) || 1);
+            for (let idx = 0; idx < count; idx++) {
+                ids.push(createManualSlotId(date, shiftId, manualLine.id, pos.roleTitle, idx));
+            }
+        });
+        return ids;
+    };
 
     const applyPlanData = (planData) => {
         if (!planData) return;
@@ -149,6 +174,10 @@ export const DataProvider = ({ children }) => {
         setFloaters(planData.floaters || { day: [], night: [] });
         setWorkerRegistry(hydrateWorkerRegistry(planData.workerRegistry || {}));
         setManualAssignments(planData.manualAssignments || {});
+        const savedManualLines = planData.manualLines || loadFromLocalStorage(STORAGE_KEYS.MANUAL_LINES, {});
+        setManualLines(savedManualLines);
+        const savedClones = planData.assignmentClones || loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
+        setAssignmentClones(savedClones);
         if (planData.scheduleDates?.length > 0) {
             setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
         }
@@ -198,6 +227,8 @@ export const DataProvider = ({ children }) => {
                         
                         const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
                         setManualAssignments(savedAssignments);
+                        const savedManualLines = loadFromLocalStorage(STORAGE_KEYS.MANUAL_LINES, {});
+                        setManualLines(savedManualLines);
                         
                         if (analysis.scheduleDates.length > 0) {
                             setSelectedDate(analysis.scheduleDates[0]);
@@ -259,6 +290,16 @@ export const DataProvider = ({ children }) => {
         if (restoring) return;
         saveToLocalStorage(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, autoReassignEnabled);
     }, [autoReassignEnabled, restoring]);
+
+    useEffect(() => {
+        if (restoring) return;
+        saveToLocalStorage(STORAGE_KEYS.MANUAL_LINES, manualLines);
+    }, [manualLines, restoring]);
+
+    useEffect(() => {
+        if (restoring) return;
+        saveToLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, assignmentClones);
+    }, [assignmentClones, restoring]);
 
     useEffect(() => {
         const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
@@ -695,7 +736,8 @@ export const DataProvider = ({ children }) => {
         lineTemplates: planData.lineTemplates || {},
         floaters: planData.floaters || { day: [], night: [] },
         workerRegistry: planData.workerRegistry || {},
-        manualAssignments: planData.manualAssignments || {}
+        manualAssignments: planData.manualAssignments || {},
+        manualLines: planData.manualLines || {}
     }), []);
 
     const buildPlanSlots = useCallback((planData) => {
@@ -994,7 +1036,8 @@ export const DataProvider = ({ children }) => {
         lineTemplates,
         floaters,
         workerRegistry,
-        manualAssignments
+        manualAssignments,
+        manualLines
     ]);
 
     const handleDragStart = useCallback((e, worker) => {
@@ -1006,7 +1049,7 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
             return;
         }
-        const availability = checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
+        const availability = worker.isClone ? { available: true } : checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
         if (!availability.available) {
             e.preventDefault();
             notify({ type: 'error', message: `${worker.name} недоступен: ${availability.reason}` });
@@ -1020,6 +1063,83 @@ export const DataProvider = ({ children }) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
     }, []);
+
+    const updateCloneEntry = useCallback(({ date, shiftId, cloneId, updater }) => {
+        setAssignmentClones(prev => {
+            const next = { ...prev };
+            const dateEntry = next[date];
+            if (!dateEntry) return prev;
+            const shiftClones = dateEntry[shiftId];
+            if (!shiftClones) return prev;
+            let changed = false;
+            const updated = shiftClones.map(clone => {
+                if (clone.id !== cloneId) return clone;
+                changed = true;
+                return updater(clone);
+            });
+            if (!changed) return prev;
+            next[date] = { ...dateEntry, [shiftId]: updated };
+            return next;
+        });
+    }, []);
+
+    const removeCloneEntry = useCallback(({ date, shiftId, cloneId }) => {
+        setAssignmentClones(prev => {
+            const next = { ...prev };
+            const dateEntry = next[date];
+            if (!dateEntry) return prev;
+            const shiftClones = dateEntry[shiftId];
+            if (!shiftClones) return prev;
+            const filtered = shiftClones.filter(clone => clone.id !== cloneId);
+            if (filtered.length === shiftClones.length) return prev;
+            if (filtered.length > 0) {
+                next[date] = { ...dateEntry, [shiftId]: filtered };
+            } else {
+                const { [shiftId]: removed, ...rest } = dateEntry;
+                if (Object.keys(rest).length > 0) {
+                    next[date] = rest;
+                } else {
+                    delete next[date];
+                }
+            }
+            return next;
+        });
+    }, []);
+
+    const cloneAssignedWorker = useCallback(({ date, shiftId, slotId, worker, roleTitle }) => {
+        if (isLocked) {
+            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
+            return;
+        }
+        if (viewMode !== 'dashboard') {
+            notify({ type: 'error', message: 'Совмещение доступно только в режиме "Смены".' });
+            return;
+        }
+        if (!worker?.name || !date || !shiftId) return;
+
+            const cloneEntry = {
+            id: `clone_${slotId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            name: worker.name,
+            role: worker.role || roleTitle || 'Не указано',
+            homeLine: worker.homeLine || '',
+            originalSlotId: slotId,
+            date,
+            shiftId,
+                status: 'available',
+            createdAt: Date.now()
+        };
+
+        setAssignmentClones(prev => {
+            const next = { ...prev };
+            const dateEntry = next[date] ? { ...next[date] } : {};
+            const shiftList = dateEntry[shiftId] ? [...dateEntry[shiftId]] : [];
+            shiftList.push(cloneEntry);
+            dateEntry[shiftId] = shiftList;
+            next[date] = dateEntry;
+            return next;
+        });
+    }, [isLocked, notify, viewMode]);
+
 
     const handleDrop = useCallback((e, targetSlotId, targetBaseWorkerName = null) => {
         e.preventDefault();
@@ -1087,12 +1207,30 @@ export const DataProvider = ({ children }) => {
                 id: `assigned_${targetSlotId}_${Date.now()}`
             };
             delete assignmentEntry.sourceSlotId;
+            if (draggedWorker.cloneId) {
+                assignmentEntry.cloneId = draggedWorker.cloneId;
+                assignmentEntry.cloneDate = draggedWorker.date;
+                assignmentEntry.cloneShiftId = draggedWorker.shiftId;
+            }
             newAssignments[targetSlotId] = assignmentEntry;
+            if (draggedWorker.cloneId) {
+                updateCloneEntry({
+                    date: draggedWorker.date,
+                    shiftId: draggedWorker.shiftId,
+                    cloneId: draggedWorker.cloneId,
+                    updater: (clone) => ({
+                        ...clone,
+                        status: 'assigned',
+                        assignedSlotId: targetSlotId,
+                        assignedAt: Date.now()
+                    })
+                });
+            }
         }
         
         updateAssignments(newAssignments);
         setDraggedWorker(null);
-    }, [draggedWorker, manualAssignments, updateAssignments, workerRegistry]);
+    }, [draggedWorker, manualAssignments, updateAssignments, workerRegistry, updateCloneEntry]);
 
     const handleAssignRv = useCallback((worker, slotId) => {
         const assignmentEntry = {
@@ -1106,13 +1244,87 @@ export const DataProvider = ({ children }) => {
         };
         updateAssignments({ ...manualAssignments, [slotId]: assignmentEntry });
         setRvModalData(null);
-    }, [manualAssignments, updateAssignments]);
+    }, [manualAssignments, updateAssignments, updateCloneEntry]);
 
     const handleRemoveAssignment = useCallback((slotId) => {
         const newAssignments = { ...manualAssignments };
+        const existing = newAssignments[slotId];
+        if (existing?.cloneId && existing.cloneDate && existing.cloneShiftId) {
+            updateCloneEntry({
+                date: existing.cloneDate,
+                shiftId: existing.cloneShiftId,
+                cloneId: existing.cloneId,
+                updater: (clone) => ({
+                    ...clone,
+                    status: 'available',
+                    assignedSlotId: undefined,
+                    assignedAt: undefined
+                })
+            });
+        }
         if (newAssignments[slotId]) delete newAssignments[slotId];
         else newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
         updateAssignments(newAssignments);
+    }, [manualAssignments, updateAssignments]);
+
+    const addManualLine = useCallback(({ date, shiftId, displayName, templateName, positions }) => {
+        if (!date || !shiftId || !displayName) return;
+        const key = `${date}_${shiftId}`;
+        const normalizedPositions = Array.isArray(positions) && positions.length > 0
+            ? positions.map(pos => ({
+                roleTitle: pos?.roleTitle || pos?.role || displayName,
+                count: Math.max(1, parseInt(pos?.count, 10) || 1)
+            }))
+            : [{ roleTitle: displayName, count: 1 }];
+        const nextLine = {
+            id: `manual_line_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            templateName,
+            displayName,
+            positions: normalizedPositions
+        };
+        setManualLines(prev => {
+            const next = { ...prev };
+            const existing = next[key] ? [...next[key]] : [];
+            next[key] = [...existing, nextLine];
+            return next;
+        });
+    }, []);
+
+    const removeManualLine = useCallback(({ date, shiftId, lineId }) => {
+        if (!date || !shiftId || !lineId) return;
+        const key = `${date}_${shiftId}`;
+        let removedLine = null;
+        setManualLines(prev => {
+            const next = { ...prev };
+            const existing = next[key] ? [...next[key]] : [];
+            const filtered = existing.filter(line => {
+                if (line.id === lineId) {
+                    removedLine = line;
+                    return false;
+                }
+                return true;
+            });
+            if (filtered.length > 0) {
+                next[key] = filtered;
+            } else {
+                delete next[key];
+            }
+            return next;
+        });
+        if (!removedLine) return;
+        const slotIds = buildManualLineSlotIds(date, shiftId, removedLine);
+        if (slotIds.length === 0) return;
+        const nextAssignments = { ...manualAssignments };
+        let changed = false;
+        slotIds.forEach(slotId => {
+            if (nextAssignments[slotId]) {
+                delete nextAssignments[slotId];
+                changed = true;
+            }
+        });
+        if (changed) {
+            updateAssignments(nextAssignments);
+        }
     }, [manualAssignments, updateAssignments]);
 
     // --- DEMAND INDEX (by date) ---
@@ -1158,6 +1370,8 @@ export const DataProvider = ({ children }) => {
             availabilityCache.set(k, v);
             return v;
         };
+
+        const clonesForDate = assignmentClones[targetDate] || {};
 
         return Object.values(brigadesMap).map(brigade => {
             const shiftTypeLower = brigade.type ? brigade.type.toLowerCase() : '';
@@ -1256,6 +1470,34 @@ export const DataProvider = ({ children }) => {
                 lineTasks.push({ slots: tasksForLine, displayName: templateName || activeLineName });
             });
 
+            const manualLineKey = `${targetDate}_${brigade.id}`;
+            const manualLineDefs = manualLines[manualLineKey] || [];
+            manualLineDefs.forEach(manualLine => {
+                const tasksForLine = [];
+                manualLine.positions.forEach(pos => {
+                    const slotCount = Math.max(1, parseInt(pos.count, 10) || 1);
+                    for (let slotIdx = 0; slotIdx < slotCount; slotIdx++) {
+                        const slotId = createManualSlotId(targetDate, brigade.id, manualLine.id, pos.roleTitle, slotIdx);
+                        const manual = manualAssignments[slotId];
+                        const status = manual?.type === 'vacancy' ? 'vacancy' : (manual ? 'manual' : 'vacancy');
+                        tasksForLine.push({
+                            status,
+                            roleTitle: pos.roleTitle || 'Роль',
+                            slotId,
+                            isManualVacancy: manual?.type === 'vacancy',
+                            currentWorkerName: null,
+                            assigned: manual || null
+                        });
+                    }
+                });
+                lineTasks.push({
+                    slots: tasksForLine,
+                    displayName: manualLine.displayName,
+                    manualLineId: manualLine.id,
+                    isManualLine: true
+                });
+            });
+
             const freeAgents = allShiftWorkers.filter(w => !w.isBusy && w.isAvailable);
             
             // Автоподстановка работает только если включена
@@ -1286,18 +1528,35 @@ export const DataProvider = ({ children }) => {
             const totalRequired = lineTasks.reduce((sum, lt) => sum + lt.slots.length, 0);
             const filledSlots = lineTasks.reduce((sum, lt) => sum + lt.slots.filter(s => s.status !== 'vacancy' && s.status !== 'unknown').length, 0);
 
+            const shiftClones = clonesForDate[brigade.id] || [];
+            const availableClones = shiftClones.filter(clone => clone.status === 'available');
+            const cloneEntries = availableClones.map(clone => ({
+                ...clone,
+                cloneId: clone.id,
+                isClone: true,
+                isAvailable: true,
+                statusReason: clone.statusReason || 'Совмещение',
+                role: clone.role || '',
+                name: clone.name || '',
+                homeLine: clone.homeLine || ''
+            }));
+            const unassignedPeople = [
+                ...cloneEntries,
+                ...allShiftWorkers.filter(w => !w.isBusy)
+            ];
+
             return {
                 id: brigade.id,
                 name: brigade.name,
                 type: brigade.type,
                 lineTasks,
-                unassignedPeople: allShiftWorkers.filter(w => !w.isBusy),
+                unassignedPeople,
                 floaters: freeFloaters,
                 totalRequired,
                 filledSlots
             };
         });
-    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, workerRegistry, autoReassignEnabled]);
+    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, manualLines, workerRegistry, autoReassignEnabled, assignmentClones]);
 
     // --- SHIFTS CACHE (by date) ---
     const shiftsByDate = useMemo(() => {
@@ -1344,6 +1603,34 @@ export const DataProvider = ({ children }) => {
         });
         return stats;
     }, [rawTables, manualAssignments, scheduleDates, lineTemplates, getShiftsForDate]);
+
+    const cloneCountsByName = useMemo(() => {
+        const counts = {};
+        Object.values(assignmentClones).forEach(dateMap => {
+            Object.values(dateMap).forEach(cloneList => {
+                cloneList.forEach(clone => {
+                    if (!clone?.name) return;
+                    counts[clone.name] = (counts[clone.name] || 0) + 1;
+                });
+            });
+        });
+        return counts;
+    }, [assignmentClones]);
+
+    const cloneDatesByName = useMemo(() => {
+        const map = {};
+        Object.entries(assignmentClones).forEach(([date, dateEntry]) => {
+            if (!dateEntry) return;
+            Object.values(dateEntry).forEach(cloneList => {
+                cloneList.forEach(clone => {
+                    if (!clone?.name) return;
+                    if (!map[date]) map[date] = {};
+                    map[date][clone.name] = true;
+                });
+            });
+        });
+        return map;
+    }, [assignmentClones]);
 
     const globalWorkSchedule = useMemo(() => {
         const schedule = {};
@@ -1483,10 +1770,12 @@ export const DataProvider = ({ children }) => {
                 manualAssignments,
                 workerRegistry: workerRegistryForWorker,
                 factData,
-                autoReassignEnabled
+                manualLines,
+                autoReassignEnabled,
+                assignmentClones
             }
         });
-    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, autoReassignEnabled]);
+    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, manualLines, autoReassignEnabled, assignmentClones]);
 
     const chessTableBase = useMemo(() => {
         // Avoid spending CPU when user isn't on the timesheet view.
@@ -1731,8 +2020,8 @@ export const DataProvider = ({ children }) => {
             });
         });
 
-        return { dates: sortedDates, workers: workerRows };
-    }, [viewMode, rawTables, scheduleDates, lineTemplates, floaters.day, floaters.night, workerRegistry, factData, shiftsByDate, getShiftsForDate]);
+        return { dates: sortedDates, workers: workerRows, cloneCountsByName };
+    }, [viewMode, rawTables, scheduleDates, lineTemplates, floaters.day, floaters.night, workerRegistry, factData, shiftsByDate, getShiftsForDate, cloneCountsByName]);
 
     const calculateChessTable = useCallback(() => {
         if (USE_CHESS_WORKER) return chessTableWorkerResult;
@@ -2104,6 +2393,10 @@ export const DataProvider = ({ children }) => {
         lineTemplates, floaters, workerRegistry,
         step, setStep, viewMode, setViewMode, selectedDate, setSelectedDate,
         manualAssignments, setManualAssignments,
+        manualLines, setManualLines,
+        assignmentClones,
+        cloneCountsByName,
+        cloneDatesByName,
         factData, setFactData, factDates, setFactDates,
         targetScrollBrigadeId, setTargetScrollBrigadeId,
         draggedWorker, setDraggedWorker,
@@ -2131,6 +2424,8 @@ export const DataProvider = ({ children }) => {
         importPlanFromJson,
         importPlanFromExcelFile,
         updateAssignments,
+        addManualLine,
+        removeManualLine,
         comparePlanSnapshots,
         handleMatrixAssignment,
         handleWorkerEditSave, 
@@ -2140,6 +2435,8 @@ export const DataProvider = ({ children }) => {
         globalWorkSchedule,
         handleDragStart, handleDragOver, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
+        cloneAssignedWorker,
+        removeCloneEntry,
         backupAssignments, restoreAssignments,
         calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
         unlockWithCode
@@ -2153,6 +2450,10 @@ export const DataProvider = ({ children }) => {
         lineTemplates, floaters, workerRegistry,
         step, viewMode, selectedDate,
         manualAssignments,
+        manualLines,
+        assignmentClones,
+        cloneCountsByName,
+        cloneDatesByName,
         factData, factDates,
         targetScrollBrigadeId,
         draggedWorker,
@@ -2174,10 +2475,14 @@ export const DataProvider = ({ children }) => {
         importPlanFromJson,
         importPlanFromExcelFile,
         comparePlanSnapshots,
+        addManualLine,
+        removeManualLine,
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,
         calculateChessTable,
+        cloneAssignedWorker,
+        removeCloneEntry,
         exportChessTableToExcel,
         exportScheduleByLinesToExcel,
         unlockWithCode,
