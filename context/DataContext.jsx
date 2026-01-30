@@ -80,6 +80,7 @@ export const DataProvider = ({ children }) => {
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
+    const draftPlanIdRef = useRef(null);
 
     const TARGET_CONFIG = useMemo(() => ([
         { tableName: 'Сводная_По_Людям', expectedSheet: 'Расписание по сменам', type: 'demand' },
@@ -740,6 +741,66 @@ export const DataProvider = ({ children }) => {
         manualLines: planData.manualLines || {}
     }), []);
 
+    const createPlanFromSchedule = useCallback(({ demand, roster, name } = {}) => {
+        if (!Array.isArray(demand) || demand.length === 0) throw new Error('Пустое расписание (demand).');
+        if (!Array.isArray(roster) || roster.length === 0) throw new Error('Пустой справочник (roster).');
+
+        const rawTablesNext = { demand, roster };
+        const { templates: templatesFromRoster } = preAnalyzeRoster(roster);
+        const newHashes = buildPlanHashes(demand, templatesFromRoster);
+        const analysis = analyzeDataPure(demand, roster);
+
+        setRawTables(rawTablesNext);
+        setPlanHashes(newHashes);
+        setScheduleDates(analysis.scheduleDates);
+        setLineTemplates(analysis.lineTemplates);
+        setFloaters(analysis.floaters);
+        setWorkerRegistry(analysis.workerRegistry);
+        setManualAssignments({});
+        if (analysis.scheduleDates.length > 0) {
+            setSelectedDate(prev => analysis.scheduleDates.includes(prev) ? prev : analysis.scheduleDates[0]);
+        }
+
+        saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, analysis.lineTemplates);
+        saveToLocalStorage(STORAGE_KEYS.FLOATERS, analysis.floaters);
+        const registryForStorage = {};
+        Object.entries(analysis.workerRegistry || {}).forEach(([k, v]) => {
+            registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
+        });
+        saveToLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
+
+        const createdAt = new Date().toISOString();
+        const planId = draftPlanIdRef.current || generatePlanId();
+        const plan = {
+            id: planId,
+            name: name || `План ${createdAt.slice(0, 10)}`,
+            createdAt,
+            type: null,
+            data: {
+                rawTables: rawTablesNext,
+                planHashes: newHashes,
+                scheduleDates: analysis.scheduleDates,
+                lineTemplates: analysis.lineTemplates,
+                floaters: analysis.floaters,
+                workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
+                manualAssignments: {},
+                manualLines,
+                assignmentClones
+            }
+        };
+
+        setSavedPlans(prev => {
+            const idx = prev.findIndex(p => p.id === planId);
+            if (idx !== -1) {
+                const next = [...prev];
+                next[idx] = plan;
+                return next;
+            }
+            return [...prev, plan];
+        });
+        draftPlanIdRef.current = planId;
+    }, [analyzeDataPure, assignmentClones, buildPlanHashes, manualLines, preAnalyzeRoster]);
+
     const buildPlanSlots = useCallback((planData) => {
         const normalized = normalizePlanData(planData || {});
         const demandData = normalized.rawTables?.demand;
@@ -820,6 +881,31 @@ export const DataProvider = ({ children }) => {
                     }
                 });
             });
+
+            // Слоты ручных линий (РВ и др. попадают в сравнение)
+            const manualLineDefs = normalized.manualLines?.[`${dateStr}_${shiftNum}`] || [];
+            manualLineDefs.forEach(manualLine => {
+                (manualLine.positions || []).forEach(pos => {
+                    const count = Math.max(1, parseInt(pos.count, 10) || 1);
+                    for (let idx = 0; idx < count; idx++) {
+                        const slotId = createManualSlotId(dateStr, shiftNum, manualLine.id, pos.roleTitle || pos.role, idx);
+                        const manual = assignments[slotId];
+                        const name = manual?.type === 'vacancy' ? null : (manual?.name || null);
+                        slots.push({
+                            slotId,
+                            date: dateStr,
+                            shiftId: String(shiftNum),
+                            lineName: manualLine.displayName || manualLine.id,
+                            role: pos.roleTitle || pos.role || 'Роль',
+                            index: idx,
+                            assignedName: name,
+                            assignedNorm: name ? normalizeName(name) : '',
+                            assignmentType: manual?.type || null,
+                            source: manual ? 'manual' : 'vacancy'
+                        });
+                    }
+                });
+            });
         });
 
         return { slots, slotMap: new Map(slots.map(s => [s.slotId, s])) };
@@ -843,6 +929,13 @@ export const DataProvider = ({ children }) => {
         const replaced = [];
         const unchangedSlotIds = new Set();
 
+        // Слоты только в оперативном плане (РВ, ручные линии и т.д.) — считаем добавлениями
+        operationalSlots.slots.forEach(slotB => {
+            if (masterSlots.slotMap.has(slotB.slotId)) return;
+            if (!slotB.assignedName || !slotB.assignedNorm) return;
+            tempAdded.push({ ...slotB, name: slotB.assignedName });
+        });
+
         slotIds.forEach(slotId => {
             const slotA = masterSlots.slotMap.get(slotId);
             const slotB = operationalSlots.slotMap.get(slotId);
@@ -864,7 +957,9 @@ export const DataProvider = ({ children }) => {
                 replaced.push({
                     ...slotB,
                     fromName: slotA.assignedName,
-                    toName: slotB.assignedName
+                    toName: slotB.assignedName,
+                    fromSlot: slotA,
+                    toSlot: slotB
                 });
                 return;
             }
@@ -921,8 +1016,16 @@ export const DataProvider = ({ children }) => {
         const added = tempAdded.filter((_, idx) => !usedAddedIndices.has(idx));
         const lost = tempLost.filter((_, idx) => !usedLostIndices.has(idx));
 
+        const matched = [];
+        unchangedSlotIds.forEach(slotId => {
+            const masterSlot = masterSlots.slotMap.get(slotId);
+            const operationalSlot = operationalSlots.slotMap.get(slotId);
+            if (!masterSlot || !operationalSlot) return;
+            matched.push({ master: masterSlot, operational: operationalSlot });
+        });
+
         return {
-            changes: { moved, added, lost, replaced }
+            changes: { moved, added, lost, replaced, matched }
         };
     }, [buildPlanSlots, normalizePlanData]);
 
@@ -975,12 +1078,8 @@ export const DataProvider = ({ children }) => {
             setRawTables({});
             setScheduleDates([]);
             setPlanHashes({});
-            setLineTemplates({});
-            setFloaters({ day: [], night: [] });
-            setWorkerRegistry({});
             setManualAssignments({});
             setSelectedDate('');
-            setStep('upload');
         }
     }, [currentPlanId]);
 
@@ -1062,6 +1161,10 @@ export const DataProvider = ({ children }) => {
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
+    }, []);
+
+    const handleDragEnd = useCallback(() => {
+        setDraggedWorker(null);
     }, []);
 
     const updateCloneEntry = useCallback(({ date, shiftId, cloneId, updater }) => {
@@ -1439,7 +1542,11 @@ export const DataProvider = ({ children }) => {
                             }
 
                             const manual = manualAssignments[slotId];
-                            if (manual) status = manual.type === 'vacancy' ? 'vacancy' : 'manual';
+                            if (manual) {
+                                if (manual.type === 'vacancy') status = 'vacancy';
+                                else if (manual.type === 'outsourced') status = 'outsourced';
+                                else status = 'manual';
+                            }
 
                             if (status === 'filled' && currentWorkerName) {
                                 const wAvail = getAvailabilityCached(currentWorkerName);
@@ -1479,7 +1586,12 @@ export const DataProvider = ({ children }) => {
                     for (let slotIdx = 0; slotIdx < slotCount; slotIdx++) {
                         const slotId = createManualSlotId(targetDate, brigade.id, manualLine.id, pos.roleTitle, slotIdx);
                         const manual = manualAssignments[slotId];
-                        const status = manual?.type === 'vacancy' ? 'vacancy' : (manual ? 'manual' : 'vacancy');
+                            let status = 'vacancy';
+                            if (manual) {
+                                if (manual.type === 'vacancy') status = 'vacancy';
+                                else if (manual.type === 'outsourced') status = 'outsourced';
+                                else status = 'manual';
+                            }
                         tasksForLine.push({
                             status,
                             roleTitle: pos.roleTitle || 'Роль',
@@ -2426,6 +2538,7 @@ export const DataProvider = ({ children }) => {
         updateAssignments,
         addManualLine,
         removeManualLine,
+        createPlanFromSchedule,
         comparePlanSnapshots,
         handleMatrixAssignment,
         handleWorkerEditSave, 
@@ -2433,7 +2546,7 @@ export const DataProvider = ({ children }) => {
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,
-        handleDragStart, handleDragOver, handleDrop,
+        handleDragStart, handleDragOver, handleDragEnd, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         cloneAssignedWorker,
         removeCloneEntry,
@@ -2477,6 +2590,7 @@ export const DataProvider = ({ children }) => {
         comparePlanSnapshots,
         addManualLine,
         removeManualLine,
+        createPlanFromSchedule,
         getShiftsForDate,
         calculateDailyStats,
         globalWorkSchedule,

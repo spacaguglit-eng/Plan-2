@@ -962,8 +962,8 @@ const ProductionView = () => {
                                 onClick={() => setActiveTab('production')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'production'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        ? 'bg-rose-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-rose-50 hover:text-rose-600'
                                 }`}
                             >
                                 Производство
@@ -972,8 +972,8 @@ const ProductionView = () => {
                                 onClick={() => setActiveTab('downtime')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'downtime'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        ? 'bg-amber-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-amber-50 hover:text-amber-600'
                                 }`}
                             >
                                 Простои
@@ -982,8 +982,8 @@ const ProductionView = () => {
                                 onClick={() => setActiveTab('charts')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'charts'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        ? 'bg-indigo-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-indigo-50 hover:text-indigo-600'
                                 }`}
                             >
                                 <BarChart3 size={16} />
@@ -993,8 +993,8 @@ const ProductionView = () => {
                                 onClick={() => setActiveTab('lines')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'lines'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        ? 'bg-emerald-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-emerald-50 hover:text-emerald-600'
                                 }`}
                             >
                                 Линии
@@ -1003,8 +1003,8 @@ const ProductionView = () => {
                                 onClick={() => setActiveTab('reports')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'reports'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                        ? 'bg-blue-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600'
                                 }`}
                             >
                                 Отчеты

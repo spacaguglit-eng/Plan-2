@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy } from 'lucide-react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
@@ -21,6 +21,7 @@ const DashboardView = () => {
         handleRemoveAssignment,
         handleDragStart,
         handleDragOver,
+        handleDragEnd,
         handleDrop,
         handleAutoFillFloaters,
         cloneAssignedWorker,
@@ -108,6 +109,19 @@ const DashboardView = () => {
         setContextMenu(null);
         setContextMenuSearch('');
     };
+
+    const handleMarkOutsource = useCallback((slotId, roleTitle) => {
+        const outsourceEntry = {
+            name: 'Аутсорс',
+            role: roleTitle,
+            homeLine: 'Аутсорс',
+            type: 'outsourced',
+            originalId: `outsourced_${slotId}`,
+            id: `outsourced_${slotId}_${Date.now()}`
+        };
+        updateAssignments({ ...manualAssignments, [slotId]: outsourceEntry });
+        setContextMenu(null);
+    }, [manualAssignments, updateAssignments]);
 
     const filteredContextMenuEmployees = contextMenu?.availableEmployees?.filter(emp => {
         if (!contextMenuSearch) return true;
@@ -222,8 +236,13 @@ const DashboardView = () => {
                 />
             )}
             <div className="space-y-12">
-                {shiftsData.map((shift) => (
-                    <div id={`brigade-${shift.id}`} key={shift.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                {shiftsData.map((shift) => {
+                    const vacancies = Math.max(0, shift.totalRequired - shift.filledSlots);
+                    const floatersCount = shift.floaters.length;
+                    const freeWorkers = shift.unassignedPeople.length;
+                    const isDayShift = shift.type?.toLowerCase().includes('день');
+                    return (
+                        <div id={`brigade-${shift.id}`} key={shift.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="px-6 py-4 border-b flex items-center justify-between bg-slate-50">
                             <div className="flex items-center gap-4">
                                 <div className="p-3 rounded-xl bg-blue-600 text-white font-bold text-xl">{shift.name}</div>
@@ -303,10 +322,17 @@ const DashboardView = () => {
                         <div className="p-6 bg-slate-100/50">
                             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                                 {shift.lineTasks.map((task, idx) => (
-                                    <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
-                                        <div className="bg-slate-50 px-4 py-2 border-b border-slate-100 flex justify-between items-center">
-                                            <div className="flex items-center gap-2">
+                                    <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden transition-shadow hover:shadow-md">
+                                        <div className="bg-gradient-to-r from-slate-50 to-white px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <span className={`w-2 h-2 rounded-full ${task.isManualLine ? 'bg-amber-500' : 'bg-slate-300'}`} />
                                                 <h3 className="font-bold text-slate-700 text-sm truncate" title={task.displayName}>{task.displayName}</h3>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500">{task.slots.length} мест</span>
+                                                {task.isManualLine && (
+                                                    <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">Ручная</span>
+                                                )}
                                                 {task.isManualLine && (
                                                     <button
                                                         type="button"
@@ -318,7 +344,6 @@ const DashboardView = () => {
                                                     </button>
                                                 )}
                                             </div>
-                                            <span className="text-xs font-semibold bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-500">{task.slots.length} мест</span>
                                         </div>
                                         <div className="p-3 space-y-2 flex-1">
                                             {task.slots.map((slot, sIdx) => {
@@ -350,13 +375,14 @@ const DashboardView = () => {
                                                                 };
                                                                 handleDragStart(e, workerForDrag);
                                                             }}
+                                                            onDragEnd={handleDragEnd}
                                                             onDragOver={handleDragOver}
                                                             onDrop={(e) => handleDrop(e, slot.slotId, slot.currentWorkerName)}
-                                                            className={`bg-orange-50 border-orange-200 border-2 p-2 rounded-lg relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+                                                            className={`bg-orange-50 border-orange-200 border-2 p-2 pr-16 rounded-lg relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
                                                         >
                                                             <GripVertical size={14} className="text-orange-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1 top-2" />
-                                                            <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 cursor-pointer">
-                                                                <X size={12} />
+                                                            <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute bottom-2 right-2 w-6 h-6 bg-red-500 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 cursor-pointer flex items-center justify-center active:translate-y-[1px]">
+                                                                <X size={14} />
                                                             </button>
                                                             <div className="absolute top-0 right-0 bg-orange-500 text-white text-[9px] px-1.5 py-0.5 rounded-bl font-bold pointer-events-none">РВ • Бр.{slot.assigned.sourceShift}</div>
                                                             <div className="flex items-center gap-2">
@@ -408,31 +434,41 @@ const DashboardView = () => {
                                                                 };
                                                                 handleDragStart(e, workerForDrag);
                                                             }}
+                                                            onDragEnd={handleDragEnd}
                                                             onDragOver={handleDragOver}
                                                             onDrop={(e) => {
                                                                 // Если тащат на занятый слот - меняем местами
                                                                 handleDrop(e, slot.slotId, slot.currentWorkerName);
                                                             }}
-                                                            className={`flex items-center gap-3 p-2 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+                                                            className={`flex items-center gap-3 p-2 pr-16 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
                                                         >
                                                             <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
-                                                            <div className="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                                                            <div className="absolute bottom-1 right-1 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
                                                                 <button
                                                                     onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
-                                                                    className="bg-orange-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-orange-600"
+                                                                    className="w-6 h-6 bg-orange-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-orange-600 active:translate-y-[1px] flex items-center justify-center"
                                                                     title="Назначить РВ"
                                                                 >
                                                                     <UserPlus size={12} />
                                                                 </button>
+                                                                {slot.status !== 'outsourced' && (
+                                                                    <button
+                                                                        onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
+                                                                        className="w-6 h-6 bg-amber-100 text-amber-800 rounded-md shadow-sm cursor-pointer hover:bg-amber-200 border border-amber-200 active:translate-y-[1px] flex items-center justify-center"
+                                                                        title="Закрыть аутсорсом"
+                                                                    >
+                                                                        <Briefcase size={12} />
+                                                                    </button>
+                                                                )}
                                                                 <button
                                                                     onClick={() => cloneAssignedWorker({ date: selectedDate, shiftId: shift.id, slotId: slot.slotId, worker: assignedWorker, roleTitle: slot.roleTitle })}
-                                                                    className="bg-slate-100 text-slate-600 rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-slate-200"
+                                                                    className="w-6 h-6 bg-slate-100 text-slate-700 rounded-md shadow-sm cursor-pointer hover:bg-slate-200 border border-slate-200 active:translate-y-[1px] flex items-center justify-center"
                                                                     title="Создать дубликат сотрудника"
                                                                 >
                                                                     <Copy size={12} />
                                                                 </button>
-                                                                {(slot.status === 'filled' || isManual || slot.status === 'reassigned') && (
-                                                                    <button onClick={() => handleRemoveAssignment(slot.slotId)} className="bg-red-500 text-white rounded-full p-0.5 shadow-sm cursor-pointer hover:bg-red-600">
+                                                                {(slot.status === 'filled' || isManual || slot.status === 'reassigned' || slot.status === 'outsourced') && (
+                                                                    <button onClick={() => handleRemoveAssignment(slot.slotId)} className="w-6 h-6 bg-red-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-red-600 active:translate-y-[1px] flex items-center justify-center">
                                                                         <X size={12} />
                                                                     </button>
                                                                 )}
@@ -470,6 +506,15 @@ const DashboardView = () => {
                                                     );
                                                 } else if (slot.status === 'manual') {
                                                     return <div key={sIdx}>{renderFilled('bg-indigo-50', 'border-indigo-200', 'bg-indigo-200', 'text-indigo-700', slot.assigned, true)}</div>;
+                                                } else if (slot.status === 'outsourced') {
+                                                    return (
+                                                        <div key={sIdx} className="relative">
+                                                            {renderFilled('bg-amber-50', 'border-amber-200', 'bg-amber-200', 'text-amber-800', slot.assigned)}
+                                                            <div className="absolute top-0 right-0 bg-amber-300 text-amber-900 px-1.5 py-0.5 rounded-bl text-[9px] font-bold pointer-events-none">
+                                                                Аутсорс
+                                                            </div>
+                                                        </div>
+                                                    );
                                                 } else {
                                                     return (
                                                         <div 
@@ -497,8 +542,8 @@ const DashboardView = () => {
                                                             className={`flex items-center gap-3 p-2 rounded-lg border-2 border-dashed ${draggedWorker ? 'border-blue-400 bg-blue-50' : 'border-red-200 bg-red-50/30'} transition-colors relative group`}
                                                         >
                                                             {slot.isManualVacancy && (
-                                                                <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute -top-2 -right-2 bg-gray-400 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10">
-                                                                    <X size={12} />
+                                                                <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute bottom-1 right-1 w-5 h-5 bg-gray-500 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 flex items-center justify-center">
+                                                                    <X size={10} />
                                                                 </button>
                                                             )}
                                                             <div className={`w-8 h-8 rounded-full ${draggedWorker ? 'bg-blue-100 text-blue-500' : 'bg-red-100 text-red-400'} flex items-center justify-center flex-shrink-0`}>
@@ -511,13 +556,22 @@ const DashboardView = () => {
                                                                 <div className={`text-xs font-bold ${draggedWorker ? 'text-blue-400' : 'text-slate-600'}`}>{slot.roleTitle}</div>
                                                             </div>
                                                             {!draggedWorker && !slot.isManualVacancy && (
-                                                                <button
-                                                                    onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
-                                                                    className="bg-orange-100 hover:bg-orange-200 text-orange-600 p-1.5 rounded-lg transition-colors"
-                                                                    title="Назначить РВ"
-                                                                >
-                                                                    <UserPlus size={16} />
-                                                                </button>
+                                                                <div className="flex items-center gap-2">
+                                                                        <button
+                                                                            onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
+                                                                            className="w-6 h-6 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md border border-amber-200 transition-colors flex items-center justify-center shadow-sm"
+                                                                            title="Закрыть аутсорсом"
+                                                                        >
+                                                                            <Briefcase size={12} />
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
+                                                                            className="w-6 h-6 bg-orange-100 hover:bg-orange-200 text-orange-600 rounded-md transition-colors flex items-center justify-center shadow-sm"
+                                                                            title="Назначить РВ"
+                                                                        >
+                                                                            <UserPlus size={12} />
+                                                                        </button>
+                                                                </div>
                                                             )}
                                                         </div>
                                                     );
@@ -537,7 +591,7 @@ const DashboardView = () => {
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                         {shift.floaters.length > 0 ? (
                                             shift.floaters.map(p => (
-                                                <div key={p.id} draggable onDragStart={(e) => handleDragStart(e, p)} className="flex items-center gap-2 p-2 bg-yellow-50 rounded border border-yellow-100 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow group">
+                                                <div key={p.id} draggable onDragStart={(e) => handleDragStart(e, p)} onDragEnd={handleDragEnd} className="flex items-center gap-2 p-2 bg-yellow-50 rounded border border-yellow-100 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow group">
                                                     <GripVertical size={14} className="text-yellow-400" />
                                                     <div className="text-xs font-semibold text-slate-700">{p.name}</div>
                                                 </div>
@@ -559,6 +613,7 @@ const DashboardView = () => {
                                                 key={p.id}
                                                 draggable={p.isAvailable}
                                                 onDragStart={(e) => handleDragStart(e, p)}
+                                                onDragEnd={handleDragEnd}
                                                 className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'} ${p.isClone ? 'border-blue-200 bg-blue-50 text-blue-700' : ''}`}
                                                 title={p.isClone ? 'Совмещение сотрудника, уже занятое на линии' : (!p.isAvailable ? p.statusReason : (() => {
                                                     const regWorker = findWorkerInRegistry(p.name);
@@ -607,7 +662,8 @@ const DashboardView = () => {
                             </div>
                         </div>
                     </div>
-                ))}
+                    );
+                })}
             </div>
             {contextMenu && (
                 <div 

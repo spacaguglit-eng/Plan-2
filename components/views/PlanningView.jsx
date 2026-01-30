@@ -3,6 +3,7 @@ import { Calendar, Droplet, Plus, Clock4, Database, GripVertical, Trash2 } from 
 import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from '../../utils';
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
+import { useData } from '../../context/DataContext';
 
 const LINE_OPTIONS = [
     'Линия 1',
@@ -417,9 +418,47 @@ const PlanningView = () => {
         () => loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}),
         []
     );
+    const { createPlanFromSchedule } = useData();
     const resolveLineOption = (value) => (
         LINE_OPTIONS.includes(value) ? value : LINE_OPTIONS[0]
     );
+
+    const defaultPlanningDate = storedPlanning?.products?.[0]?.date || '27.01.2026';
+
+    const buildDefaultShifts = (dateStr) => ([
+        {
+            shiftId: '1',
+            type: 'День',
+            date: dateStr,
+            start: '07:00',
+            end: '19:00'
+        },
+        {
+            shiftId: '2',
+            type: 'Ночь',
+            date: dateStr,
+            start: '19:00',
+            end: '07:00'
+        }
+    ]);
+
+    const buildShiftsFromRows = (rows) => {
+        const allDates = Array.from(new Set(rows.map((r) => r.date).filter(Boolean)));
+        const productDates = new Set(rows.filter((r) => r.kind === 'product').map((r) => r.date).filter(Boolean));
+        const sourceDates = productDates.size > 0 ? Array.from(productDates) : allDates;
+        const sortedDates = sourceDates.sort((a, b) => {
+            const [da, ma, ya] = a.split('.').map(Number);
+            const [db, mb, yb] = b.split('.').map(Number);
+            return new Date(ya, ma - 1, da) - new Date(yb, mb - 1, db);
+        });
+        if (sortedDates.length === 0) return buildDefaultShifts(defaultPlanningDate);
+        const result = [];
+        sortedDates.forEach((d) => {
+            const day = buildDefaultShifts(d);
+            result.push(...day);
+        });
+        return result;
+    };
 
     const [activeTab, setActiveTab] = useState(() => storedPlanning.activeTab || 'schedule');
     const [cipDurations, setCipDurations] = useState(
@@ -430,6 +469,8 @@ const PlanningView = () => {
     );
     const [productImportError, setProductImportError] = useState('');
     const [planImportError, setPlanImportError] = useState('');
+    const [planCreateError, setPlanCreateError] = useState('');
+    const [planCreateStatus, setPlanCreateStatus] = useState('idle');
     const [pasteText, setPasteText] = useState('');
     const [isProductImportOpen, setIsProductImportOpen] = useState(false);
     const [isPlanImportOpen, setIsPlanImportOpen] = useState(false);
@@ -1526,11 +1567,170 @@ const PlanningView = () => {
         setCipBetween(nextCip);
     };
 
+    const demandLineHeaders = useMemo(() => [...LINE_OPTIONS, 'Ручная линия'], []);
+
+    const buildAbsMinutes = (dateStr, timeStr) => {
+        const dayIdx = parseDateToDayIndex(dateStr);
+        if (dayIdx == null) return null;
+        const minutes = parseTimeToMinutes(timeStr);
+        return dayIdx * 1440 + minutes;
+    };
+
+    const isRowActiveForShift = (row, shift) => {
+        if (!row?.line || !shift) return false;
+        if (row.durationMinutes <= 0) return false;
+        const rowStart = buildAbsMinutes(row.date, row.start);
+        const rowEndRaw = buildAbsMinutes(row.date, row.end);
+        if (rowStart == null || rowEndRaw == null) return false;
+        const rowEnd = rowEndRaw <= rowStart ? rowEndRaw + 1440 : rowEndRaw;
+
+        const shiftStart = buildAbsMinutes(shift.date, shift.start);
+        const shiftEndRaw = buildAbsMinutes(shift.date, shift.end);
+        if (shiftStart == null || shiftEndRaw == null) return false;
+        const shiftEnd = shiftEndRaw <= shiftStart ? shiftEndRaw + 1440 : shiftEndRaw;
+
+        const overlap = Math.min(rowEnd, shiftEnd) - Math.max(rowStart, shiftStart);
+        return overlap > 0;
+    };
+
+    const buildDemandFromSchedule = (rows, shiftList) => {
+        const header = new Array(15 + demandLineHeaders.length).fill('');
+        header[11] = 'Дата';
+        header[13] = 'Тип смены';
+        header[14] = 'Смена';
+        demandLineHeaders.forEach((line, idx) => {
+            header[15 + idx] = line;
+        });
+
+        const table = [header];
+        (shiftList || []).forEach((shift) => {
+            const row = new Array(header.length).fill('');
+            row[11] = shift.date || '';
+            row[13] = shift.type || '';
+            row[14] = shift.shiftId ? `Смена ${shift.shiftId}` : 'Смена';
+            demandLineHeaders.forEach((line, idx) => {
+                const active = rows.some((r) => r.line === line && isRowActiveForShift(r, shift));
+                row[15 + idx] = active ? 1 : '';
+            });
+            table.push(row);
+        });
+        return table;
+    };
+
+    const joinUnique = (items) => Array.from(new Set(items.filter(Boolean))).join(', ');
+
+    const buildRosterFromDistribution = () => {
+        const sourceLineTemplates = loadFromLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, {});
+        const sourceFloaters = loadFromLocalStorage(STORAGE_KEYS.FLOATERS, { day: [], night: [] });
+        const sourceWorkerRegistry = loadFromLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, {});
+
+        const header = new Array(19).fill('');
+        header[4] = 'Линия';
+        header[5] = 'Должность';
+        header[6] = 'Норма';
+        header[7] = 'Смена 1';
+        header[8] = 'Компетенции 1';
+        header[9] = 'Статус 1';
+        header[10] = 'Смена 2';
+        header[11] = 'Компетенции 2';
+        header[12] = 'Статус 2';
+        header[13] = 'Смена 3';
+        header[14] = 'Компетенции 3';
+        header[15] = 'Статус 3';
+        header[16] = 'Смена 4';
+        header[17] = 'Компетенции 4';
+        header[18] = 'Статус 4';
+
+        const table = [header];
+
+        const fillRow = (lineName, role, count, rosterMap = {}) => {
+            const row = new Array(header.length).fill('');
+            row[4] = lineName;
+            row[5] = role;
+            row[6] = count;
+            ['1', '2', '3', '4'].forEach((shiftId, idx) => {
+                const namesStr = rosterMap[shiftId] || '';
+                const names = namesStr
+                    ? namesStr.split(/[,;\n/]+/).map((n) => n.trim()).filter((n) => n.length > 1)
+                    : [];
+                const compList = names.map((name) => joinUnique(Array.from(sourceWorkerRegistry?.[name]?.competencies || [])));
+                const statusList = names.map((name) => sourceWorkerRegistry?.[name]?.status?.raw).filter(Boolean);
+                row[7 + idx * 3] = namesStr;
+                row[8 + idx * 3] = joinUnique(compList);
+                row[9 + idx * 3] = joinUnique(statusList);
+            });
+            table.push(row);
+        };
+
+        Object.entries(sourceLineTemplates || {}).forEach(([lineName, positions]) => {
+            (positions || []).forEach((pos) => {
+                fillRow(lineName, pos.role, pos.count, pos.roster || {});
+            });
+        });
+
+        if (sourceFloaters?.day?.length) {
+            fillRow(
+                'Резерв День',
+                'Подсобник',
+                sourceFloaters.day.length,
+                { 1: sourceFloaters.day.map((f) => f.name).join(', ') }
+            );
+        }
+
+        if (sourceFloaters?.night?.length) {
+            fillRow(
+                'Резерв Ночь',
+                'Подсобник',
+                sourceFloaters.night.length,
+                { 2: sourceFloaters.night.map((f) => f.name).join(', ') }
+            );
+        }
+
+        return table;
+    };
+
+    const handleCreatePlanFromSchedule = () => {
+        setPlanCreateError('');
+        setPlanCreateStatus('idle');
+        try {
+            if (!createPlanFromSchedule) {
+                throw new Error('Функция сохранения плана недоступна.');
+            }
+            if (!allRowsAllLines || allRowsAllLines.length === 0) {
+                throw new Error('Нет позиций для построения плана.');
+            }
+            const autoShifts = buildShiftsFromRows(allRowsAllLines);
+            const demand = buildDemandFromSchedule(allRowsAllLines, autoShifts);
+            const roster = buildRosterFromDistribution();
+            createPlanFromSchedule({
+                demand,
+                roster,
+                name: `План ${new Date().toLocaleDateString('ru-RU')}`,
+            });
+            setPlanCreateStatus('success');
+        } catch (err) {
+            setPlanCreateError(err?.message || 'Ошибка создания плана');
+            setPlanCreateStatus('error');
+        }
+    };
+
     const allRows = useMemo(() => {
         const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         return applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
     }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex]);
+
+    const allRowsAllLines = useMemo(() => {
+        const combined = [];
+        LINE_OPTIONS.forEach((line) => {
+            const missing = buildMissingTransitionMap(line);
+            const rows = buildRows(products, cipBetween, line, missing);
+            const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
+            const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
+            scheduled.forEach((r) => combined.push(r));
+        });
+        return combined;
+    }, [products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap]);
 
     const exportSections = useMemo(() => {
         return exportLines
@@ -1676,22 +1876,29 @@ const PlanningView = () => {
             <div className="flex-1 overflow-y-auto p-6 max-w-[1600px] mx-auto w-full space-y-6">
                 <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-wrap items-center gap-2">
                     {[
-                        { id: 'schedule', label: 'График' },
-                        { id: 'products', label: 'База продуктов' },
-                        { id: 'speeds', label: 'Скорости' },
-                        { id: 'cips', label: 'CIP' },
-                        { id: 'transitions', label: 'Переходы' }
-                    ].map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`px-4 py-2 text-sm font-semibold rounded-lg transition-colors ${
-                                activeTab === tab.id ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
-                            }`}
-                        >
-                            {tab.label}
-                        </button>
-                    ))}
+                        { id: 'schedule', label: 'График', color: 'blue' },
+                        { id: 'products', label: 'База продуктов', color: 'indigo' },
+                        { id: 'speeds', label: 'Скорости', color: 'amber' },
+                        { id: 'cips', label: 'CIP', color: 'emerald' },
+                        { id: 'transitions', label: 'Переходы', color: 'rose' }
+                    ].map(tab => {
+                        const colors = {
+                            blue: activeTab === tab.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-blue-50 hover:text-blue-600',
+                            indigo: activeTab === tab.id ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600',
+                            amber: activeTab === tab.id ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600 hover:bg-amber-50 hover:text-amber-600',
+                            emerald: activeTab === tab.id ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-600',
+                            rose: activeTab === tab.id ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-600',
+                        };
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${colors[tab.color]}`}
+                            >
+                                {tab.label}
+                            </button>
+                        );
+                    })}
                 </div>
 
                 {activeTab === 'products' && (
@@ -2247,6 +2454,12 @@ const PlanningView = () => {
                                 Найти кратчайший путь
                             </button>
                             <button
+                                onClick={handleCreatePlanFromSchedule}
+                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                            >
+                                Сформировать план
+                            </button>
+                            <button
                                 onClick={() => {
                                     setPlanImportError('');
                                     setPasteText('');
@@ -2263,6 +2476,12 @@ const PlanningView = () => {
                                     Выгрузить
                                 </button>
                         </div>
+                        {(planCreateError || planCreateStatus === 'success') && (
+                            <div className="text-xs px-2 pt-1 pb-2">
+                                {planCreateError && <div className="text-red-600">{planCreateError}</div>}
+                                {planCreateStatus === 'success' && <div className="text-emerald-600">План сформирован и сохранён.</div>}
+                            </div>
+                        )}
 
                         <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                             <div className="px-6 py-4 border-b border-slate-200 flex items-center gap-2">

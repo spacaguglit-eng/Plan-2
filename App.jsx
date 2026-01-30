@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -17,6 +17,7 @@ import PlansView from './components/views/PlansView';
 import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
+import ReportsView from './components/views/ReportsView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
@@ -72,6 +73,18 @@ export default function App() {
 
     const isStaffView = ['dashboard', 'chess', 'employees_list', 'employees_roster', 'verification', 'all_employees']
         .includes(viewMode);
+
+    const getTabStyle = (mode, isActive) => {
+        const styles = {
+            staff: isActive ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:text-emerald-600 hover:bg-emerald-50',
+            plans: isActive ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-500 hover:text-amber-600 hover:bg-amber-50',
+            reports: isActive ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-indigo-600 hover:bg-indigo-50',
+            production: isActive ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-500 hover:text-rose-600 hover:bg-rose-50',
+            planning: isActive ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50',
+            extra: isActive ? 'bg-slate-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+        };
+        return styles[mode] || (isActive ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50');
+    };
 
 
     const handleNewFile = () => {
@@ -157,9 +170,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsStaffMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                isStaffView ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('staff', isStaffView)}`}
                                         >
                                             <Users size={16} /> Штат
                                             <ChevronDown size={14} className={`transition-transform ${isStaffMenuOpen ? 'rotate-180' : ''}`} />
@@ -169,72 +180,30 @@ export default function App() {
                                                 className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('dashboard');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <LayoutGrid size={16} /> Смены
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('chess');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'chess' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <Grid3X3 size={16} /> Табель
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('employees_list');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'employees_list' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <Users size={16} /> Список
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('employees_roster');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'employees_roster' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <LayoutGrid size={16} /> Распределение
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('verification');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'verification' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <FileCheck size={16} /> Сверка
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('all_employees');
-                                                        setIsStaffMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'all_employees' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <Users size={16} /> Все сотрудники
-                                                </button>
+                                                {[
+                                                    { id: 'dashboard', label: 'Смены', icon: LayoutGrid },
+                                                    { id: 'chess', label: 'Табель', icon: Grid3X3 },
+                                                    { id: 'employees_list', label: 'Список', icon: Users },
+                                                    { id: 'employees_roster', label: 'Распределение', icon: LayoutGrid },
+                                                    { id: 'verification', label: 'Сверка', icon: FileCheck },
+                                                    { id: 'all_employees', label: 'Все сотрудники', icon: Users },
+                                                ].map(item => {
+                                                    const Icon = item.icon;
+                                                    return (
+                                                        <button
+                                                            key={item.id}
+                                                            onClick={() => {
+                                                                setViewMode(item.id);
+                                                                setIsStaffMenuOpen(false);
+                                                            }}
+                                                            className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                                viewMode === item.id ? 'bg-emerald-50 text-emerald-600' : 'text-slate-600 hover:bg-slate-50'
+                                                            }`}
+                                                        >
+                                                            <Icon size={16} /> {item.label}
+                                                        </button>
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -243,11 +212,19 @@ export default function App() {
                                     <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
                                             onClick={() => setViewMode('plans')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'plans' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans')}`}
                                         >
                                             <FolderOpen size={16} /> Планы
+                                        </button>
+                                    </div>
+
+                                    {/* Reports Menu Item */}
+                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                        <button
+                                            onClick={() => setViewMode('reports')}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('reports', viewMode === 'reports')}`}
+                                        >
+                                            <BarChart size={16} /> Отчёты
                                         </button>
                                     </div>
 
@@ -255,9 +232,7 @@ export default function App() {
                                     <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
                                             onClick={() => setViewMode('production')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'production' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('production', viewMode === 'production')}`}
                                         >
                                             <Factory size={16} /> Производство
                                         </button>
@@ -267,9 +242,7 @@ export default function App() {
                                     <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
                                             onClick={() => setViewMode('planning')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'planning' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                                            }`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('planning', viewMode === 'planning')}`}
                                         >
                                             <Calendar size={16} /> Планирование
                                         </button>
@@ -282,11 +255,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsExtraMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                                                viewMode === 'performance' || viewMode === 'raw_data'
-                                                    ? 'bg-white text-blue-600 shadow-sm'
-                                                    : 'text-slate-500 hover:text-slate-700'
-                                            }`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data')}`}
                                         >
                                             <Activity size={16} /> Дополнительно
                                             <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
@@ -302,7 +271,7 @@ export default function App() {
                                                         setIsExtraMenuOpen(false);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'performance' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                        viewMode === 'performance' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'
                                                     }`}
                                                 >
                                                     <Activity size={16} /> Мониторинг
@@ -313,7 +282,7 @@ export default function App() {
                                                         setIsExtraMenuOpen(false);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'raw_data' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'
+                                                        viewMode === 'raw_data' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'
                                                     }`}
                                                 >
                                                     <Database size={16} /> Исходные данные
@@ -350,6 +319,7 @@ export default function App() {
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
+                        {viewMode === 'reports' && <ReportsView />}
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
                         {viewMode === 'raw_data' && <RawDataView />}
