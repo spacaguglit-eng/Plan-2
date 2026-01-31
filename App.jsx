@@ -23,6 +23,9 @@ import PinModal from './components/common/PinModal';
 export default function App() {
     const { performanceMetrics, clearPerformanceMetrics } = usePerformanceMetrics();
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+    const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+    const [adminPassword, setAdminPassword] = useState('');
+    const [adminError, setAdminError] = useState('');
     const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
     const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
 
@@ -146,48 +149,70 @@ export default function App() {
                     </div>
                 </div>
             )}
-            {!userRole && (
+            <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
+            {isAdminLoginOpen && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
-                        <div className="p-6 text-center">
-                            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <Shield size={32} className="text-blue-600" />
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
+                        <div className="p-6">
+                            <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <Shield size={24} className="text-emerald-600" />
                             </div>
-                            <h2 className="text-xl font-bold text-slate-800 mb-2">Выберите режим доступа</h2>
-                            <p className="text-slate-500 text-sm mb-6">Это определит ваши права в приложении</p>
-                            
-                            <div className="space-y-3">
+                            <h2 className="text-lg font-bold text-slate-800 text-center mb-4">Вход для админа</h2>
+                            <input
+                                type="password"
+                                value={adminPassword}
+                                onChange={(e) => {
+                                    setAdminPassword(e.target.value);
+                                    setAdminError('');
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        if (adminPassword === '2133') {
+                                            setUserRole('admin');
+                                            setIsAdminLoginOpen(false);
+                                            setAdminPassword('');
+                                        } else {
+                                            setAdminError('Неверный пароль');
+                                        }
+                                    }
+                                }}
+                                placeholder="Введите пароль"
+                                className="w-full px-4 py-3 border border-slate-300 rounded-lg text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                autoFocus
+                            />
+                            {adminError && (
+                                <p className="text-red-500 text-sm text-center mt-2">{adminError}</p>
+                            )}
+                            <div className="flex gap-2 mt-4">
                                 <button
-                                    onClick={() => setUserRole('admin')}
-                                    className="w-full flex items-center gap-4 p-4 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-200 rounded-xl transition-colors group"
+                                    onClick={() => {
+                                        setIsAdminLoginOpen(false);
+                                        setAdminPassword('');
+                                        setAdminError('');
+                                    }}
+                                    className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors"
                                 >
-                                    <div className="w-12 h-12 bg-emerald-500 rounded-lg flex items-center justify-center">
-                                        <Shield size={24} className="text-white" />
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="font-bold text-emerald-700">Админ</div>
-                                        <div className="text-sm text-emerald-600">Полный доступ: просмотр и редактирование</div>
-                                    </div>
+                                    Отмена
                                 </button>
-                                
                                 <button
-                                    onClick={() => setUserRole('guest')}
-                                    className="w-full flex items-center gap-4 p-4 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl transition-colors group"
+                                    onClick={() => {
+                                        if (adminPassword === '2133') {
+                                            setUserRole('admin');
+                                            setIsAdminLoginOpen(false);
+                                            setAdminPassword('');
+                                        } else {
+                                            setAdminError('Неверный пароль');
+                                        }
+                                    }}
+                                    className="flex-1 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
                                 >
-                                    <div className="w-12 h-12 bg-slate-400 rounded-lg flex items-center justify-center">
-                                        <Eye size={24} className="text-white" />
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="font-bold text-slate-700">Гость</div>
-                                        <div className="text-sm text-slate-500">Только просмотр данных</div>
-                                    </div>
+                                    Войти
                                 </button>
                             </div>
                         </div>
                     </div>
                 </div>
             )}
-            <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
             <PinModal
                 isOpen={isPinModalOpen}
                 onClose={() => setIsPinModalOpen(false)}
@@ -416,7 +441,11 @@ export default function App() {
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation();
-                                                        setUserRole(null);
+                                                        if (userRole === 'admin') {
+                                                            setUserRole('guest');
+                                                        } else {
+                                                            setIsAdminLoginOpen(true);
+                                                        }
                                                         setIsExtraMenuOpen(false);
                                                     }}
                                                     className={`w-full flex items-center justify-between px-4 py-2 text-sm font-medium transition-colors ${
@@ -427,7 +456,7 @@ export default function App() {
                                                         {userRole === 'admin' ? <Shield size={16} /> : <Eye size={16} />}
                                                         <span>{userRole === 'admin' ? 'Админ' : 'Гость'}</span>
                                                     </div>
-                                                    <span className="text-xs text-slate-400">сменить</span>
+                                                    <span className="text-xs text-slate-400">{userRole === 'admin' ? 'выйти' : 'войти'}</span>
                                                 </button>
                                             </div>
                                         )}

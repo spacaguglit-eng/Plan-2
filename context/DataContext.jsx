@@ -32,7 +32,7 @@ export const DataProvider = ({ children }) => {
     const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'saved', 'error'
     const [syncLog, setSyncLog] = useState([]); // Array of { id, type, message, timestamp }
     const [useRemoteStorage, setUseRemoteStorage] = useState(() => loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true));
-    const [userRole, setUserRole] = useState(() => loadFromLocalStorage('plan_user_role', null)); // 'admin' | 'guest' | null
+    const [userRole, setUserRole] = useState(() => loadFromLocalStorage('plan_user_role', 'guest')); // 'admin' | 'guest'
 
     const [rawTables, setRawTables] = useState({});
     const [scheduleDates, setScheduleDates] = useState([]);
@@ -500,6 +500,10 @@ export const DataProvider = ({ children }) => {
     }, [isLocked]);
 
     const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status }) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         setWorkerRegistry(prev => {
             const next = { ...prev };
             if (oldName && oldName !== newName) {
@@ -538,9 +542,13 @@ export const DataProvider = ({ children }) => {
             return next;
         });
         setEditingWorker(null);
-    }, []);
+    }, [isReadOnly]);
 
     const handleWorkerDelete = useCallback((name) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
+            return;
+        }
         setWorkerRegistry(prev => {
             const next = { ...prev };
             delete next[name];
@@ -569,7 +577,7 @@ export const DataProvider = ({ children }) => {
             saveToLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, newLt);
             return newLt;
         });
-    }, []);
+    }, [isReadOnly]);
 
     const generateShiftHash = (dateStr, shiftNum, shiftType, activeLines, templates) => {
         const linesFingerprint = activeLines.sort().map(lineName => {
@@ -1132,6 +1140,10 @@ export const DataProvider = ({ children }) => {
     }, []);
 
     const saveCurrentAsNewPlan = useCallback((name) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Сохранение недоступно.' });
+            return;
+        }
         const createdAt = new Date().toISOString();
         const plan = {
             id: generatePlanId(),
@@ -1145,7 +1157,7 @@ export const DataProvider = ({ children }) => {
             return [...cleared, plan];
         });
         setCurrentPlanId(plan.id);
-    }, [buildPlanSnapshot]);
+    }, [buildPlanSnapshot, isReadOnly]);
 
     const loadPlan = useCallback((planId) => {
         const plan = savedPlans.find(p => p.id === planId);
@@ -1159,14 +1171,22 @@ export const DataProvider = ({ children }) => {
     }, [savedPlans]);
 
     const setPlanType = useCallback((planId, type) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Изменение типа недоступно.' });
+            return;
+        }
         setSavedPlans(prev => prev.map(plan => {
             if (plan.id === planId) return { ...plan, type };
             if (type && plan.type === type) return { ...plan, type: null };
             return plan;
         }));
-    }, []);
+    }, [isReadOnly]);
 
     const deletePlan = useCallback((planId) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
+            return;
+        }
         setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
         if (currentPlanId === planId) {
             setCurrentPlanId(null);
@@ -1176,9 +1196,13 @@ export const DataProvider = ({ children }) => {
             setManualAssignments({});
             setSelectedDate('');
         }
-    }, [currentPlanId]);
+    }, [currentPlanId, isReadOnly]);
 
     const importPlanFromJson = useCallback((jsonData, defaultName) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
+            return null;
+        }
         const createdAt = new Date().toISOString();
         const hasData = jsonData && typeof jsonData === 'object' && jsonData.data;
         const planData = hasData ? jsonData.data : jsonData;
@@ -1191,9 +1215,13 @@ export const DataProvider = ({ children }) => {
         };
         addPlan(plan);
         return plan.id;
-    }, [addPlan]);
+    }, [addPlan, isReadOnly]);
 
     const importPlanFromExcelFile = useCallback(async (file, nameOverride) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
+            return null;
+        }
         const planData = await parseExcelToPlanData(file);
         const createdAt = new Date().toISOString();
         const plan = {
@@ -1205,7 +1233,7 @@ export const DataProvider = ({ children }) => {
         };
         addPlan(plan);
         return plan.id;
-    }, [addPlan]);
+    }, [addPlan, isReadOnly]);
 
     useEffect(() => {
         if (!currentPlanId) return;
@@ -1484,6 +1512,10 @@ export const DataProvider = ({ children }) => {
     }, [manualAssignments, updateAssignments]);
 
     const addManualLine = useCallback(({ date, shiftId, displayName, templateName, positions }) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         if (!date || !shiftId || !displayName) return;
         const key = `${date}_${shiftId}`;
         const normalizedPositions = Array.isArray(positions) && positions.length > 0
@@ -1504,9 +1536,13 @@ export const DataProvider = ({ children }) => {
             next[key] = [...existing, nextLine];
             return next;
         });
-    }, []);
+    }, [isReadOnly]);
 
     const removeManualLine = useCallback(({ date, shiftId, lineId }) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
+            return;
+        }
         if (!date || !shiftId || !lineId) return;
         const key = `${date}_${shiftId}`;
         let removedLine = null;
@@ -1541,7 +1577,7 @@ export const DataProvider = ({ children }) => {
         if (changed) {
             updateAssignments(nextAssignments);
         }
-    }, [manualAssignments, updateAssignments]);
+    }, [manualAssignments, updateAssignments, isReadOnly]);
 
     // --- DEMAND INDEX (by date) ---
     const demandIndex = useMemo(() => {
