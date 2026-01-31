@@ -25,6 +25,7 @@ const addLog = (type, message) => {
 // Queue for debounced updates
 let updateQueue = {};
 let syncTimeout = null;
+let lastKnownState = {}; // Cache to prevent sync loops
 
 const flushQueue = async () => {
     if (Object.keys(updateQueue).length === 0) return;
@@ -33,26 +34,40 @@ const flushQueue = async () => {
     updateQueue = {}; // Clear queue
     
     try {
-        addLog('syncing', `Синхронизация изменений (${Object.keys(dataToSave).join(', ')})...`);
-        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, dataToSave);
+        // Final check: filter out items that match lastKnownState
+        const trulyChangedData = {};
+        Object.keys(dataToSave).forEach(key => {
+            if (dataToSave[key] !== lastKnownState[key]) {
+                trulyChangedData[key] = dataToSave[key];
+                lastKnownState[key] = dataToSave[key]; // Update cache
+            }
+        });
+
+        if (Object.keys(trulyChangedData).length === 0) return;
+
+        addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
+        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, trulyChangedData);
         addLog('success', 'Облако успешно обновлено');
     } catch (err) {
         console.error('Batch sync failed:', err);
         addLog('error', `Ошибка синхронизации: ${err.message}`);
-        // Put failed items back in queue for next attempt? 
-        // For now just fail to avoid infinite loops
     }
 };
 
 export const saveRemoteStateKey = async (key, value) => {
     if (!isRemoteStorageEnabled()) return;
     
-    // Add to queue and stringify immediately to capture state
-    updateQueue[key] = JSON.stringify(value);
+    const serializedValue = JSON.stringify(value);
+    
+    // If value is identical to what we last sent or received, skip it
+    if (lastKnownState[key] === serializedValue) return;
+    
+    // Add to queue
+    updateQueue[key] = serializedValue;
     
     // Reset debounce timer
     if (syncTimeout) clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(flushQueue, 2000); // Wait 2 seconds of inactivity
+    syncTimeout = setTimeout(flushQueue, 2000);
 };
 
 export const loadRemoteState = async () => {
@@ -60,6 +75,14 @@ export const loadRemoteState = async () => {
     try {
         addLog('syncing', 'Загрузка данных из облака...');
         const data = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
+        
+        // Update cache with raw serialized strings from server
+        if (data) {
+            Object.keys(data).forEach(key => {
+                if (key !== 'updatedAt') lastKnownState[key] = data[key];
+            });
+        }
+        
         return parseRemoteData(data);
     } catch (err) {
         console.error('Failed to load remote state:', err);
@@ -91,6 +114,11 @@ export const subscribeToRemoteState = (callback) => {
     
     return subscribeToFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, (data) => {
         if (data) {
+            // Update cache before calling callback to prevent echo sync
+            Object.keys(data).forEach(key => {
+                if (key !== 'updatedAt') lastKnownState[key] = data[key];
+            });
+            
             const parsed = parseRemoteData(data);
             callback(parsed);
         }

@@ -1193,13 +1193,23 @@ export const DataProvider = ({ children }) => {
     useEffect(() => {
         if (!currentPlanId) return;
         if (isLoadingPlanRef.current) return;
+        
+        const snapshot = buildPlanSnapshot();
+        
         setSavedPlans(prev => {
             const idx = prev.findIndex(p => p.id === currentPlanId);
             if (idx === -1) return prev;
+            
+            // Сравниваем только полезные данные, чтобы не частить с updatedAt
+            const currentDataStr = JSON.stringify(prev[idx].data);
+            const newDataStr = JSON.stringify(snapshot);
+            
+            if (currentDataStr === newDataStr) return prev;
+
             const next = [...prev];
             next[idx] = {
                 ...next[idx],
-                data: buildPlanSnapshot(),
+                data: snapshot,
                 updatedAt: new Date().toISOString()
             };
             return next;
