@@ -19,7 +19,7 @@ import {
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
-import { loadRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser } from '../services/remoteStorage';
+import { loadRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser, subscribeToRemoteState } from '../services/remoteStorage';
 
 const DataContext = createContext(null);
 
@@ -320,6 +320,70 @@ export const DataProvider = ({ children }) => {
         const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
         setIsLocked(activePlan?.type === 'Master');
     }, [currentPlanId, savedPlans]);
+
+    useEffect(() => {
+        if (!isRemoteStorageEnabled() || !useRemoteStorage) return;
+        
+        const applyRemoteSnapshot = (remoteSnapshot) => {
+            if (!remoteSnapshot) return;
+
+            const applyField = (key, setter) => {
+                const value = remoteSnapshot[key];
+                if (value === undefined || value === null) return;
+                
+                setter(prev => {
+                    const stringifiedPrev = JSON.stringify(prev);
+                    const stringifiedNext = JSON.stringify(value);
+                    return stringifiedPrev === stringifiedNext ? prev : value;
+                });
+            };
+
+            // Handle plans and current ID
+            const remotePlans = remoteSnapshot[STORAGE_KEYS.SAVED_PLANS];
+            if (Array.isArray(remotePlans)) {
+                setSavedPlans(prev => JSON.stringify(prev) === JSON.stringify(remotePlans) ? prev : remotePlans);
+                
+                const remotePlanId = remoteSnapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
+                if (remotePlanId) {
+                    setCurrentPlanId(prev => prev === remotePlanId ? prev : remotePlanId);
+                    
+                    const remotePlansParsed = remotePlans;
+                    const planToLoad = remotePlansParsed.find(p => p.id === remotePlanId);
+                    if (planToLoad?.data) {
+                        applyPlanData(planToLoad.data);
+                    }
+                }
+            }
+
+            applyField(STORAGE_KEYS.MANUAL_ASSIGNMENTS, setManualAssignments);
+            applyField(STORAGE_KEYS.MANUAL_LINES, setManualLines);
+            applyField(STORAGE_KEYS.ASSIGNMENT_CLONES, setAssignmentClones);
+            applyField(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, setAutoReassignEnabled);
+            applyField(STORAGE_KEYS.FACT_DATA, setFactData);
+            applyField(STORAGE_KEYS.FACT_DATES, setFactDates);
+            applyField(STORAGE_KEYS.RAW_TABLES, setRawTables);
+            applyField(STORAGE_KEYS.SCHEDULE_DATES, setScheduleDates);
+            applyField(STORAGE_KEYS.PLAN_HASHES, setPlanHashes);
+            applyField(STORAGE_KEYS.LINE_TEMPLATES, setLineTemplates);
+            applyField(STORAGE_KEYS.FLOATERS, setFloaters);
+
+            const serializedRegistry = remoteSnapshot[STORAGE_KEYS.WORKER_REGISTRY];
+            if (serializedRegistry) {
+                setWorkerRegistry(prev => {
+                    const hydrated = hydrateWorkerRegistry(serializedRegistry);
+                    const stringifiedPrev = JSON.stringify(serializeWorkerRegistry(prev));
+                    const stringifiedNext = JSON.stringify(serializedRegistry);
+                    return stringifiedPrev === stringifiedNext ? prev : hydrated;
+                });
+            }
+        };
+
+        const unsubscribe = subscribeToRemoteState((snapshot) => {
+            applyRemoteSnapshot(snapshot);
+        });
+
+        return () => unsubscribe();
+    }, [useRemoteStorage]);
 
     // --- LOGIC FUNCTIONS ---
 

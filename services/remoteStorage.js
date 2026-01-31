@@ -22,22 +22,37 @@ const addLog = (type, message) => {
     }
 };
 
+// Queue for debounced updates
+let updateQueue = {};
+let syncTimeout = null;
+
+const flushQueue = async () => {
+    if (Object.keys(updateQueue).length === 0) return;
+    
+    const dataToSave = { ...updateQueue };
+    updateQueue = {}; // Clear queue
+    
+    try {
+        addLog('syncing', `Синхронизация изменений (${Object.keys(dataToSave).join(', ')})...`);
+        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, dataToSave);
+        addLog('success', 'Облако успешно обновлено');
+    } catch (err) {
+        console.error('Batch sync failed:', err);
+        addLog('error', `Ошибка синхронизации: ${err.message}`);
+        // Put failed items back in queue for next attempt? 
+        // For now just fail to avoid infinite loops
+    }
+};
+
 export const saveRemoteStateKey = async (key, value) => {
     if (!isRemoteStorageEnabled()) return;
-    try {
-        addLog('syncing', `Сохранение ${key}...`);
-        
-        // Firestore doesn't support nested arrays (like Excel tables).
-        // We stringify the value to ensure it can be saved regardless of depth.
-        const serializedValue = JSON.stringify(value);
-        
-        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, { [key]: serializedValue });
-        addLog('success', `Успешно сохранено: ${key}`);
-    } catch (err) {
-        console.error(`Failed to save ${key} to Firebase:`, err);
-        addLog('error', `Ошибка сохранения ${key}: ${err.message}`);
-        throw err;
-    }
+    
+    // Add to queue and stringify immediately to capture state
+    updateQueue[key] = JSON.stringify(value);
+    
+    // Reset debounce timer
+    if (syncTimeout) clearTimeout(syncTimeout);
+    syncTimeout = setTimeout(flushQueue, 2000); // Wait 2 seconds of inactivity
 };
 
 export const loadRemoteState = async () => {
@@ -45,30 +60,41 @@ export const loadRemoteState = async () => {
     try {
         addLog('syncing', 'Загрузка данных из облака...');
         const data = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
-        if (!data) return null;
-
-        // Parse serialized values back to objects
-        const parsedData = {};
-        Object.keys(data).forEach(key => {
-            if (key === 'updatedAt') {
-                parsedData[key] = data[key];
-                return;
-            }
-            try {
-                const val = data[key];
-                parsedData[key] = typeof val === 'string' ? JSON.parse(val) : val;
-            } catch (e) {
-                parsedData[key] = data[key];
-            }
-        });
-
-        addLog('success', 'Данные из облака успешно загружены');
-        return parsedData;
+        return parseRemoteData(data);
     } catch (err) {
         console.error('Failed to load remote state:', err);
         addLog('error', `Ошибка загрузки: ${err.message}`);
         return null;
     }
+};
+
+const parseRemoteData = (data) => {
+    if (!data) return null;
+    const parsedData = {};
+    Object.keys(data).forEach(key => {
+        if (key === 'updatedAt') {
+            parsedData[key] = data[key];
+            return;
+        }
+        try {
+            const val = data[key];
+            parsedData[key] = typeof val === 'string' ? JSON.parse(val) : val;
+        } catch (e) {
+            parsedData[key] = data[key];
+        }
+    });
+    return parsedData;
+};
+
+export const subscribeToRemoteState = (callback) => {
+    if (!isRemoteStorageEnabled()) return () => {};
+    
+    return subscribeToFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, (data) => {
+        if (data) {
+            const parsed = parseRemoteData(data);
+            callback(parsed);
+        }
+    });
 };
 
 export const loadRemoteStateKey = async (key, defaultValue = null) => {
