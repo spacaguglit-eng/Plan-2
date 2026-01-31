@@ -1,4 +1,4 @@
-import { readFirestoreDoc, writeFirestoreDoc, isFirebaseConfigured } from './firebaseService';
+import { readFirestoreDoc, writeFirestoreDoc, isFirebaseConfigured, subscribeToFirestoreDoc } from './firebaseService';
 
 const FIRESTORE_COLLECTION = import.meta.env.VITE_FIREBASE_STATE_COLLECTION || 'plan_state';
 const FIRESTORE_DOCUMENT = import.meta.env.VITE_FIREBASE_STATE_DOC_ID || 'shared';
