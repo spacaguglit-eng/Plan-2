@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -49,7 +49,12 @@ export default function App() {
         savedPlans,
         currentPlanId,
         isLocked,
-        unlockWithCode
+        unlockWithCode,
+        syncLog,
+        showSyncLog,
+        setShowSyncLog,
+        useRemoteStorage,
+        setUseRemoteStorage
     } = useData();
 
     const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
@@ -94,6 +99,50 @@ export default function App() {
 
     return (
         <div className="h-screen bg-slate-100 font-sans text-slate-800 flex flex-col overflow-hidden">
+            {showSyncLog && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+                        <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+                            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                <Activity size={18} className="text-blue-600" />
+                                Лог синхронизации с Firebase
+                            </h3>
+                            <button 
+                                onClick={() => setShowSyncLog(false)}
+                                className="p-1 hover:bg-slate-200 rounded-full transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-900 font-mono text-xs">
+                            {syncLog.length === 0 ? (
+                                <div className="text-slate-500 italic text-center py-8">Лог пуст...</div>
+                            ) : (
+                                syncLog.map(log => (
+                                    <div key={log.id} className="flex gap-3 border-b border-slate-800 pb-1">
+                                        <span className="text-slate-500 whitespace-nowrap">[{log.timestamp}]</span>
+                                        <span className={`font-bold uppercase w-16 ${
+                                            log.type === 'success' ? 'text-emerald-400' : 
+                                            log.type === 'error' ? 'text-rose-400' : 'text-blue-400'
+                                        }`}>
+                                            {log.type}
+                                        </span>
+                                        <span className="text-slate-300">{log.message}</span>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                        <div className="p-4 border-t border-slate-200 bg-slate-50 text-right">
+                            <button 
+                                onClick={() => setShowSyncLog(false)}
+                                className="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors text-sm font-medium"
+                            >
+                                Закрыть
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
             <PinModal
                 isOpen={isPinModalOpen}
@@ -286,6 +335,33 @@ export default function App() {
                                                     }`}
                                                 >
                                                     <Database size={16} /> Исходные данные
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setShowSyncLog(true);
+                                                        setIsExtraMenuOpen(false);
+                                                    }}
+                                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                                                >
+                                                    <Activity size={16} /> Лог синхронизации
+                                                </button>
+                                                <div className="border-t border-slate-100 my-1"></div>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setUseRemoteStorage(!useRemoteStorage);
+                                                    }}
+                                                    className={`w-full flex items-center justify-between px-4 py-2 text-sm font-medium transition-colors ${
+                                                        useRemoteStorage ? 'text-emerald-600 hover:bg-emerald-50' : 'text-slate-500 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        {useRemoteStorage ? <Cloud size={16} /> : <CloudOff size={16} />}
+                                                        <span>Облако (Firebase)</span>
+                                                    </div>
+                                                    <div className={`w-8 h-4 rounded-full relative transition-colors ${useRemoteStorage ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                                                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${useRemoteStorage ? 'right-0.5' : 'left-0.5'}`}></div>
+                                                    </div>
                                                 </button>
                                             </div>
                                         )}

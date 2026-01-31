@@ -1,5 +1,7 @@
 // src/utils.js
 
+import { isRemoteStorageEnabled, saveRemoteStateKey } from './services/remoteStorage';
+
 // --- CONSTANTS ---
 export const STORAGE_KEYS = {
     RAW_TABLES: 'plan_raw_tables',
@@ -21,7 +23,8 @@ export const STORAGE_KEYS = {
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',
     PLANNING_STATE: 'plan_planning_state',
     PRODUCTION_RESULTS: 'productionParsedResults',
-    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes'
+    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes',
+    STORAGE_MODE: 'plan_storage_mode'
 };
 
 // --- LOCAL STORAGE HELPERS ---
@@ -30,6 +33,11 @@ export const saveToLocalStorage = (key, data) => {
         localStorage.setItem(key, JSON.stringify(data));
     } catch (e) {
         console.error('Error saving to localStorage:', e);
+    }
+    if (isRemoteStorageEnabled()) {
+        saveRemoteStateKey(key, data).catch(err => {
+            console.error(`Error saving ${key} to remote storage:`, err);
+        });
     }
 };
 

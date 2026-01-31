@@ -19,6 +19,7 @@ import {
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
+import { loadRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser } from '../services/remoteStorage';
 
 const DataContext = createContext(null);
 
@@ -28,7 +29,9 @@ export const DataProvider = ({ children }) => {
     const [loading, setLoading] = useState(false);
     const [restoring, setRestoring] = useState(true);
     const [error, setError] = useState('');
-    const [syncStatus, setSyncStatus] = useState('idle');
+    const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'saved', 'error'
+    const [syncLog, setSyncLog] = useState([]); // Array of { id, type, message, timestamp }
+    const [useRemoteStorage, setUseRemoteStorage] = useState(() => loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true));
 
     const [rawTables, setRawTables] = useState({});
     const [scheduleDates, setScheduleDates] = useState([]);
@@ -76,6 +79,17 @@ export const DataProvider = ({ children }) => {
     const [factDates, setFactDates] = useState([]);
 
     const { notify } = useNotification();
+
+    useEffect(() => {
+        setRemoteLogCallback((log) => {
+            setSyncLog(prev => [log, ...prev].slice(0, 50));
+        });
+    }, []);
+
+    useEffect(() => {
+        setRemoteEnabledByUser(useRemoteStorage);
+        saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
+    }, [useRemoteStorage]);
 
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
@@ -2496,9 +2510,11 @@ export const DataProvider = ({ children }) => {
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
     }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify]);
 
+    const [showSyncLog, setShowSyncLog] = useState(false);
+
     const value = useMemo(() => ({
         // State
-        file, loading, restoring, error, syncStatus,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
         isLocked,
@@ -2521,6 +2537,7 @@ export const DataProvider = ({ children }) => {
         autoReassignEnabled, setAutoReassignEnabled,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
+        setSyncStatus, setShowSyncLog, setUseRemoteStorage,
         
         // Actions / Setters
         setWorkerRegistry, setLineTemplates, setFloaters,
@@ -2556,7 +2573,7 @@ export const DataProvider = ({ children }) => {
         // Performance metrics are stored outside of Context to avoid app-wide render storms.
     }), [
         // ТОЛЬКО состояние, НЕ setState функции!
-        file, loading, restoring, error, syncStatus,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
         isLocked,
