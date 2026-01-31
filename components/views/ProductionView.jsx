@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
+import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage } from '../../utils';
 
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
@@ -50,7 +51,7 @@ const buildConicGradient = (segments) => {
 };
 
 const ProductionView = () => {
-    const STORAGE_KEY = 'productionParsedResults';
+    const STORAGE_KEY = STORAGE_KEYS.PRODUCTION_RESULTS;
     const fileInputRef = useRef(null);
     const [results, setResults] = useState([]);
     const [isParsing, setIsParsing] = useState(false);
@@ -63,8 +64,8 @@ const ProductionView = () => {
     const [reportDates, setReportDates] = useState([]);
     const [reportTargets, setReportTargets] = useState({});
     const [excludedDowntimeTypes, setExcludedDowntimeTypes] = useState(() => {
-        const stored = localStorage.getItem('productionExcludedDowntimeTypes');
-        return stored ? new Set(JSON.parse(stored)) : new Set();
+        const stored = loadFromLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES);
+        return stored ? new Set(stored) : new Set();
     });
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
@@ -667,7 +668,7 @@ const ProductionView = () => {
                 if (type === 'parseFiles') {
                     console.log(`Парсинг завершен, результатов: ${results?.length || 0}`);
                     setResults(results || []);
-                    localStorage.setItem(STORAGE_KEY, JSON.stringify(results || []));
+                    saveToLocalStorage(STORAGE_KEY, results || []);
                     setIsParsing(false);
                     // Пересчет flatRows произойдет автоматически через useEffect при изменении results
                 } else if (type === 'calculateFlatRows') {
@@ -727,27 +728,20 @@ const ProductionView = () => {
 
     // Загрузка данных из localStorage при монтировании
     useEffect(() => {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (!stored) return;
-        try {
-            const parsed = JSON.parse(stored);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                setResults(parsed);
-                // Пересчитываем flatRows для загруженных данных
-                if (productionWorkerRef.current) {
-                    const requestId = ++productionWorkerReqIdRef.current;
-                    productionWorkerRef.current.postMessage({
-                        type: 'calculateFlatRows',
-                        requestId,
-                        payload: {
-                            results: parsed,
-                            excludedDowntimeTypes: Array.from(excludedDowntimeTypes)
-                        }
-                    });
-                }
+        const stored = loadFromLocalStorage(STORAGE_KEY);
+        if (stored && Array.isArray(stored) && stored.length > 0) {
+            setResults(stored);
+            if (productionWorkerRef.current) {
+                const requestId = ++productionWorkerReqIdRef.current;
+                productionWorkerRef.current.postMessage({
+                    type: 'calculateFlatRows',
+                    requestId,
+                    payload: {
+                        results: stored,
+                        excludedDowntimeTypes: Array.from(excludedDowntimeTypes)
+                    }
+                });
             }
-        } catch (err) {
-            localStorage.removeItem(STORAGE_KEY);
         }
     }, []);
 
@@ -926,7 +920,7 @@ const ProductionView = () => {
                                                                     newSet.delete(type);
                                                                 }
                                                                 setExcludedDowntimeTypes(newSet);
-                                                                localStorage.setItem('productionExcludedDowntimeTypes', JSON.stringify(Array.from(newSet)));
+                                                                saveToLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, Array.from(newSet));
                                                             }}
                                                             className="hidden"
                                                         />

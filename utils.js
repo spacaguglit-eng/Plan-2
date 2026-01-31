@@ -19,7 +19,9 @@ export const STORAGE_KEYS = {
     MANUAL_LINES: 'plan_manual_lines',
     ASSIGNMENT_CLONES: 'plan_assignment_clones',
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',
-    PLANNING_STATE: 'plan_planning_state'
+    PLANNING_STATE: 'plan_planning_state',
+    PRODUCTION_RESULTS: 'productionParsedResults',
+    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes'
 };
 
 // --- LOCAL STORAGE HELPERS ---
