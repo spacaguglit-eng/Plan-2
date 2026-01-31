@@ -32,6 +32,7 @@ export const DataProvider = ({ children }) => {
     const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'saved', 'error'
     const [syncLog, setSyncLog] = useState([]); // Array of { id, type, message, timestamp }
     const [useRemoteStorage, setUseRemoteStorage] = useState(() => loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true));
+    const [userRole, setUserRole] = useState(() => loadFromLocalStorage('plan_user_role', null)); // 'admin' | 'guest' | null
 
     const [rawTables, setRawTables] = useState({});
     const [scheduleDates, setScheduleDates] = useState([]);
@@ -90,6 +91,14 @@ export const DataProvider = ({ children }) => {
         setRemoteEnabledByUser(useRemoteStorage);
         saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
     }, [useRemoteStorage]);
+
+    useEffect(() => {
+        if (userRole) {
+            localStorage.setItem('plan_user_role', JSON.stringify(userRole));
+        }
+    }, [userRole]);
+
+    const isReadOnly = userRole === 'guest';
 
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
@@ -410,6 +419,10 @@ export const DataProvider = ({ children }) => {
     }, 1000), []);
 
     const updateAssignments = useCallback((newAssignments) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         if (isLocked) {
             notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
             return;
@@ -420,9 +433,13 @@ export const DataProvider = ({ children }) => {
         }
         setManualAssignments(newAssignments);
         debouncedSaveToLocal(newAssignments);
-    }, [debouncedSaveToLocal, isLocked, viewMode]);
+    }, [debouncedSaveToLocal, isLocked, viewMode, isReadOnly]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         if (isLocked) {
             notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
             return;
@@ -1228,6 +1245,10 @@ export const DataProvider = ({ children }) => {
     ]);
 
     const handleDragStart = useCallback((e, worker) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         if (isLocked) {
             notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
             return;
@@ -1244,7 +1265,7 @@ export const DataProvider = ({ children }) => {
         }
         setDraggedWorker(worker);
         e.dataTransfer.effectAllowed = 'move';
-    }, [selectedDate, workerRegistry, isLocked, viewMode]);
+    }, [selectedDate, workerRegistry, isLocked, viewMode, isReadOnly]);
 
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
@@ -1298,6 +1319,10 @@ export const DataProvider = ({ children }) => {
     }, []);
 
     const cloneAssignedWorker = useCallback(({ date, shiftId, slotId, worker, roleTitle }) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+            return;
+        }
         if (isLocked) {
             notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
             return;
@@ -2588,7 +2613,7 @@ export const DataProvider = ({ children }) => {
 
     const value = useMemo(() => ({
         // State
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, userRole, isReadOnly,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
         isLocked,
@@ -2611,7 +2636,7 @@ export const DataProvider = ({ children }) => {
         autoReassignEnabled, setAutoReassignEnabled,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
-        setSyncStatus, setShowSyncLog, setUseRemoteStorage,
+        setSyncStatus, setShowSyncLog, setUseRemoteStorage, setUserRole,
         
         // Actions / Setters
         setWorkerRegistry, setLineTemplates, setFloaters,
@@ -2647,7 +2672,7 @@ export const DataProvider = ({ children }) => {
         // Performance metrics are stored outside of Context to avoid app-wide render storms.
     }), [
         // ТОЛЬКО состояние, НЕ setState функции!
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, userRole, isReadOnly,
         rawTables, scheduleDates, planHashes,
         savedPlans, currentPlanId,
         isLocked,

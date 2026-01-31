@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -54,7 +54,10 @@ export default function App() {
         showSyncLog,
         setShowSyncLog,
         useRemoteStorage,
-        setUseRemoteStorage
+        setUseRemoteStorage,
+        userRole,
+        setUserRole,
+        isReadOnly
     } = useData();
 
     const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
@@ -143,6 +146,47 @@ export default function App() {
                     </div>
                 </div>
             )}
+            {!userRole && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+                        <div className="p-6 text-center">
+                            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <Shield size={32} className="text-blue-600" />
+                            </div>
+                            <h2 className="text-xl font-bold text-slate-800 mb-2">Выберите режим доступа</h2>
+                            <p className="text-slate-500 text-sm mb-6">Это определит ваши права в приложении</p>
+                            
+                            <div className="space-y-3">
+                                <button
+                                    onClick={() => setUserRole('admin')}
+                                    className="w-full flex items-center gap-4 p-4 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-200 rounded-xl transition-colors group"
+                                >
+                                    <div className="w-12 h-12 bg-emerald-500 rounded-lg flex items-center justify-center">
+                                        <Shield size={24} className="text-white" />
+                                    </div>
+                                    <div className="text-left">
+                                        <div className="font-bold text-emerald-700">Админ</div>
+                                        <div className="text-sm text-emerald-600">Полный доступ: просмотр и редактирование</div>
+                                    </div>
+                                </button>
+                                
+                                <button
+                                    onClick={() => setUserRole('guest')}
+                                    className="w-full flex items-center gap-4 p-4 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl transition-colors group"
+                                >
+                                    <div className="w-12 h-12 bg-slate-400 rounded-lg flex items-center justify-center">
+                                        <Eye size={24} className="text-white" />
+                                    </div>
+                                    <div className="text-left">
+                                        <div className="font-bold text-slate-700">Гость</div>
+                                        <div className="text-sm text-slate-500">Только просмотр данных</div>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
             <PinModal
                 isOpen={isPinModalOpen}
@@ -192,6 +236,12 @@ export default function App() {
                                     {syncStatus === 'error' && (
                                         <div className="text-xs text-red-500 flex items-center gap-1" title="Ошибка сохранения">
                                             <AlertCircle size={14} />
+                                        </div>
+                                    )}
+                                    {isReadOnly && (
+                                        <div className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full flex items-center gap-1" title="Режим только для чтения">
+                                            <Eye size={12} />
+                                            <span>Гость</span>
                                         </div>
                                     )}
                                 </div>
@@ -362,6 +412,22 @@ export default function App() {
                                                     <div className={`w-8 h-4 rounded-full relative transition-colors ${useRemoteStorage ? 'bg-emerald-500' : 'bg-slate-300'}`}>
                                                         <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${useRemoteStorage ? 'right-0.5' : 'left-0.5'}`}></div>
                                                     </div>
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setUserRole(null);
+                                                        setIsExtraMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center justify-between px-4 py-2 text-sm font-medium transition-colors ${
+                                                        userRole === 'admin' ? 'text-emerald-600 hover:bg-emerald-50' : 'text-slate-500 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        {userRole === 'admin' ? <Shield size={16} /> : <Eye size={16} />}
+                                                        <span>{userRole === 'admin' ? 'Админ' : 'Гость'}</span>
+                                                    </div>
+                                                    <span className="text-xs text-slate-400">сменить</span>
                                                 </button>
                                             </div>
                                         )}
