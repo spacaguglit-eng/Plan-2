@@ -12,6 +12,27 @@ const extractTypeFlavor = (value) => {
     };
 };
 
+const extractProductParts = (value) => {
+    if (!value) return { type: '', flavor: '', volume: '', brand: '' };
+    const match = String(value).match(PRODUCT_PARSE_PATTERN);
+    if (!match?.groups?.type || !match?.groups?.flavor) {
+        return { type: '', flavor: '', volume: '', brand: '' };
+    }
+    const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
+    const brand = match.groups.brand ? match.groups.brand.trim() : '';
+    return {
+        type: match.groups.type.trim(),
+        flavor: match.groups.flavor.trim(),
+        volume,
+        brand
+    };
+};
+
+const normalizeVolumeForCompare = (vol) => {
+    if (!vol || typeof vol !== 'string') return '';
+    return vol.replace(/\s+/g, ' ').replace(',', '.').trim().toLowerCase();
+};
+
 const buildTransitionKey = (type, flavor) => (
     [type, flavor]
         .filter(Boolean)
@@ -68,93 +89,126 @@ const getCipKeyForPair = (rule, toName) => {
     return rule.baseCip || 'cip1';
 };
 
-const buildCostMatrix = (products, transitions, cipDurations) => {
+const getEdgeLabel = (productNames, fromIdx, toIdx, rules, cipDurations, displacementRules) => {
+    const fromName = productNames[fromIdx];
+    const toName = productNames[toIdx];
+    const fromParts = extractProductParts(fromName);
+    const toParts = extractProductParts(toName);
+    const volFrom = normalizeVolumeForCompare(fromParts.volume);
+    const volTo = normalizeVolumeForCompare(toParts.volume);
+    const durations = {
+        cip1: Number(cipDurations?.cip1 || 0),
+        cip2: Number(cipDurations?.cip2 || 0),
+        cip3: Number(cipDurations?.cip3 || 0),
+        perenaladka: Number(cipDurations?.perenaladka || 0),
+        smenaAssortimenta: Number(cipDurations?.smenaAssortimenta || 0),
+        vytesnenie: Number(cipDurations?.vytesnenie || 0)
+    };
+    if (volFrom !== volTo) {
+        return { cipKey: 'perenaladka', duration: durations.perenaladka, fromKey: null, toKey: null };
+    }
+    const sameType = (fromParts.type || '').toLowerCase() === (toParts.type || '').toLowerCase();
+    const sameFlavor = (fromParts.flavor || '').toLowerCase() === (toParts.flavor || '').toLowerCase();
+    const sameVolume = volFrom === volTo;
+    const brandFrom = (fromParts.brand || '').toLowerCase().trim();
+    const brandTo = (toParts.brand || '').toLowerCase().trim();
+    const differentBrand = brandFrom !== brandTo;
+    if (sameType && sameFlavor && sameVolume && differentBrand) {
+        return { cipKey: 'smenaAssortimenta', duration: durations.smenaAssortimenta, fromKey: null, toKey: null };
+    }
+    const displacement = (displacementRules || []).filter(r => r.from && r.to);
+    const fromFlavor = (fromParts.flavor || '').toLowerCase();
+    const toFlavor = (toParts.flavor || '').toLowerCase();
+    for (let k = 0; k < displacement.length; k += 1) {
+        const dr = displacement[k];
+        const fromSub = dr.from.toLowerCase().trim();
+        const toSub = dr.to.toLowerCase().trim();
+        const excSub = (dr.exception || '').toLowerCase().trim();
+        if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
+            return { cipKey: 'vytesnenie', duration: durations.vytesnenie, fromKey: null, toKey: null };
+        }
+    }
+    const fromKey = buildTransitionKey(fromParts.type, fromParts.flavor) || String(fromName || '').trim().toLowerCase();
+    const toKey = buildTransitionKey(toParts.type, toParts.flavor) || String(toName || '').trim().toLowerCase();
+    const rule = rules.get(fromKey);
+    if (!rule) {
+        return { cipKey: null, duration: null, fromKey, toKey };
+    }
+    const cipKey = getCipKeyForPair(rule, toKey);
+    const duration = durations[cipKey] || 0;
+    return { cipKey, duration, fromKey, toKey };
+};
+
+const buildCostMatrix = (productNames, transitions, cipDurations, displacementRules) => {
     const rules = buildRuleMap(transitions);
     const durations = {
         cip1: Number(cipDurations?.cip1 || 0),
         cip2: Number(cipDurations?.cip2 || 0),
-        cip3: Number(cipDurations?.cip3 || 0)
+        cip3: Number(cipDurations?.cip3 || 0),
+        perenaladka: Number(cipDurations?.perenaladka || 0),
+        smenaAssortimenta: Number(cipDurations?.smenaAssortimenta || 0),
+        vytesnenie: Number(cipDurations?.vytesnenie || 0)
     };
-    console.log('[Worker] CIP durations:', durations);
+    const displacement = (displacementRules || []).filter(r => r.from && r.to);
     const missingRules = new Set();
-    const n = products.length;
+    const n = productNames.length;
     const matrix = Array.from({ length: n }, () => Array(n).fill(0));
     for (let i = 0; i < n; i += 1) {
         for (let j = 0; j < n; j += 1) {
             if (i === j) continue;
-            const from = products[i];
-            const to = products[j];
-            const rule = rules.get(from);
-            const toRule = rules.get(to);
-            if (!rule || !toRule) {
-                if (!rule && !missingRules.has(from)) {
-                    missingRules.add(from);
-                    console.warn('[Worker] Missing transition rule for product:', from);
-                }
-                if (!toRule && !missingRules.has(to)) {
-                    missingRules.add(to);
-                    console.warn('[Worker] Missing transition rule for product:', to);
-                }
-                // Не считаем переходы, если нет правил хотя бы для одного продукта
-                matrix[i][j] = 0;
+            const fromName = productNames[i];
+            const toName = productNames[j];
+            const fromParts = extractProductParts(fromName);
+            const toParts = extractProductParts(toName);
+            const volFrom = normalizeVolumeForCompare(fromParts.volume);
+            const volTo = normalizeVolumeForCompare(toParts.volume);
+
+            if (volFrom !== volTo) {
+                matrix[i][j] = durations.perenaladka || 0;
                 continue;
             }
-            const cipKey = getCipKeyForPair(rule, to);
-            if (i < 3 && j < 3) {
-                console.log(`[Worker] ${from} → ${to} | rule:`, rule ? 'found' : 'NOT FOUND', '| cip:', cipKey, '| duration:', durations[cipKey] || 0);
+
+            const sameType = (fromParts.type || '').toLowerCase() === (toParts.type || '').toLowerCase();
+            const sameFlavor = (fromParts.flavor || '').toLowerCase() === (toParts.flavor || '').toLowerCase();
+            const sameVolume = volFrom === volTo;
+            const brandFrom = (fromParts.brand || '').toLowerCase().trim();
+            const brandTo = (toParts.brand || '').toLowerCase().trim();
+            const differentBrand = brandFrom !== brandTo;
+
+            if (sameType && sameFlavor && sameVolume && differentBrand) {
+                matrix[i][j] = durations.smenaAssortimenta || 0;
+                continue;
             }
+
+            const fromFlavor = (fromParts.flavor || '').toLowerCase();
+            const toFlavor = (toParts.flavor || '').toLowerCase();
+            let displacementMatch = false;
+            for (let k = 0; k < displacement.length; k += 1) {
+                const dr = displacement[k];
+                const fromSub = dr.from.toLowerCase().trim();
+                const toSub = dr.to.toLowerCase().trim();
+                const excSub = (dr.exception || '').toLowerCase().trim();
+                if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
+                    matrix[i][j] = durations.vytesnenie || 0;
+                    displacementMatch = true;
+                    break;
+                }
+            }
+            if (displacementMatch) continue;
+
+            const fromKey = buildTransitionKey(fromParts.type, fromParts.flavor) || String(fromName || '').trim().toLowerCase();
+            const toKey = buildTransitionKey(toParts.type, toParts.flavor) || String(toName || '').trim().toLowerCase();
+            const rule = rules.get(fromKey);
+            if (!rule) {
+                if (!missingRules.has(fromKey)) missingRules.add(fromKey);
+                matrix[i][j] = Infinity;
+                continue;
+            }
+            const cipKey = getCipKeyForPair(rule, toKey);
             matrix[i][j] = durations[cipKey] || 0;
         }
     }
     return matrix;
-};
-
-const solveHeldKarp = (matrix) => {
-    const n = matrix.length;
-    const totalMask = 1 << n;
-    const dp = Array.from({ length: totalMask }, () => Array(n).fill(Infinity));
-    const parent = Array.from({ length: totalMask }, () => Array(n).fill(-1));
-
-    for (let i = 0; i < n; i += 1) {
-        dp[1 << i][i] = 0;
-    }
-
-    for (let mask = 1; mask < totalMask; mask += 1) {
-        for (let last = 0; last < n; last += 1) {
-            if (!(mask & (1 << last))) continue;
-            const prevMask = mask ^ (1 << last);
-            if (prevMask === 0) continue;
-            for (let prev = 0; prev < n; prev += 1) {
-                if (!(prevMask & (1 << prev))) continue;
-                const cost = dp[prevMask][prev] + matrix[prev][last];
-                if (cost < dp[mask][last]) {
-                    dp[mask][last] = cost;
-                    parent[mask][last] = prev;
-                }
-            }
-        }
-    }
-
-    let bestCost = Infinity;
-    let bestLast = 0;
-    for (let i = 0; i < n; i += 1) {
-        if (dp[totalMask - 1][i] < bestCost) {
-            bestCost = dp[totalMask - 1][i];
-            bestLast = i;
-        }
-    }
-
-    const order = [];
-    let mask = totalMask - 1;
-    let last = bestLast;
-    while (last !== -1) {
-        order.push(last);
-        const prev = parent[mask][last];
-        mask ^= 1 << last;
-        last = prev;
-    }
-    order.reverse();
-    return { order, totalCost: bestCost };
 };
 
 const getPathCost = (matrix, order) => {
@@ -192,6 +246,89 @@ const solveNearestNeighbor = (matrix, start) => {
         if (next === -1) break;
         visited.add(next);
         order.push(next);
+    }
+    return order;
+};
+
+const solveFarthestInsertion = (matrix) => {
+    const n = matrix.length;
+    if (n <= 2) return Array.from({ length: n }, (_, i) => i);
+    let bestI = 0;
+    let bestJ = 1;
+    let maxCost = -Infinity;
+    for (let i = 0; i < n; i += 1) {
+        for (let j = i + 1; j < n; j += 1) {
+            const c = matrix[i][j] || 0;
+            if (Number.isFinite(c) && c > maxCost) {
+                maxCost = c;
+                bestI = i;
+                bestJ = j;
+            }
+        }
+    }
+    const order = [bestI, bestJ];
+    const unvisited = new Set(Array.from({ length: n }, (_, i) => i).filter((i) => !order.includes(i)));
+    while (unvisited.size > 0) {
+        let farthest = -1;
+        let farthestMinDist = -Infinity;
+        for (const k of unvisited) {
+            let minDist = Infinity;
+            for (const v of order) {
+                const d = matrix[v][k] ?? matrix[k][v] ?? Infinity;
+                if (Number.isFinite(d) && d < minDist) minDist = d;
+            }
+            if (minDist > farthestMinDist && minDist < Infinity) {
+                farthestMinDist = minDist;
+                farthest = k;
+            }
+        }
+        if (farthest === -1) break;
+        let bestPos = 0;
+        let bestIncrease = Infinity;
+        for (let pos = 0; pos <= order.length; pos += 1) {
+            const prev = pos === 0 ? order[order.length - 1] : order[pos - 1];
+            const next = pos === order.length ? order[0] : order[pos];
+            const prevCost = matrix[prev][next] ?? 0;
+            const newCost = (matrix[prev][farthest] ?? 0) + (matrix[farthest][next] ?? 0);
+            const increase = newCost - prevCost;
+            if (Number.isFinite(increase) && increase < bestIncrease) {
+                bestIncrease = increase;
+                bestPos = pos;
+            }
+        }
+        order.splice(bestPos, 0, farthest);
+        unvisited.delete(farthest);
+    }
+    return order;
+};
+
+const orOptImprove = (matrix, initialOrder) => {
+    const order = initialOrder.slice();
+    const n = order.length;
+    if (n < 5) return order;
+    const maxLen = Math.min(3, n - 2);
+    let improved = true;
+    while (improved) {
+        improved = false;
+        for (let len = 1; len <= maxLen; len += 1) {
+            for (let from = 1; from <= n - len - 1; from += 1) {
+                const seg = order.slice(from, from + len);
+                const without = order.slice(0, from).concat(order.slice(from + len));
+                const baseCost = getPathCost(matrix, order);
+                for (let j = 1; j < without.length; j += 1) {
+                    if (j === from) continue;
+                    const candidate = without.slice(0, j).concat(seg).concat(without.slice(j));
+                    const cost = getPathCost(matrix, candidate);
+                    if (cost < baseCost - 0.001) {
+                        order.splice(0, n, ...candidate);
+                        improved = true;
+                        break;
+                    }
+                }
+                if (improved) break;
+            }
+            if (improved) break;
+        }
     }
     return order;
 };
@@ -283,17 +420,20 @@ const solveHeuristicTimed = (matrix, options = {}) => {
     };
 
     const evaluate = (order) => {
-        const improved = twoOptImprove(matrix, order);
-        const withThreeOpt = threeOptImprove(matrix, improved, {
+        const a = twoOptImprove(matrix, order);
+        const b = orOptImprove(matrix, a);
+        const c = threeOptImprove(matrix, b, {
             iterations: Math.max(40, Math.floor(n * 4)),
             deadlineMs
         });
-        const cost = getPathCost(matrix, withThreeOpt);
+        const cost = getPathCost(matrix, c);
         if (cost < best.totalCost) {
-            best = { order: withThreeOpt, totalCost: cost };
+            best = { order: c, totalCost: cost };
         }
     };
 
+    evaluate(solveFarthestInsertion(matrix));
+    reportProgress();
     for (let start = 0; start < n; start += 1) {
         evaluate(solveNearestNeighbor(matrix, start));
         reportProgress();
@@ -311,14 +451,7 @@ const solveHeuristicTimed = (matrix, options = {}) => {
     return best;
 };
 
-const resolveOptimization = (matrix, algorithm, timeBudgetMs, onProgress) => {
-    const n = matrix.length;
-    const algo = String(algorithm || 'auto').trim();
-    if (algo === 'heldKarp') return solveHeldKarp(matrix);
-    if (algo === 'heuristic') {
-        return solveHeuristicTimed(matrix, { timeBudgetMs, onProgress });
-    }
-    if (n <= 10) return solveHeldKarp(matrix);
+const resolveOptimization = (matrix, timeBudgetMs, onProgress) => {
     return solveHeuristicTimed(matrix, { timeBudgetMs, onProgress });
 };
 
@@ -327,41 +460,19 @@ self.onmessage = (event) => {
     const products = payload?.products || [];
     const transitions = payload?.transitions || [];
     const cipDurations = payload?.cipDurations || {};
+    const displacementRules = payload?.displacementRules || [];
     const timeBudgetMs = payload?.timeBudgetMs;
-    const algorithm = payload?.algorithm;
     if (!type) return;
     if (!Array.isArray(products) || products.length === 0) {
         self.postMessage({ type: 'result', payload: { order: [], totalCost: 0 } });
         return;
     }
     const normalizedProducts = products.map(name => normalizeTransitionValue(name));
-    const matrix = buildCostMatrix(normalizedProducts, transitions, cipDurations);
-    if (type === 'compare') {
-        const heldKarp = solveHeldKarp(matrix);
-        const heuristic = solveHeuristicTimed(matrix, {
-            timeBudgetMs,
-            onProgress: (data) => {
-                const payload = typeof data === 'number'
-                    ? { progress: data }
-                    : { progress: data?.progress ?? 0, nodesExplored: data?.nodesExplored };
-                self.postMessage({ type: 'progress', payload });
-            }
-        });
-        const heldKarpOrder = heldKarp.order.map(index => normalizedProducts[index]).filter(Boolean);
-        const heuristicOrder = heuristic.order.map(index => normalizedProducts[index]).filter(Boolean);
-        self.postMessage({
-            type: 'compare',
-            payload: {
-                heldKarp: { ...heldKarp, order: heldKarpOrder },
-                heuristic: { ...heuristic, order: heuristicOrder }
-            }
-        });
-        return;
-    }
+    const matrix = buildCostMatrix(products, transitions, cipDurations, displacementRules);
     if (type === 'optimize') {
+        const currentOrderIndices = Array.isArray(payload?.currentOrderIndices) ? payload.currentOrderIndices : null;
         const result = resolveOptimization(
             matrix,
-            algorithm,
             timeBudgetMs,
             (data) => {
                 const payload = typeof data === 'number'
@@ -370,7 +481,36 @@ self.onmessage = (event) => {
                 self.postMessage({ type: 'progress', payload });
             }
         );
-        const orderNames = result.order.map(index => normalizedProducts[index]).filter(Boolean);
-        self.postMessage({ type: 'result', payload: { order: orderNames, totalCost: result.totalCost } });
+        const feasible = Number.isFinite(result.totalCost);
+        const orderIndices = feasible ? result.order : Array.from({ length: normalizedProducts.length }, (_, i) => i);
+        const orderNames = feasible
+            ? result.order.map(index => normalizedProducts[index]).filter(Boolean)
+            : normalizedProducts.slice();
+        const baselineRaw = currentOrderIndices ? getPathCost(matrix, currentOrderIndices) : null;
+        const baselineCost = Number.isFinite(baselineRaw) ? baselineRaw : null;
+        const rules = buildRuleMap(transitions);
+        const transitionRows = [];
+        for (let i = 0; i < orderIndices.length - 1; i += 1) {
+            const fromIdx = orderIndices[i];
+            const toIdx = orderIndices[i + 1];
+            const edge = getEdgeLabel(products, fromIdx, toIdx, rules, cipDurations, displacementRules);
+            transitionRows.push({
+                from: normalizedProducts[fromIdx] || products[fromIdx] || '',
+                to: normalizedProducts[toIdx] || products[toIdx] || '',
+                cipKey: edge.cipKey,
+                duration: edge.duration
+            });
+        }
+        self.postMessage({
+            type: 'result',
+            payload: {
+                order: orderNames,
+                orderIndices,
+                totalCost: feasible ? result.totalCost : null,
+                baselineCost,
+                feasible,
+                transitionRows
+            }
+        });
     }
 };

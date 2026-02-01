@@ -873,25 +873,27 @@ export const DataProvider = ({ children }) => {
         saveToLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
 
         const createdAt = new Date().toISOString();
-        const planId = draftPlanIdRef.current || generatePlanId();
+        const planName = (name || `План ${createdAt.slice(0, 10)}`).trim();
+        const planData = {
+            rawTables: rawTablesNext,
+            planHashes: newHashes,
+            scheduleDates: analysis.scheduleDates,
+            lineTemplates: analysis.lineTemplates,
+            floaters: analysis.floaters,
+            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
+            manualAssignments: {},
+            manualLines,
+            assignmentClones
+        };
+        const existingByName = savedPlans.find(p => (p.name || '').trim() === planName);
+        const planId = existingByName ? existingByName.id : (draftPlanIdRef.current || generatePlanId());
         const plan = {
             id: planId,
-            name: name || `План ${createdAt.slice(0, 10)}`,
+            name: planName,
             createdAt,
-            type: null,
-            data: {
-                rawTables: rawTablesNext,
-                planHashes: newHashes,
-                scheduleDates: analysis.scheduleDates,
-                lineTemplates: analysis.lineTemplates,
-                floaters: analysis.floaters,
-                workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
-                manualAssignments: {},
-                manualLines,
-                assignmentClones
-            }
+            type: existingByName ? existingByName.type : null,
+            data: planData
         };
-
         setSavedPlans(prev => {
             const idx = prev.findIndex(p => p.id === planId);
             if (idx !== -1) {
@@ -901,8 +903,9 @@ export const DataProvider = ({ children }) => {
             }
             return [...prev, plan];
         });
-        draftPlanIdRef.current = planId;
-    }, [analyzeDataPure, assignmentClones, buildPlanHashes, manualLines, preAnalyzeRoster]);
+        setCurrentPlanId(planId);
+        draftPlanIdRef.current = null;
+    }, [analyzeDataPure, assignmentClones, buildPlanHashes, manualLines, preAnalyzeRoster, savedPlans]);
 
     const buildPlanSlots = useCallback((planData) => {
         const normalized = normalizePlanData(planData || {});
@@ -1144,20 +1147,34 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Сохранение недоступно.' });
             return;
         }
+        const planName = (name || `План ${new Date().toISOString().slice(0, 10)}`).trim();
         const createdAt = new Date().toISOString();
-        const plan = {
-            id: generatePlanId(),
-            name: name || `План ${createdAt.slice(0, 10)}`,
-            createdAt,
-            type: 'Operational',
-            data: buildPlanSnapshot()
-        };
+        const snapshot = buildPlanSnapshot();
+        const existing = savedPlans.find(p => (p.name || '').trim() === planName);
+        const targetPlanId = existing ? existing.id : generatePlanId();
         setSavedPlans(prev => {
+            const existingIdx = prev.findIndex(p => (p.name || '').trim() === planName);
             const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
-            return [...cleared, plan];
+            if (existingIdx !== -1) {
+                const next = [...cleared];
+                next[existingIdx] = {
+                    ...cleared[existingIdx],
+                    createdAt,
+                    type: 'Operational',
+                    data: snapshot
+                };
+                return next;
+            }
+            return [...cleared, {
+                id: targetPlanId,
+                name: planName,
+                createdAt,
+                type: 'Operational',
+                data: snapshot
+            }];
         });
-        setCurrentPlanId(plan.id);
-    }, [buildPlanSnapshot, isReadOnly]);
+        setCurrentPlanId(targetPlanId);
+    }, [buildPlanSnapshot, isReadOnly, savedPlans]);
 
     const loadPlan = useCallback((planId) => {
         const plan = savedPlans.find(p => p.id === planId);

@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Droplet, Plus, Clock4, Database, GripVertical, Trash2 } from 'lucide-react';
+import { Calendar, CalendarDays, Droplet, Plus, Clock4, Database, GripVertical, Trash2, BarChart2, Package, Zap, Beaker, GitBranch, ChevronDown, ChevronRight, Replace } from 'lucide-react';
 import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from '../../utils';
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
+import CalendarTab from './CalendarTab';
 
 const LINE_OPTIONS = [
     'Линия 1',
@@ -112,7 +113,7 @@ const DEFAULT_PRODUCTS = [
         id: 1,
         date: '27.01.2026',
         manualDate: false,
-        start: '07:00',
+        start: '08:00',
         end: '',
         manualStart: false,
         manualEnd: false,
@@ -183,9 +184,35 @@ const buildTransitionKey = (type, flavor) => (
         .toLowerCase()
 );
 
+const canonicalTransitionKey = (key) => {
+    if (key == null || key === '') return '';
+    return String(key).trim().toLowerCase().replace(/\s+/g, ' ');
+};
+
+const extractProductParts = (value) => {
+    if (!value) return { type: '', flavor: '', volume: '', brand: '' };
+    const match = String(value).match(PRODUCT_PARSE_PATTERN);
+    if (!match?.groups?.type || !match?.groups?.flavor) {
+        return { type: '', flavor: '', volume: '', brand: '' };
+    }
+    const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
+    const brand = match.groups.brand ? match.groups.brand.trim() : '';
+    return {
+        type: match.groups.type.trim(),
+        flavor: match.groups.flavor.trim(),
+        volume,
+        brand
+    };
+};
+
+const normalizeVolumeForCompare = (vol) => {
+    if (!vol || typeof vol !== 'string') return '';
+    return vol.replace(/\s+/g, ' ').replace(',', '.').trim().toLowerCase();
+};
+
 const splitTransitionList = (value) => (
     String(value || '')
-        .split(',')
+        .split(/[,;\n]+/)
         .map(item => item.trim())
         .filter(Boolean)
 );
@@ -226,7 +253,6 @@ const DEFAULT_CIP_BETWEEN = [
 const DEFAULT_LINE_EVENTS = [
     {
         category: 'Передача смены',
-        event: 'smena',
         durations: {
             'Линия 1': 20,
             'Линия 2': 20,
@@ -243,7 +269,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Запуск линии',
-        event: 'Запуск линии',
         durations: {
             'Линия 1': 30,
             'Линия 2': 30,
@@ -260,7 +285,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Смена ассортимента',
-        event: '',
         durations: {
             'Линия 1': 15,
             'Линия 2': 15,
@@ -277,7 +301,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Переналадка формата',
-        event: '',
         durations: {
             'Линия 1': 120,
             'Линия 2': 120,
@@ -294,7 +317,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Стерилизация',
-        event: '',
         durations: {
             'Линия 1': 0,
             'Линия 2': 0,
@@ -311,7 +333,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'CIP1 (холодная вода)',
-        event: 'CIP1c',
         durations: {
             'Линия 1': 40,
             'Линия 2': 40,
@@ -328,7 +349,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'CIP1 (горячая вода)',
-        event: 'CIP1h',
         durations: {
             'Линия 1': 0,
             'Линия 2': 0,
@@ -345,7 +365,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'CIP2 (щелочная)',
-        event: 'CIP2',
         durations: {
             'Линия 1': 240,
             'Линия 2': 240,
@@ -362,7 +381,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'CIP3 (щелочь, кислота)',
-        event: 'CIP3',
         durations: {
             'Линия 1': 300,
             'Линия 2': 300,
@@ -379,7 +397,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Настройка ЧЗ',
-        event: '',
         durations: {
             'Линия 1': 0,
             'Линия 2': 0,
@@ -396,7 +413,6 @@ const DEFAULT_LINE_EVENTS = [
     },
     {
         category: 'Вытеснение',
-        event: 'O',
         durations: {
             'Линия 1': 30,
             'Линия 2': 30,
@@ -430,15 +446,15 @@ const PlanningView = () => {
             shiftId: '1',
             type: 'День',
             date: dateStr,
-            start: '07:00',
-            end: '19:00'
+            start: '08:00',
+            end: '20:00'
         },
         {
             shiftId: '2',
             type: 'Ночь',
             date: dateStr,
-            start: '19:00',
-            end: '07:00'
+            start: '20:00',
+            end: '08:00'
         }
     ]);
 
@@ -460,7 +476,9 @@ const PlanningView = () => {
         return result;
     };
 
-    const [activeTab, setActiveTab] = useState(() => storedPlanning.activeTab || 'schedule');
+    const initialTab = storedPlanning.activeTab || 'schedule';
+    const [activeTab, setActiveTab] = useState(initialTab);
+    const [visitedTabs, setVisitedTabs] = useState(() => ({ [initialTab]: true }));
     const [cipDurations, setCipDurations] = useState(
         () => storedPlanning.cipDurations || DEFAULT_CIP_DURATIONS
     );
@@ -496,20 +514,23 @@ const PlanningView = () => {
     const [lineEvents, setLineEvents] = useState(
         () => storedPlanning.lineEvents || DEFAULT_LINE_EVENTS
     );
+    const [expandedCipIndex, setExpandedCipIndex] = useState(null);
     const [transitionSearch, setTransitionSearch] = useState({});
     const [transitionResult, setTransitionResult] = useState(null);
     const [transitionStatus, setTransitionStatus] = useState('idle');
     const [transitionError, setTransitionError] = useState('');
     const [transitionProgress, setTransitionProgress] = useState(0);
     const [transitionProgressNodes, setTransitionProgressNodes] = useState(null);
-    const [transitionCompareResult, setTransitionCompareResult] = useState(null);
     const [transitionSaveStatus, setTransitionSaveStatus] = useState('');
     const [transitionSearchQuery, setTransitionSearchQuery] = useState('');
-    const [transitionAlgorithm, setTransitionAlgorithm] = useState(
-        () => storedPlanning.transitionAlgorithm || 'auto'
+    const [displacementRules, setDisplacementRules] = useState(
+        () => storedPlanning.displacementRules || []
     );
     const [hoveredTransitionRuleId, setHoveredTransitionRuleId] = useState(null);
     const [activeTransitionCell, setActiveTransitionCell] = useState(null);
+    const [activeProductSearchCell, setActiveProductSearchCell] = useState(null);
+    const [productSearchQuery, setProductSearchQuery] = useState('');
+    const [transitionPage, setTransitionPage] = useState(1);
     const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
     const [exportType, setExportType] = useState(() => storedPlanning.exportType || 'html');
@@ -537,17 +558,14 @@ const PlanningView = () => {
     const getTransitionKeyForName = (name) => {
         if (!name) return '';
         const baseProduct = baseProductByName.get(name);
-        if (baseProduct) return getTransitionKeyForProduct(baseProduct);
+        if (baseProduct) return canonicalTransitionKey(getTransitionKeyForProduct(baseProduct));
         const { type, flavor } = extractTypeFlavor(name);
         const key = buildTransitionKey(type, flavor);
-        return key || String(name).trim().toLowerCase();
+        return canonicalTransitionKey(key || String(name).trim().toLowerCase());
     };
 
     const normalizeTransitionList = (value) => {
-        const items = String(value || '')
-            .split(',')
-            .map(item => item.trim())
-            .filter(Boolean)
+        const items = splitTransitionList(value)
             .map(item => getTransitionKeyForName(item))
             .filter(Boolean);
         return Array.from(new Set(items)).join(', ');
@@ -556,7 +574,7 @@ const PlanningView = () => {
     const transitionRuleMap = useMemo(() => {
         const map = new Map();
         (transitionRules || []).forEach((rule) => {
-            const key = getTransitionKeyForName(rule.productName);
+            const key = canonicalTransitionKey(getTransitionKeyForName(rule.productName));
             if (!key) return;
             map.set(key, {
                 baseCip: rule.baseCip || 'cip1',
@@ -578,25 +596,11 @@ const PlanningView = () => {
         return rule.baseCip || 'cip1';
     };
 
-    const currentTransitionOrder = useMemo(() => (
+    const lineTransitionKeys = useMemo(() => (
         products
             .filter(product => product.line === selectedPlanLine)
             .map(product => getTransitionKeyForName(product.name))
-            .filter(Boolean)
     ), [products, selectedPlanLine, getTransitionKeyForName]);
-
-    const bestCompareResult = useMemo(() => {
-        if (!transitionCompareResult) return null;
-        const hk = transitionCompareResult.heldKarp;
-        const heur = transitionCompareResult.heuristic;
-        if (!hk || !heur) return null;
-        const hkCost = hk.totalCost ?? Infinity;
-        const heurCost = heur.totalCost ?? Infinity;
-        if (heurCost < hkCost) {
-            return { label: 'Эвристика', order: heur.order || [], totalCost: heurCost };
-        }
-        return { label: 'Held–Karp', order: hk.order || [], totalCost: hkCost };
-    }, [transitionCompareResult]);
 
     const buildMissingTransitionMap = useCallback((line) => {
         const map = new Map();
@@ -609,7 +613,7 @@ const PlanningView = () => {
             const fromKey = getTransitionKeyForName(from.product.name);
             const toKey = getTransitionKeyForName(to.product.name);
             const rule = transitionRuleMap.get(fromKey);
-            if (!rule || !transitionRuleMap.has(toKey)) {
+            if (!rule) {
                 map.set(from.index, true);
             }
         }
@@ -621,16 +625,22 @@ const PlanningView = () => {
         [buildMissingTransitionMap, selectedPlanLine]
     );
 
+    const optimizedOrderKeys = useMemo(() => {
+        if (!transitionResult) return [];
+        const indices = transitionResult.orderIndices;
+        if (Array.isArray(indices) && indices.length > 0) {
+            const mapped = indices.map((i) => lineTransitionKeys[i] ?? '');
+            if (mapped.length > 0) return mapped;
+        }
+        return transitionResult.order || [];
+    }, [transitionResult, lineTransitionKeys]);
+
     const transitionAnalytics = useMemo(() => {
         const getCipDuration = (cipKey) => {
-            const eventKeyMap = {
-                cip1: 'CIP1c',
-                cip2: 'CIP2',
-                cip3: 'CIP3'
-            };
-            const eventKey = eventKeyMap[cipKey];
-            if (!eventKey) return null;
-            const event = lineEvents.find(e => e.event === eventKey);
+            const patternByCip = { cip1: /CIP1/i, cip2: /CIP2/i, cip3: /CIP3/i };
+            const re = patternByCip[cipKey];
+            if (!re) return null;
+            const event = lineEvents.find(e => re.test(e.category));
             if (!event) return null;
             const raw = event.durations?.[selectedPlanLine];
             if (raw === '' || raw === null || raw === undefined) return null;
@@ -646,8 +656,7 @@ const PlanningView = () => {
                 const from = order[i];
                 const to = order[i + 1];
                 const rule = transitionRuleMap.get(from);
-                const hasToRule = transitionRuleMap.has(to);
-                if (!rule || !hasToRule) {
+                if (!rule) {
                     rows.push({ from, to, cipKey: null, duration: null, reason: 'missing-rule' });
                     missingRules += 1;
                     continue;
@@ -663,10 +672,12 @@ const PlanningView = () => {
             }
             return { rows, total, missingDurations, missingRules };
         };
-        const was = getTransitions(currentTransitionOrder);
-        const now = getTransitions(transitionResult?.order || []);
+        const was = getTransitions(lineTransitionKeys);
+        const now = getTransitions(optimizedOrderKeys);
         return { was, now };
-    }, [lineEvents, selectedPlanLine, transitionRuleMap, currentTransitionOrder, transitionResult]);
+    }, [lineEvents, selectedPlanLine, transitionRuleMap, lineTransitionKeys, optimizedOrderKeys]);
+
+    const TRANSITION_PAGE_SIZE = 20;
 
     const filteredTransitionRules = useMemo(() => {
         const query = transitionSearchQuery.trim().toLowerCase();
@@ -685,6 +696,23 @@ const PlanningView = () => {
         });
     }, [transitionRules, transitionSearchQuery]);
 
+    const transitionTotalPages = Math.max(1, Math.ceil((filteredTransitionRules?.length || 0) / TRANSITION_PAGE_SIZE));
+    const paginatedTransitionRules = useMemo(() => {
+        const list = filteredTransitionRules || [];
+        const start = (transitionPage - 1) * TRANSITION_PAGE_SIZE;
+        return list.slice(start, start + TRANSITION_PAGE_SIZE);
+    }, [filteredTransitionRules, transitionPage, TRANSITION_PAGE_SIZE]);
+
+    useEffect(() => {
+        setTransitionPage(1);
+    }, [transitionSearchQuery]);
+
+    useEffect(() => {
+        if (transitionPage > transitionTotalPages && transitionTotalPages >= 1) {
+            setTransitionPage(transitionTotalPages);
+        }
+    }, [transitionPage, transitionTotalPages]);
+
     const createTransitionWorker = () => {
         const worker = new Worker(
             new URL('../../workers/transitionOptimizer.worker.js', import.meta.url),
@@ -695,17 +723,9 @@ const PlanningView = () => {
             const { type, payload } = event.data || {};
             if (type === 'result') {
                 setTransitionResult(payload);
-                setTransitionCompareResult(null);
                 setTransitionStatus('done');
                 setTransitionProgress(1);
                 setTransitionProgressNodes(payload?.nodesExplored ?? null);
-            }
-            if (type === 'compare') {
-                setTransitionCompareResult(payload);
-                setTransitionResult(null);
-                setTransitionStatus('done');
-                setTransitionProgress(1);
-                setTransitionProgressNodes(null);
             }
             if (type === 'progress') {
                 setTransitionProgress(payload?.progress || 0);
@@ -820,7 +840,7 @@ const PlanningView = () => {
             lineEvents,
             exportLines,
             exportType,
-            transitionAlgorithm
+            displacementRules
         });
     }, [
         activeTab,
@@ -834,7 +854,7 @@ const PlanningView = () => {
         lineEvents,
         exportLines,
         exportType,
-        transitionAlgorithm,
+        displacementRules,
         savePlanningState
     ]);
 
@@ -1025,7 +1045,6 @@ const PlanningView = () => {
             ...prev,
             {
                 category: '',
-                event: '',
                 durations: LINE_OPTIONS.reduce((acc, line) => {
                     acc[line] = '';
                     return acc;
@@ -1052,6 +1071,33 @@ const PlanningView = () => {
         ]));
     };
 
+    const productsWithoutRules = useMemo(() => {
+        const keys = new Set();
+        products
+            .filter((p) => p.line === selectedPlanLine && p.name)
+            .forEach((p) => {
+                const key = getTransitionKeyForName(p.name);
+                if (key && !transitionRuleMap.has(key)) keys.add(key);
+            });
+        return Array.from(keys);
+    }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName]);
+
+    const addMissingProductsAsRules = () => {
+        if (productsWithoutRules.length === 0) return;
+        const now = Date.now();
+        setTransitionRules((prev) => [
+            ...prev,
+            ...productsWithoutRules.map((key, i) => ({
+                id: `tr_${now}_${prev.length + i}`,
+                productName: key,
+                baseCip: 'cip2',
+                cip1: '',
+                cip2: '',
+                cip3: ''
+            }))
+        ]);
+    };
+
     const removeTransitionRule = (id) => {
         setTransitionRules(prev => prev.filter(rule => rule.id !== id));
         setTransitionSearch(prev => {
@@ -1059,6 +1105,21 @@ const PlanningView = () => {
             delete next[id];
             return next;
         });
+    };
+
+    const addDisplacementRule = () => {
+        setDisplacementRules((prev) => [
+            ...prev,
+            { id: `dr_${Date.now()}_${prev.length}`, from: '', to: '', exception: '' }
+        ]);
+    };
+
+    const removeDisplacementRule = (id) => {
+        setDisplacementRules((prev) => prev.filter((r) => r.id !== id));
+    };
+
+    const updateDisplacementRule = (id, key, value) => {
+        setDisplacementRules((prev) => prev.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
     };
 
     const updateTransitionRule = (id, key, value) => {
@@ -1084,20 +1145,32 @@ const PlanningView = () => {
         if (!transitionWorkerRef.current) return;
         const lineProducts = products
             .filter(product => product.line === selectedPlanLine)
-            .map(product => getTransitionKeyForName(product.name))
+            .map(product => product.name)
             .filter(Boolean);
         const timeBudgetMs = 2500;
         const cipDurationsForOptimization = {
             cip1: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP1c' || e.event === 'CIP1h');
+                const event = lineEvents.find(e => /CIP1/i.test(e.category));
                 return event?.durations?.[selectedPlanLine] || 0;
             })(),
             cip2: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP2');
+                const event = lineEvents.find(e => /CIP2/i.test(e.category));
                 return event?.durations?.[selectedPlanLine] || 0;
             })(),
             cip3: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP3');
+                const event = lineEvents.find(e => /CIP3/i.test(e.category));
+                return event?.durations?.[selectedPlanLine] || 0;
+            })(),
+            perenaladka: (() => {
+                const event = lineEvents.find(e => e.category && e.category.includes('Переналадка'));
+                return event?.durations?.[selectedPlanLine] || 0;
+            })(),
+            smenaAssortimenta: (() => {
+                const event = lineEvents.find(e => e.category && e.category.includes('Смена ассортимента'));
+                return event?.durations?.[selectedPlanLine] || 0;
+            })(),
+            vytesnenie: (() => {
+                const event = lineEvents.find(e => e.category && e.category.includes('Вытеснение'));
                 return event?.durations?.[selectedPlanLine] || 0;
             })()
         };
@@ -1112,66 +1185,21 @@ const PlanningView = () => {
         setTransitionError('');
         setTransitionProgress(0);
         setTransitionProgressNodes(null);
-        setTransitionCompareResult(null);
         transitionWorkerRef.current.postMessage({
             type: 'optimize',
             payload: {
                 products: lineProducts,
+                currentOrderIndices: Array.from({ length: lineProducts.length }, (_, idx) => idx),
                 transitions: transitionRules,
                 cipDurations: cipDurationsForOptimization,
-                timeBudgetMs,
-                algorithm: transitionAlgorithm
-            }
-        });
-    };
-
-    const runTransitionCompare = () => {
-        if (transitionStatus === 'running') {
-            stopTransitionOptimization();
-        }
-        if (!transitionWorkerRef.current) return;
-        const lineProducts = products
-            .filter(product => product.line === selectedPlanLine)
-            .map(product => getTransitionKeyForName(product.name))
-            .filter(Boolean);
-        const timeBudgetMs = 2500;
-        const cipDurationsForOptimization = {
-            cip1: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP1c' || e.event === 'CIP1h');
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            cip2: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP2');
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            cip3: (() => {
-                const event = lineEvents.find(e => e.event === 'CIP3');
-                return event?.durations?.[selectedPlanLine] || 0;
-            })()
-        };
-        if (lineProducts.length === 0) {
-            setTransitionError('Нет продуктов для выбранной линии.');
-            return;
-        }
-        setTransitionStatus('running');
-        setTransitionError('');
-        setTransitionProgress(0);
-        setTransitionProgressNodes(null);
-        setTransitionCompareResult(null);
-        setTransitionResult(null);
-        transitionWorkerRef.current.postMessage({
-            type: 'compare',
-            payload: {
-                products: lineProducts,
-                transitions: transitionRules,
-                cipDurations: cipDurationsForOptimization,
+                displacementRules,
                 timeBudgetMs
             }
         });
     };
 
-    const applyOptimizedOrder = (orderKeys) => {
-        if (!Array.isArray(orderKeys) || orderKeys.length === 0) return;
+    const applyOptimizedOrder = (orderKeysOrIndices) => {
+        if (!Array.isArray(orderKeysOrIndices) || orderKeysOrIndices.length === 0) return;
         const lineItems = [];
         const lineIndices = [];
         products.forEach((product, index) => {
@@ -1185,30 +1213,37 @@ const PlanningView = () => {
         });
         if (lineItems.length === 0) return;
 
-        const queues = new Map();
-        lineItems.forEach((item) => {
-            const key = getTransitionKeyForName(item.product.name);
-            if (!queues.has(key)) queues.set(key, []);
-            queues.get(key).push(item);
-        });
-
-        const reordered = [];
-        orderKeys.forEach((key) => {
-            const queue = queues.get(key);
-            if (queue && queue.length) {
-                reordered.push(queue.shift());
+        const useIndices = orderKeysOrIndices.every((x) => typeof x === 'number');
+        let reordered;
+        if (useIndices && orderKeysOrIndices.length === lineItems.length) {
+            reordered = orderKeysOrIndices.map((i) => lineItems[i]).filter(Boolean);
+            if (reordered.length < lineItems.length) {
+                const used = new Set(reordered.map((item) => item.index));
+                lineItems.forEach((item) => {
+                    if (!used.has(item.index)) reordered.push(item);
+                });
             }
-        });
-
-        queues.forEach((queue) => {
-            while (queue.length) reordered.push(queue.shift());
-        });
-
-        if (reordered.length < lineItems.length) {
-            const used = new Set(reordered.map(item => item.index));
+        } else {
+            const queues = new Map();
             lineItems.forEach((item) => {
-                if (!used.has(item.index)) reordered.push(item);
+                const key = getTransitionKeyForName(item.product.name);
+                if (!queues.has(key)) queues.set(key, []);
+                queues.get(key).push(item);
             });
+            reordered = [];
+            orderKeysOrIndices.forEach((key) => {
+                const queue = queues.get(key);
+                if (queue && queue.length) reordered.push(queue.shift());
+            });
+            queues.forEach((queue) => {
+                while (queue.length) reordered.push(queue.shift());
+            });
+            if (reordered.length < lineItems.length) {
+                const used = new Set(reordered.map((item) => item.index));
+                lineItems.forEach((item) => {
+                    if (!used.has(item.index)) reordered.push(item);
+                });
+            }
         }
 
         const nextProducts = [...products];
@@ -1229,13 +1264,6 @@ const PlanningView = () => {
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
-            const fromKey = getTransitionKeyForName(from.product.name);
-            const toKey = getTransitionKeyForName(to.product.name);
-            const rule = transitionRuleMap.get(fromKey);
-            if (!rule || !transitionRuleMap.has(toKey)) {
-                missingRules += 1;
-                continue;
-            }
             if (!nextCipBetween[from.index]) {
                 nextCipBetween[from.index] = {
                     id: `cip_${Date.now()}_${from.index}`,
@@ -1249,13 +1277,16 @@ const PlanningView = () => {
                     eventKey: ''
                 };
             }
-            const cipKey = getTransitionCipKey(rule, toKey);
-            const eventKey = getEventKeyForCipKey(cipKey);
-            nextCipBetween[from.index] = {
-                ...nextCipBetween[from.index],
-                line: selectedPlanLine,
-                eventKey
-            };
+            const eventKey = getEventKeyBetweenProducts(from.product, to.product);
+            if (eventKey == null) {
+                missingRules += 1;
+            } else {
+                nextCipBetween[from.index] = {
+                    ...nextCipBetween[from.index],
+                    line: selectedPlanLine,
+                    eventKey
+                };
+            }
         }
 
         setProducts(nextProducts);
@@ -1279,21 +1310,17 @@ const PlanningView = () => {
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
-            const fromKey = getTransitionKeyForName(from.product.name);
-            const toKey = getTransitionKeyForName(to.product.name);
-            const rule = transitionRuleMap.get(fromKey);
-            if (!rule || !transitionRuleMap.has(toKey)) {
-                missingRules += 1;
-                continue;
-            }
             if (!nextCipBetween[from.index]) continue;
-            const cipKey = getTransitionCipKey(rule, toKey);
-            const eventKey = getEventKeyForCipKey(cipKey);
-            nextCipBetween[from.index] = {
-                ...nextCipBetween[from.index],
-                line: selectedPlanLine,
-                eventKey
-            };
+            const eventKey = getEventKeyBetweenProducts(from.product, to.product);
+            if (eventKey == null) {
+                missingRules += 1;
+            } else {
+                nextCipBetween[from.index] = {
+                    ...nextCipBetween[from.index],
+                    line: selectedPlanLine,
+                    eventKey
+                };
+            }
         }
         setCipBetween(nextCipBetween);
         if (missingRules > 0) {
@@ -1334,7 +1361,7 @@ const PlanningView = () => {
             }
             if (target === 'plan') {
                 const baseDate = products[0]?.date || '27.01.2026';
-                const nextProducts = items.map((item, idx) => ({
+                const importedProducts = items.map((item, idx) => ({
                     id: `plan_${Date.now()}_${idx}`,
                     date: baseDate,
                     manualDate: false,
@@ -1347,7 +1374,7 @@ const PlanningView = () => {
                     qty: item.qty || '',
                     speed: findSpeedForVolume(selectedPlanLine, item.volume) || item.speed || ''
                 }));
-                const nextCipBetween = nextProducts.slice(0, -1).map((_, idx) => ({
+                const importedCips = importedProducts.slice(0, -1).map((_, idx) => ({
                     id: `cip_${Date.now()}_${idx}`,
                     date: baseDate,
                     manualDate: false,
@@ -1358,6 +1385,46 @@ const PlanningView = () => {
                     line: selectedPlanLine,
                     eventKey: eventOptions[0]?.key || ''
                 }));
+                const byLine = {};
+                products.forEach((p, i) => {
+                    const line = p.line || selectedPlanLine;
+                    if (!byLine[line]) byLine[line] = { products: [], indices: [] };
+                    byLine[line].products.push({ ...p });
+                    byLine[line].indices.push(i);
+                });
+                Object.keys(byLine).forEach((line) => {
+                    const ord = byLine[line].indices.map((idx, j) => ({ idx, j })).sort((a, b) => a.idx - b.idx);
+                    byLine[line].products = ord.map((o) => byLine[line].products[o.j]);
+                    const indices = ord.map((o) => o.idx);
+                    byLine[line].cips = [];
+                    for (let j = 0; j < indices.length - 1; j += 1) {
+                        const idx = indices[j];
+                        if (cipBetween[idx]) byLine[line].cips.push({ ...cipBetween[idx] });
+                        else byLine[line].cips.push({
+                            id: `cip_${Date.now()}_${line}_${j}`,
+                            date: baseDate,
+                            manualDate: false,
+                            start: '',
+                            end: '',
+                            manualStart: false,
+                            manualEnd: false,
+                            line,
+                            eventKey: eventOptions[0]?.key || ''
+                        });
+                    }
+                    delete byLine[line].indices;
+                });
+                byLine[selectedPlanLine] = { products: importedProducts, cips: importedCips };
+                const nextProducts = [];
+                const nextCipBetween = [];
+                LINE_OPTIONS.forEach((line) => {
+                    const data = byLine[line];
+                    if (!data || !data.products.length) return;
+                    data.products.forEach((p, i) => {
+                        nextProducts.push(p);
+                        if (i < data.cips.length) nextCipBetween.push(data.cips[i]);
+                    });
+                });
                 setProducts(nextProducts);
                 setCipBetween(nextCipBetween);
             } else {
@@ -1374,11 +1441,10 @@ const PlanningView = () => {
     };
 
     const eventOptions = useMemo(() => {
-        return lineEvents.map((item) => {
-            const key = `${item.category}__${item.event || ''}`;
-            const label = item.event ? `${item.category} (${item.event})` : item.category;
-            return { key, label };
-        });
+        return lineEvents.map((item) => ({
+            key: item.category,
+            label: item.category
+        }));
     }, [lineEvents]);
 
     const eventLabelByKey = useMemo(() => {
@@ -1389,24 +1455,69 @@ const PlanningView = () => {
     }, [eventOptions]);
 
     const getEventKeyForCipKey = (cipKey) => {
-        const targetsByCip = {
-            cip1: ['CIP1c', 'CIP1h'],
-            cip2: ['CIP2'],
-            cip3: ['CIP3']
-        };
-        const targets = targetsByCip[cipKey] || [];
-        for (let i = 0; i < targets.length; i += 1) {
-            const target = targets[i];
-            const match = lineEvents.find((item) => item.event === target);
-            if (match) return `${match.category}__${match.event || ''}`;
-        }
-        return eventOptions[0]?.key || '';
+        const patternByCip = { cip1: /CIP1/i, cip2: /CIP2/i, cip3: /CIP3/i };
+        const re = patternByCip[cipKey];
+        if (!re) return eventOptions[0]?.key || '';
+        const match = lineEvents.find((item) => re.test(item.category));
+        return match ? match.category : (eventOptions[0]?.key || '');
     };
+
+    const getEventKeyForCategoryName = (categoryName) => {
+        const match = lineEvents.find(
+            (item) => item.category === categoryName || (categoryName && item.category.includes(categoryName))
+        );
+        return match ? match.category : '';
+    };
+
+    const getEventKeyBetweenProducts = useCallback((fromProduct, toProduct) => {
+        const fromParts = extractProductParts(fromProduct?.name);
+        const toParts = extractProductParts(toProduct?.name);
+        const volFrom = normalizeVolumeForCompare(fromParts.volume);
+        const volTo = normalizeVolumeForCompare(toParts.volume);
+
+        if (volFrom !== volTo) {
+            const key = getEventKeyForCategoryName('Переналадка формата');
+            if (key) return key;
+        }
+
+        const sameType = (fromParts.type || '').toLowerCase() === (toParts.type || '').toLowerCase();
+        const sameFlavor = (fromParts.flavor || '').toLowerCase() === (toParts.flavor || '').toLowerCase();
+        const sameVolume = volFrom === volTo;
+        const brandFrom = (fromParts.brand || '').toLowerCase().trim();
+        const brandTo = (toParts.brand || '').toLowerCase().trim();
+        const differentBrand = brandFrom !== brandTo;
+
+        if (sameType && sameFlavor && sameVolume && differentBrand) {
+            const key = getEventKeyForCategoryName('Смена ассортимента');
+            if (key) return key;
+        }
+
+        const fromFlavor = (fromParts.flavor || '').toLowerCase();
+        const toFlavor = (toParts.flavor || '').toLowerCase();
+        for (let i = 0; i < displacementRules.length; i += 1) {
+            const r = displacementRules[i];
+            const fromSub = (r.from || '').toLowerCase().trim();
+            const toSub = (r.to || '').toLowerCase().trim();
+            const excSub = (r.exception || '').toLowerCase().trim();
+            if (!fromSub || !toSub) continue;
+            if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
+                const key = getEventKeyForCategoryName('Вытеснение');
+                if (key) return key;
+                break;
+            }
+        }
+
+        const fromKey = getTransitionKeyForName(fromProduct?.name);
+        const toKey = getTransitionKeyForName(toProduct?.name);
+        const rule = transitionRuleMap.get(fromKey);
+        if (!rule) return null;
+        const cipKey = getTransitionCipKey(rule, toKey);
+        return getEventKeyForCipKey(cipKey);
+    }, [lineEvents, transitionRuleMap, getTransitionKeyForName, getEventKeyForCipKey, displacementRules]);
 
     const eventDurationByKey = useMemo(() => {
         return lineEvents.reduce((acc, item) => {
-            const key = `${item.category}__${item.event || ''}`;
-            acc[key] = item.durations || {};
+            acc[item.category] = item.durations || {};
             return acc;
         }, {});
     }, [lineEvents]);
@@ -1414,7 +1525,10 @@ const PlanningView = () => {
     const CIP_FALLBACK_DURATION_MIN = 15;
 
     const getEventDurationMinutes = (eventKey, lineName) => {
-        const durations = eventDurationByKey[eventKey];
+        let durations = eventDurationByKey[eventKey];
+        if (!durations && eventKey && eventKey.includes('__')) {
+            durations = eventDurationByKey[eventKey.split('__')[0]];
+        }
         if (!durations) return 0;
         const value = durations[lineName];
         if (value !== undefined && value !== null && value !== '') {
@@ -1503,7 +1617,7 @@ const PlanningView = () => {
             anchorEndMinutes = parseTimeToMinutes(anchorRow.end);
             anchorStartMinutes = anchorEndMinutes - anchorRow.durationMinutes;
         } else {
-            const baseStart = anchorRow.start || rows[0].start || '07:00';
+            const baseStart = anchorRow.start || rows[0].start || '08:00';
             anchorStartMinutes = parseTimeToMinutes(baseStart);
             anchorEndMinutes = anchorStartMinutes + anchorRow.durationMinutes;
         }
@@ -1527,9 +1641,11 @@ const PlanningView = () => {
             const startMinutes = absStart[index];
             const endMinutes = absEnd[index];
             const startDayIndex = Math.floor(startMinutes / 1440);
+            const endDayIndex = Math.floor(endMinutes / 1440);
             const startTime = ((startMinutes % 1440) + 1440) % 1440;
             const endTime = ((endMinutes % 1440) + 1440) % 1440;
             row.date = formatDayIndexToDate(startDayIndex);
+            row.endDate = formatDayIndexToDate(endDayIndex);
             row.start = formatMinutesToTime(startTime);
             row.end = formatMinutesToTime(endTime);
         });
@@ -1770,6 +1886,36 @@ const PlanningView = () => {
             .filter(Boolean);
     }, [exportLines, products, cipBetween, buildMissingTransitionMap, eventLabelByKey]);
 
+    const ganttSections = useMemo(() => {
+        return LINE_OPTIONS.map((line) => {
+            const missing = buildMissingTransitionMap(line);
+            const rows = buildRows(products, cipBetween, line, missing);
+            const anchorIndex = rows.findIndex((r) => r.manualStart || r.manualEnd);
+            const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
+            return {
+                line,
+                rows: scheduled.map((row) => {
+                    const absStart = buildAbsMinutes(row.date, row.start);
+                    const endDate = row.endDate && row.endDate !== row.date ? row.endDate : row.date;
+                    const absEndRaw = buildAbsMinutes(endDate, row.end);
+                    const absEnd = (absEndRaw != null && absEndRaw > (absStart ?? 0))
+                        ? absEndRaw
+                        : (absStart ?? 0) + (row.durationMinutes || 0);
+                    return {
+                        date: row.date,
+                        start: row.start,
+                        end: row.end,
+                        absStart: absStart ?? 0,
+                        absEnd,
+                        label: row.kind === 'cip' ? (eventLabelByKey[row.eventKey] || row.eventKey || 'CIP') : row.name,
+                        kind: row.kind,
+                        durationMinutes: row.durationMinutes
+                    };
+                })
+            };
+        });
+    }, [products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap, eventLabelByKey]);
+
     useEffect(() => {
         const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
@@ -1848,324 +1994,427 @@ const PlanningView = () => {
         setIsExportModalOpen(false);
     };
 
-    return (
-        <div className="h-full flex flex-col bg-slate-50">
-            <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center gap-3">
-                <div className="bg-indigo-100 text-indigo-700 p-2 rounded-lg">
-                    <Calendar size={20} />
-                </div>
-                <div className="flex-1">
-                    <h2 className="text-lg font-bold text-slate-800">Планирование очередности розлива</h2>
-                    <div className="text-xs text-slate-500">{`Макет для ${selectedPlanLine}`}</div>
-                </div>
-                <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-100 px-3 py-2 rounded-lg border border-slate-200">
-                    <Droplet size={14} className="text-blue-600" />
-                    <select
-                        value={selectedPlanLine}
-                        onChange={(e) => setSelectedPlanLine(e.target.value)}
-                        className="bg-transparent text-xs font-semibold focus:outline-none"
-                    >
-                        {LINE_OPTIONS.map(option => (
-                            <option key={option} value={option}>
-                                {option}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6 max-w-[1600px] mx-auto w-full space-y-6">
-                <div className="bg-white border border-slate-200 rounded-xl p-2 flex flex-wrap items-center gap-2">
-                    {[
-                        { id: 'schedule', label: 'График', color: 'blue' },
-                        { id: 'products', label: 'База продуктов', color: 'indigo' },
-                        { id: 'speeds', label: 'Скорости', color: 'amber' },
-                        { id: 'cips', label: 'CIP', color: 'emerald' },
-                        { id: 'transitions', label: 'Переходы', color: 'rose' }
-                    ].map(tab => {
-                        const colors = {
-                            blue: activeTab === tab.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-blue-50 hover:text-blue-600',
-                            indigo: activeTab === tab.id ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-600',
-                            amber: activeTab === tab.id ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600 hover:bg-amber-50 hover:text-amber-600',
-                            emerald: activeTab === tab.id ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-600',
-                            rose: activeTab === tab.id ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-600 hover:bg-rose-50 hover:text-rose-600',
-                        };
-                        return (
-                            <button
-                                key={tab.id}
-                                onClick={() => setActiveTab(tab.id)}
-                                className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${colors[tab.color]}`}
-                            >
-                                {tab.label}
-                            </button>
-                        );
-                    })}
-                </div>
+    const tabItems = [
+        { id: 'schedule', label: 'График', icon: BarChart2 },
+        { id: 'calendar', label: 'Календарь', icon: CalendarDays },
+        { id: 'products', label: 'База продуктов', icon: Package },
+        { id: 'speeds', label: 'Скорости', icon: Zap },
+        { id: 'cips', label: 'CIP', icon: Beaker },
+        { id: 'transitions', label: 'Переходы', icon: GitBranch },
+        { id: 'displacement', label: 'Вытеснения', icon: Replace }
+    ];
 
-                {activeTab === 'products' && (
-                    <div className="grid grid-cols-1 gap-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                                    <Database size={16} className="text-slate-500" />
-                                    <div className="text-sm font-semibold text-slate-700">База продуктов</div>
+    return (
+        <div className="h-full flex flex-col bg-slate-100/80 overflow-y-auto">
+            <div className="max-w-[1600px] mx-auto w-full space-y-6 p-6">
+                <header className="bg-white/95 backdrop-blur-sm border border-slate-200/80 rounded-xl shadow-sm px-6 py-5">
+                    <div className="flex items-center gap-4">
+                        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-md shadow-indigo-500/25 shrink-0">
+                            <Calendar size={22} strokeWidth={2} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h1 className="text-xl font-semibold text-slate-800 tracking-tight">Планирование очередности розлива</h1>
+                            <p className="text-sm text-slate-500 mt-0.5">Настройка графика и справочников для линии</p>
+                        </div>
+                        <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200/80 px-4 py-2.5 shrink-0">
+                            <span className="text-slate-500 text-sm">Линия:</span>
+                            <select
+                                value={selectedPlanLine}
+                                onChange={(e) => setSelectedPlanLine(e.target.value)}
+                                className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1"
+                            >
+                                {LINE_OPTIONS.map(option => (
+                                    <option key={option} value={option}>{option}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                </header>
+                <nav className="flex flex-wrap gap-1.5" aria-label="Вкладки планирования">
+                    {tabItems.map(({ id, label, icon: Icon }) => (
+                        <button
+                            key={id}
+                            onClick={() => {
+                                setActiveTab(id);
+                                setVisitedTabs(prev => ({ ...prev, [id]: true }));
+                            }}
+                            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${
+                                activeTab === id
+                                    ? 'bg-white text-indigo-600 shadow-md shadow-slate-200/50 ring-1 ring-slate-200/50'
+                                    : 'text-slate-600 hover:bg-white/70 hover:text-slate-800'
+                            }`}
+                        >
+                            <Icon size={18} strokeWidth={2} className={activeTab === id ? 'text-indigo-500' : 'text-slate-400'} />
+                            {label}
+                        </button>
+                    ))}
+                </nav>
+
+                {visitedTabs.calendar && (
+                    <div style={{ display: activeTab === 'calendar' ? 'block' : 'none' }}>
+                        <CalendarTab ganttSections={ganttSections} />
+                    </div>
+                )}
+
+                {visitedTabs.products && (
+                    <div style={{ display: activeTab === 'products' ? 'block' : 'none' }}>
+                    <section className="overflow-hidden rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                        <div className="flex items-center justify-between border-b border-slate-200/50 bg-slate-50/40 px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                    <Package size={18} strokeWidth={2} />
                                 </div>
+                                <div>
+                                    <h2 className="text-sm font-medium text-slate-700">База продуктов</h2>
+                                    <p className="text-xs text-slate-400">Справочник наименований и объёмов</p>
+                                </div>
+                            </div>
                             <div className="flex items-center gap-2">
                                 <button
-                                    onClick={() => {
-                                        setProductImportError('');
-                                        setPasteText('');
-                                        setIsProductImportOpen(true);
-                                    }}
-                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                    onClick={() => { setProductImportError(''); setPasteText(''); setIsProductImportOpen(true); }}
+                                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
                                 >
+                                    <Plus size={16} />
                                     Импорт в справочник
                                 </button>
-                                <button className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-indigo-600 text-white rounded-lg opacity-70 cursor-not-allowed">
-                                    <Plus size={14} />
+                                <button disabled className="inline-flex items-center gap-2 rounded-lg border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-sm font-medium text-slate-400 cursor-not-allowed">
                                     Добавить
                                 </button>
                             </div>
-                            </div>
-                            <div className="p-6">
+                        </div>
+                        <div className="p-5">
                             {productImportError && (
-                                <div className="mb-3 text-sm text-red-600">{productImportError}</div>
+                                <div className="mb-4 rounded-xl bg-red-50/80 px-4 py-3 text-sm text-red-700">{productImportError}</div>
                             )}
                             {baseProducts.length === 0 ? (
-                                <div className="text-sm text-slate-500">
-                                    Пока нет продуктов. Импортируйте данные вставкой или добавьте вручную.
+                                <div className="rounded-xl border border-dashed border-slate-200/60 bg-slate-50/40 py-12 text-center text-sm text-slate-500">
+                                    Нет продуктов. Импортируйте данные вставкой или добавьте вручную.
                                 </div>
                             ) : (
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-sm text-left">
-                                        <thead className="bg-slate-50 text-slate-600 font-semibold">
-                                            <tr>
-                                                <th className="px-4 py-2 border-b">Тип</th>
-                                                <th className="px-4 py-2 border-b">Вкус</th>
-                                                <th className="px-4 py-2 border-b text-right">Объем</th>
-                                                <th className="px-4 py-2 border-b">Бренд</th>
-                                                <th className="px-4 py-2 border-b text-right">Кол-во</th>
+                                <div className="overflow-x-auto rounded-xl border border-slate-200/40">
+                                    <table className="w-full text-sm border-collapse">
+                                        <thead>
+                                            <tr className="bg-slate-50/70 border-b border-slate-200/50">
+                                                <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 first:border-l-0">Тип</th>
+                                                <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">Вкус</th>
+                                                <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">Объём</th>
+                                                <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">Бренд</th>
+                                                <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">Кол-во</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-slate-100">
+                                        <tbody>
                                             {baseProducts.map((item) => (
-                                                <tr key={item.id} className="hover:bg-slate-50/60">
-                                                    <td className="px-4 py-2">{item.type || '—'}</td>
-                                                    <td className="px-4 py-2">{item.flavor || '—'}</td>
-                                                    <td className="px-4 py-2 text-right">{item.volume || '—'}</td>
-                                                    <td className="px-4 py-2">{item.brand || '—'}</td>
-                                                    <td className="px-4 py-2 text-right">{item.qty || '—'}</td>
+                                                <tr key={item.id} className="border-b border-slate-100/80 bg-white hover:bg-slate-50/40 transition-colors">
+                                                    <td className="px-3 py-2.5 text-center text-slate-600 border-l border-slate-200/40 first:border-l-0">{item.type || '—'}</td>
+                                                    <td className="px-3 py-2.5 text-center border-l border-slate-200/40 text-slate-600">{item.flavor || '—'}</td>
+                                                    <td className="px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums text-slate-500">{item.volume || '—'}</td>
+                                                    <td className="px-3 py-2.5 text-center border-l border-slate-200/40 text-slate-500">{item.brand || '—'}</td>
+                                                    <td className="px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums font-medium text-slate-600">{item.qty || '—'}</td>
                                                 </tr>
                                             ))}
                                         </tbody>
                                     </table>
                                 </div>
                             )}
-                            </div>
                         </div>
+                    </section>
                     </div>
                 )}
 
-                {activeTab === 'speeds' && (
-                    <div className="grid grid-cols-1 gap-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <Database size={16} className="text-slate-500" />
-                                    <div className="text-sm font-semibold text-slate-700">Справочник скоростей</div>
+                {visitedTabs.speeds && (
+                    <div style={{ display: activeTab === 'speeds' ? 'block' : 'none' }}>
+                    <section className="overflow-hidden rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                        <div className="flex items-center justify-between border-b border-slate-200/50 bg-slate-50/40 px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                    <Zap size={18} strokeWidth={2} />
                                 </div>
-                                <button
-                                    onClick={addSpeedLine}
-                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                                >
-                                    <Plus size={14} />
-                                    Добавить линию
-                                </button>
+                                <div>
+                                    <h2 className="text-sm font-medium text-slate-700">Справочник скоростей</h2>
+                                    <p className="text-xs text-slate-400">Объёмы и скорости по линиям</p>
+                                </div>
                             </div>
-                            <div className="p-6">
-                                {speedLines.length === 0 ? (
-                                    <div className="text-sm text-slate-500">
-                                        Пока нет линий. Добавьте линию и укажите объемы и скорости.
-                                    </div>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {speedLines.map((line) => (
-                                            <div key={line.id} className="border border-slate-200 rounded-lg">
-                                                <div className="px-4 py-3 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-                                                    <div className="flex items-center gap-2 w-full sm:w-auto">
-                                                        <span className="text-xs font-semibold text-slate-500">Линия</span>
-                                                        <input
-                                                            type="text"
-                                                            value={line.name}
-                                                            onChange={(e) => updateSpeedLineName(line.id, e.target.value)}
-                                                            className="h-8 rounded-md border border-slate-200 px-2 text-sm w-full sm:w-64"
-                                                            placeholder="Напр. Линия 1"
-                                                        />
-                                                    </div>
-                                                    <button
-                                                        onClick={() => addSpeedEntry(line.id)}
-                                                        className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
-                                                    >
-                                                        <Plus size={14} />
-                                                        Добавить объем
-                                                    </button>
+                            <button
+                                onClick={addSpeedLine}
+                                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                            >
+                                <Plus size={16} />
+                                Добавить линию
+                            </button>
+                        </div>
+                        <div className="p-5">
+                            {speedLines.length === 0 ? (
+                                <div className="rounded-xl border border-dashed border-slate-200/60 bg-slate-50/40 py-12 text-center text-sm text-slate-500">
+                                    Нет линий. Добавьте линию и укажите объёмы и скорости.
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    {speedLines.map((line) => (
+                                        <div key={line.id} className="rounded-xl border border-slate-200/40 bg-slate-50/30 overflow-hidden">
+                                            <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between border-b border-slate-200/50 px-4 py-3 bg-white/60">
+                                                <div className="flex items-center gap-2 w-full sm:w-auto">
+                                                    <span className="text-xs font-medium text-slate-500">Линия</span>
+                                                    <input
+                                                        type="text"
+                                                        value={line.name}
+                                                        onChange={(e) => updateSpeedLineName(line.id, e.target.value)}
+                                                        className="h-9 flex-1 min-w-0 max-w-xs rounded-md border border-slate-200/80 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                        placeholder="Напр. Линия 1"
+                                                    />
                                                 </div>
-                                                <div className="p-4 space-y-3">
-                                                    {line.entries.map((entry) => (
-                                                        <div key={entry.id} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center">
-                                                            <div className="md:col-span-3">
-                                                                <label className="text-[11px] font-semibold text-slate-500">Формат / Объем</label>
-                                                                <input
-                                                                    type="text"
-                                                                    value={entry.format}
-                                                                    onChange={(e) => updateSpeedEntry(line.id, entry.id, 'format', e.target.value)}
-                                                                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm"
-                                                                    placeholder="Напр. 0,75 л / 1,0 л"
-                                                                />
-                                                            </div>
-                                                            <div>
-                                                                <label className="text-[11px] font-semibold text-slate-500">Скорость (ед/час)</label>
+                                                <button
+                                                    onClick={() => addSpeedEntry(line.id)}
+                                                    className="inline-flex items-center gap-2 rounded-md border border-slate-200/80 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50/80 transition-colors"
+                                                >
+                                                    <Plus size={14} />
+                                                    Добавить объём
+                                                </button>
+                                            </div>
+                                            <div className="p-4 space-y-3">
+                                                {line.entries.map((entry) => (
+                                                    <div key={entry.id} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                                                        <div className="md:col-span-3">
+                                                            <label className="mb-1 block text-xs font-medium text-slate-500">Формат / Объём</label>
+                                                            <input
+                                                                type="text"
+                                                                value={entry.format}
+                                                                onChange={(e) => updateSpeedEntry(line.id, entry.id, 'format', e.target.value)}
+                                                                className="h-9 w-full rounded-md border border-slate-200/80 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                                placeholder="Напр. 0,75 л / 1,0 л"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-xs font-medium text-slate-500">Скорость (ед/час)</label>
+                                                            <input
+                                                                type="number"
+                                                                value={entry.speed}
+                                                                onChange={(e) => updateSpeedEntry(line.id, entry.id, 'speed', e.target.value)}
+                                                                className="h-9 w-full rounded-md border border-slate-200/80 bg-white px-3 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                                placeholder="6500"
+                                                                min="0"
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-end">
+                                                            <button
+                                                                onClick={() => removeSpeedEntry(line.id, entry.id)}
+                                                                className="h-9 px-3 rounded-md text-sm font-medium text-red-600 bg-red-50/80 hover:bg-red-100/80 transition-colors"
+                                                            >
+                                                                Удалить
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </section>
+                    </div>
+                )}
+
+                {visitedTabs.cips && (
+                    <div style={{ display: activeTab === 'cips' ? 'block' : 'none' }}>
+                    <section className="overflow-hidden rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                        <div className="flex items-center justify-between border-b border-slate-200/50 bg-slate-50/40 px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                    <Beaker size={18} strokeWidth={2} />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-medium text-slate-700">События по линиям (мин)</h2>
+                                    <p className="text-xs text-slate-400">Длительности CIP и прочих событий. Разверните событие для редактирования по линиям.</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={addLineEvent}
+                                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                            >
+                                <Plus size={16} />
+                                Добавить событие
+                            </button>
+                        </div>
+                        <div className="p-5 space-y-2">
+                            {lineEvents.length === 0 ? (
+                                <div className="rounded-xl border border-dashed border-slate-200/60 bg-slate-50/40 py-12 text-center text-sm text-slate-500">
+                                    Нет событий. Добавьте событие и укажите длительности по линиям.
+                                </div>
+                            ) : (
+                                lineEvents.map((row, idx) => {
+                                    const isExpanded = expandedCipIndex === idx;
+                                    return (
+                                        <div
+                                            key={`${row.category}_${idx}`}
+                                            className="rounded-xl border border-slate-200/40 bg-white overflow-hidden"
+                                        >
+                                            <div
+                                                className="flex items-center gap-2 px-4 py-3 bg-slate-50/40 border-b border-slate-200/40 cursor-pointer hover:bg-slate-50/60 transition-colors"
+                                                onClick={() => setExpandedCipIndex(isExpanded ? null : idx)}
+                                            >
+                                                <button
+                                                    type="button"
+                                                    className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200/50"
+                                                    aria-label={isExpanded ? 'Свернуть' : 'Развернуть'}
+                                                >
+                                                    {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                                                </button>
+                                                <span className="w-7 text-sm text-slate-400 tabular-nums">{idx + 1}</span>
+                                                <input
+                                                    type="text"
+                                                    value={row.category}
+                                                    onChange={(e) => {
+                                                        e.stopPropagation();
+                                                        setLineEvents((prev) => prev.map((item, i) => i === idx ? { ...item, category: e.target.value } : item));
+                                                    }}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    placeholder="Категория"
+                                                    className="flex-1 min-w-0 h-8 rounded-md border border-slate-200/80 bg-white px-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => { e.stopPropagation(); removeLineEvent(idx); setExpandedCipIndex(prev => prev === idx ? null : prev > idx ? prev - 1 : prev); }}
+                                                    className="ml-auto rounded-md px-2.5 py-1.5 text-sm font-medium text-red-600 bg-red-50/80 hover:bg-red-100/80 transition-colors shrink-0"
+                                                >
+                                                    Удалить
+                                                </button>
+                                            </div>
+                                            {isExpanded && (
+                                                <div className="p-4 bg-white border-t border-slate-100/80">
+                                                    <div className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Длительности по линиям (мин)</div>
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-2">
+                                                        {LINE_OPTIONS.map((line) => (
+                                                            <div key={line} className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-100/80 last:border-0">
+                                                                <label className="text-sm text-slate-600 shrink-0 min-w-0 truncate" title={line}>{line}</label>
                                                                 <input
                                                                     type="number"
-                                                                    value={entry.speed}
-                                                                    onChange={(e) => updateSpeedEntry(line.id, entry.id, 'speed', e.target.value)}
-                                                                    className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm"
-                                                                    placeholder="Напр. 6500"
+                                                                    value={row.durations[line] ?? ''}
+                                                                    onChange={(e) => {
+                                                                        const value = e.target.value;
+                                                                        setLineEvents((prev) => prev.map((item, i) => i !== idx ? item : {
+                                                                            ...item,
+                                                                            durations: { ...item.durations, [line]: value === '' ? '' : Number(value) }
+                                                                        }));
+                                                                    }}
+                                                                    className="w-20 h-8 rounded-md border border-slate-200/80 bg-white px-2 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300 shrink-0"
                                                                     min="0"
+                                                                    placeholder="0"
                                                                 />
                                                             </div>
-                                                            <div className="flex items-end">
-                                                                <button
-                                                                    onClick={() => removeSpeedEntry(line.id, entry.id)}
-                                                                    className="h-8 w-full md:w-auto px-3 text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100"
-                                                                >
-                                                                    Удалить
-                                                                </button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
+                                                        ))}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                                            )}
+                                        </div>
+                                    );
+                                })
+                            )}
                         </div>
+                    </section>
                     </div>
                 )}
 
-                {activeTab === 'cips' && (
-                    <div className="grid grid-cols-1 gap-6">
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <Database size={16} className="text-slate-500" />
-                                    <div className="text-sm font-semibold text-slate-700">События по линиям (мин)</div>
+                {visitedTabs.displacement && (
+                    <div style={{ display: activeTab === 'displacement' ? 'block' : 'none' }}>
+                    <section className="overflow-hidden rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                        <div className="flex items-center justify-between border-b border-slate-200/50 bg-slate-50/40 px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                    <Replace size={18} strokeWidth={2} />
                                 </div>
-                                <button
-                                    onClick={addLineEvent}
-                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                                >
-                                    <Plus size={14} />
-                                    Добавить событие
-                                </button>
+                                <div>
+                                    <h2 className="text-sm font-medium text-slate-700">Вытеснения</h2>
+                                    <p className="text-xs text-slate-400">Из → В, исключение. Поиск по вхождению во вкус (например: морковь, морковь, дыня).</p>
+                                </div>
                             </div>
-                            <div className="p-6 overflow-x-auto">
-                                <table className="w-full text-sm text-left border border-slate-200 rounded-lg overflow-hidden min-w-[1400px]">
-                                    <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0">
-                                        <tr>
-                                            <th className="px-4 py-2 border-b w-12">#</th>
-                                            <th className="px-4 py-2 border-b min-w-[200px]">Категория</th>
-                                            <th className="px-4 py-2 border-b min-w-[140px]">Event</th>
-                                            {LINE_OPTIONS.map(line => (
-                                                <th
-                                                    key={line}
-                                                    className="px-3 py-2 border-b text-center text-[11px] font-semibold whitespace-normal leading-tight min-w-[90px]"
-                                                >
-                                                    {line}
-                                                </th>
-                                            ))}
-                                            <th className="px-4 py-2 border-b w-20 text-right">Действия</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {lineEvents.map((row, idx) => (
-                                            <tr key={`${row.category}_${idx}`} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'}>
-                                                <td className="px-4 py-2 text-slate-400">{idx + 1}</td>
-                                                <td className="px-4 py-2">
-                                                    <input
-                                                        type="text"
-                                                        value={row.category}
-                                                        onChange={(e) => {
-                                                            setLineEvents((prev) => prev.map((item, index) => (
-                                                                index === idx ? { ...item, category: e.target.value } : item
-                                                            )));
-                                                        }}
-                                                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm"
-                                                    />
-                                                </td>
-                                                <td className="px-4 py-2">
-                                                    <input
-                                                        type="text"
-                                                        value={row.event}
-                                                        onChange={(e) => {
-                                                            setLineEvents((prev) => prev.map((item, index) => (
-                                                                index === idx ? { ...item, event: e.target.value } : item
-                                                            )));
-                                                        }}
-                                                        className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm"
-                                                    />
-                                                </td>
-                                                {LINE_OPTIONS.map(line => (
-                                                    <td key={`${row.category}_${line}`} className="px-4 py-2 text-right">
+                            <button
+                                type="button"
+                                onClick={addDisplacementRule}
+                                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                            >
+                                <Plus size={16} />
+                                Добавить правило
+                            </button>
+                        </div>
+                        <div className="p-5">
+                            {displacementRules.length === 0 ? (
+                                <div className="rounded-xl border border-dashed border-slate-200/60 bg-slate-50/40 py-12 text-center text-sm text-slate-500">
+                                    Нет правил. Добавьте правило: Из (вкус «откуда»), В (вкус «куда»), Исключение (если во вкусе «куда» есть это — правило не сработает).
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto rounded-xl border border-slate-200/40">
+                                    <table className="w-full text-sm border-collapse">
+                                        <thead className="bg-slate-50/70 border-b border-slate-200/50">
+                                            <tr>
+                                                <th className="px-3 py-2.5 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Из</th>
+                                                <th className="px-3 py-2.5 text-left text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">В</th>
+                                                <th className="px-3 py-2.5 text-left text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">Исключение</th>
+                                                <th className="px-3 py-2.5 w-12 border-l border-slate-200/40" />
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white">
+                                            {displacementRules.map((r) => (
+                                                <tr key={r.id} className="border-b border-slate-100/80 hover:bg-slate-50/40">
+                                                    <td className="px-3 py-2.5 border-slate-200/40">
                                                         <input
-                                                            type="number"
-                                                            value={row.durations[line] ?? ''}
-                                                            onChange={(e) => {
-                                                                const value = e.target.value;
-                                                                setLineEvents((prev) => prev.map((item, index) => {
-                                                                    if (index !== idx) return item;
-                                                                    return {
-                                                                        ...item,
-                                                                        durations: {
-                                                                            ...item.durations,
-                                                                            [line]: value === '' ? '' : Number(value)
-                                                                        }
-                                                                    };
-                                                                }));
-                                                            }}
-                                                            className="h-8 w-20 rounded-md border border-slate-200 px-2 text-sm text-right mx-auto"
-                                                            min="0"
+                                                            type="text"
+                                                            value={r.from}
+                                                            onChange={(e) => updateDisplacementRule(r.id, 'from', e.target.value)}
+                                                            placeholder="вкус «откуда»"
+                                                            className="w-full min-w-0 rounded-md border border-slate-200/80 bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
                                                         />
                                                     </td>
-                                                ))}
-                                                <td className="px-4 py-2 text-right">
-                                                    <button
-                                                        onClick={() => removeLineEvent(idx)}
-                                                        className="px-2 py-1 text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100"
-                                                    >
-                                                        Удалить
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40">
+                                                        <input
+                                                            type="text"
+                                                            value={r.to}
+                                                            onChange={(e) => updateDisplacementRule(r.id, 'to', e.target.value)}
+                                                            placeholder="вкус «куда»"
+                                                            className="w-full min-w-0 rounded-md border border-slate-200/80 bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                        />
+                                                    </td>
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40">
+                                                        <input
+                                                            type="text"
+                                                            value={r.exception}
+                                                            onChange={(e) => updateDisplacementRule(r.id, 'exception', e.target.value)}
+                                                            placeholder="исключение (подстрока во вкусе «куда»)"
+                                                            className="w-full min-w-0 rounded-md border border-slate-200/80 bg-white px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
+                                                        />
+                                                    </td>
+                                                    <td className="px-2 py-2.5 text-center border-l border-slate-200/40">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeDisplacementRule(r.id)}
+                                                            className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                                                            title="Удалить"
+                                                        >
+                                                            <Trash2 size={14} />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
+                    </section>
                     </div>
                 )}
 
-                {activeTab === 'transitions' && (
+                {visitedTabs.transitions && (
+                    <div style={{ display: activeTab === 'transitions' ? 'block' : 'none' }}>
                     <div className="flex flex-col min-h-[calc(100vh-240px)]">
-                        <div className="-mx-6 bg-slate-50/95 backdrop-blur border-b border-slate-200">
-                            <div className="px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+                        <div className="-mx-6 rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40 overflow-hidden">
+                            <div className="px-5 py-3.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40">
                                 <div className="flex items-center gap-3">
-                                    <div className="h-9 w-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-500">
-                                        <Database size={16} />
+                                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                        <GitBranch size={18} strokeWidth={2} />
                                     </div>
                                     <div>
-                                        <div className="text-sm font-semibold text-slate-800">База переходов</div>
-                                        <div className="text-xs text-slate-500">CIP-матрица и исключения</div>
+                                        <h2 className="text-sm font-medium text-slate-700">База переходов</h2>
+                                        <p className="text-xs text-slate-400">CIP-матрица и исключения</p>
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -2176,18 +2425,18 @@ const PlanningView = () => {
                                         type="text"
                                         value={transitionSearchQuery}
                                         onChange={(e) => setTransitionSearchQuery(e.target.value)}
-                                        className="h-8 w-56 rounded-md border border-slate-200 px-2 text-xs"
+                                        className="h-8 w-56 rounded-md border border-slate-200/80 bg-white px-2 text-xs focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300"
                                         placeholder="Поиск по правилам..."
                                     />
                                     <button
                                         onClick={handleSaveTransitionBase}
-                                        className="px-3 py-2 text-xs font-semibold bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-100"
+                                        className="px-3 py-2 text-xs font-medium bg-white border border-slate-200/80 text-slate-600 rounded-md hover:bg-slate-50/80 transition-colors"
                                     >
                                         Сохранить базу
                                     </button>
                                     <button
                                         onClick={addTransitionRule}
-                                        className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                        className="flex items-center gap-2 px-3 py-2 text-xs font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
                                     >
                                         <Plus size={14} />
                                         Добавить правило
@@ -2197,10 +2446,33 @@ const PlanningView = () => {
                         </div>
 
                         <div className="flex-1 min-h-0 pt-4 grid grid-cols-1 gap-6">
-                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-0">
-                                <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                                    <div className="text-sm font-semibold text-slate-700">Матрица переходов</div>
-                                    <div className="text-xs text-slate-400">Наведите на строку для редактирования</div>
+                            <div className="rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40 overflow-hidden flex flex-col min-h-0">
+                                <div className="px-4 py-3 border-b border-slate-200/50 bg-slate-50/40 flex items-center justify-between gap-3 flex-wrap">
+                                    <div className="text-sm font-medium text-slate-700">Матрица переходов</div>
+                                    {filteredTransitionRules.length > 0 && (
+                                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                                            <span className="tabular-nums">
+                                                {(transitionPage - 1) * TRANSITION_PAGE_SIZE + 1}–{Math.min(transitionPage * TRANSITION_PAGE_SIZE, filteredTransitionRules.length)} из {filteredTransitionRules.length}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                disabled={transitionPage <= 1}
+                                                onClick={() => setTransitionPage(p => Math.max(1, p - 1))}
+                                                className="h-7 px-2 rounded border border-slate-200/80 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            >
+                                                Назад
+                                            </button>
+                                            <span className="tabular-nums">Стр. {transitionPage} из {transitionTotalPages}</span>
+                                            <button
+                                                type="button"
+                                                disabled={transitionPage >= transitionTotalPages}
+                                                onClick={() => setTransitionPage(p => Math.min(transitionTotalPages, p + 1))}
+                                                className="h-7 px-2 rounded border border-slate-200/80 bg-white text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                                            >
+                                                Вперёд
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="flex-1 min-h-0 overflow-auto">
                                     {filteredTransitionRules.length === 0 ? (
@@ -2210,157 +2482,165 @@ const PlanningView = () => {
                                                 : 'Ничего не найдено по фильтру.'}
                                         </div>
                                     ) : (
-                                        <table className="w-full text-xs text-left min-w-[1100px]">
-                                            <thead className="sticky top-0 z-10 bg-slate-100 text-slate-600 font-semibold text-[11px] uppercase tracking-wide">
+                                        <table className="w-full text-xs border-collapse table-fixed">
+                                            <colgroup>
+                                                <col className="w-[25%]" />
+                                                <col className="w-[23%]" />
+                                                <col className="w-[23%]" />
+                                                <col className="w-[23%]" />
+                                                <col className="w-[6%]" />
+                                            </colgroup>
+                                            <thead className="sticky top-0 z-10 bg-slate-50/70 border-b border-slate-200/50">
                                                 <tr>
-                                                    <th className="px-3 py-2 border-b min-w-[360px]">Тип + вкус</th>
-                                                    <th className="px-3 py-2 border-b">CIP 1</th>
-                                                    <th className="px-3 py-2 border-b">CIP 2</th>
-                                                    <th className="px-3 py-2 border-b">CIP 3</th>
-                                                    <th className="px-3 py-2 border-b w-20 text-right">Действия</th>
+                                                    <th className="px-3 py-2.5 text-left text-[11px] font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 first:border-l-0">Тип + вкус</th>
+                                                    <th className="px-3 py-2.5 text-center text-[11px] font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">CIP 1</th>
+                                                    <th className="px-3 py-2.5 text-center text-[11px] font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">CIP 2</th>
+                                                    <th className="px-3 py-2.5 text-center text-[11px] font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40">CIP 3</th>
+                                                    <th className="px-3 py-2.5 text-center text-[11px] font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 w-[6%]"></th>
                                                 </tr>
                                             </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                                {filteredTransitionRules.map((rule) => {
-                                                    const isRowActive = hoveredTransitionRuleId === rule.id;
-                                                    const productSearch = transitionSearch[rule.id]?.product || '';
-                                                    const filteredProducts = productSearch
-                                                        ? baseProducts.filter((product) =>
-                                                            getTransitionKeyForProduct(product)
-                                                                .toLowerCase()
-                                                                .includes(productSearch.toLowerCase())
-                                                        )
-                                                        : [];
-                                                    return (
-                                                        <tr
-                                                            key={rule.id}
-                                                            className="group hover:bg-slate-50"
-                                                            onMouseEnter={() => setHoveredTransitionRuleId(rule.id)}
-                                                            onMouseLeave={() => {
-                                                                setHoveredTransitionRuleId(null);
-                                                                setActiveTransitionCell((prev) => (
-                                                                    prev?.id === rule.id ? null : prev
-                                                                ));
-                                                            }}
-                                                        >
-                                                            <td className="px-3 py-2 align-top">
-                                                                {isRowActive ? (
-                                                                    <div className="flex flex-col gap-2">
+                                            <tbody>
+                                                {paginatedTransitionRules.map((rule) => (
+                                                    <tr key={rule.id} className="border-b border-slate-100/80 bg-white group">
+                                                        <td className="px-3 py-2.5 align-middle border-l border-slate-200/40 first:border-l-0">
+                                                            <div className="relative">
+                                                                {activeProductSearchCell === rule.id ? (
+                                                                    <div className="relative">
                                                                         <input
                                                                             type="text"
-                                                                            value={productSearch}
-                                                                            onChange={(e) => updateTransitionSearch(rule.id, 'product', e.target.value)}
-                                                                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-xs"
+                                                                            value={productSearchQuery}
+                                                                            onChange={(e) => setProductSearchQuery(e.target.value)}
+                                                                            onKeyDown={(e) => {
+                                                                                if (e.key === 'Escape') setActiveProductSearchCell(null);
+                                                                            }}
+                                                                            className="h-8 w-full rounded-lg border border-indigo-400 bg-white px-2 text-[11px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                                                                             placeholder="Поиск продукта..."
+                                                                            autoFocus
                                                                         />
-                                                                        <select
-                                                                            value={rule.productName}
-                                                                            onChange={(e) => updateTransitionRule(rule.id, 'productName', e.target.value)}
-                                                                            className="h-8 w-full rounded-md border border-slate-200 px-2 text-xs"
-                                                                        >
-                                                                            <option value="">Выберите продукт</option>
-                                                                            {filteredProducts.slice(0, 50).map((product) => {
-                                                                                const label = getTransitionKeyForProduct(product);
-                                                                                return (
-                                                                                    <option key={product.id} value={label}>
-                                                                                        {label || product.name}
-                                                                                    </option>
-                                                                                );
-                                                                            })}
-                                                                        </select>
-                                                                        {!productSearch && (
-                                                                            <span className="text-[10px] text-slate-400">
-                                                                                Введите текст для поиска
-                                                                            </span>
-                                                                        )}
+                                                                        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl shadow-slate-200/50">
+                                                                            <div className="p-1">
+                                                                                {baseProducts
+                                                                                    .filter(p => {
+                                                                                        const label = getTransitionKeyForProduct(p) || p.name;
+                                                                                        return label.toLowerCase().includes(productSearchQuery.toLowerCase());
+                                                                                    })
+                                                                                    .slice(0, 50)
+                                                                                    .map(p => {
+                                                                                        const label = getTransitionKeyForProduct(p) || p.name;
+                                                                                        return (
+                                                                                            <button
+                                                                                                key={p.id}
+                                                                                                type="button"
+                                                                                                onClick={() => {
+                                                                                                    updateTransitionRule(rule.id, 'productName', label);
+                                                                                                    setActiveProductSearchCell(null);
+                                                                                                }}
+                                                                                                className="w-full rounded-lg px-3 py-2 text-left text-[11px] text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors"
+                                                                                            >
+                                                                                                {label}
+                                                                                            </button>
+                                                                                        );
+                                                                                    })}
+                                                                                {baseProducts.filter(p => (getTransitionKeyForProduct(p) || p.name).toLowerCase().includes(productSearchQuery.toLowerCase())).length === 0 && (
+                                                                                    <div className="px-3 py-2 text-[11px] text-slate-400 italic text-center">Ничего не найдено</div>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
                                                                     </div>
                                                                 ) : (
-                                                                    <div className={rule.productName ? 'text-slate-800' : 'text-slate-400'}>
-                                                                        {rule.productName || 'Не выбран'}
-                                                                    </div>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setActiveProductSearchCell(rule.id);
+                                                                            setProductSearchQuery('');
+                                                                        }}
+                                                                        className="group flex h-8 w-full items-center justify-between rounded-lg border border-slate-200/80 bg-white px-2 text-left text-[11px] transition-all hover:border-slate-300 hover:bg-slate-50/50"
+                                                                    >
+                                                                        <span className={`truncate ${rule.productName ? 'text-slate-700' : 'text-slate-400 italic'}`}>
+                                                                            {rule.productName || 'Выберите продукт...'}
+                                                                        </span>
+                                                                        <ChevronDown size={14} className="ml-1 shrink-0 text-slate-300 transition-colors group-hover:text-slate-400" />
+                                                                    </button>
                                                                 )}
-                                                            </td>
-                                                            {(['cip1', 'cip2', 'cip3']).map((cipKey) => {
-                                                                const isCellActive = (
-                                                                    activeTransitionCell?.id === rule.id
-                                                                    && activeTransitionCell?.key === cipKey
-                                                                ) || (isRowActive && transitionSearch[rule.id]?.[cipKey]);
-                                                                const exceptions = String(rule[cipKey] || '')
-                                                                    .split(',')
-                                                                    .map(item => item.trim())
-                                                                    .filter(Boolean);
-                                                                return (
-                                                                    <td key={cipKey} className="px-3 py-2 align-top">
-                                                                        <div className="flex flex-col gap-2">
-                                                                            <div className="flex items-center justify-between">
-                                                                                {isRowActive ? (
-                                                                                    <label className="flex items-center gap-2 text-[10px] text-slate-500">
-                                                                                        <input
-                                                                                            type="radio"
-                                                                                            name={`base-${rule.id}`}
-                                                                                            checked={rule.baseCip === cipKey}
-                                                                                            onChange={() => updateTransitionRule(rule.id, 'baseCip', cipKey)}
-                                                                                        />
-                                                                                        Базовый
-                                                                                    </label>
-                                                                                ) : (
-                                                                                    rule.baseCip === cipKey && (
-                                                                                        <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
-                                                                                            Базовый
-                                                                                        </span>
-                                                                                    )
-                                                                                )}
-                                                                                <button
-                                                                                    type="button"
-                                                                                    onClick={() => {
-                                                                                        setActiveTransitionCell({ id: rule.id, key: cipKey });
-                                                                                        updateTransitionSearch(rule.id, cipKey, transitionSearch[rule.id]?.[cipKey] || '');
-                                                                                    }}
-                                                                                    className={`h-5 w-5 rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100 ${
-                                                                                        isRowActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                                                                                    }`}
-                                                                                    title="Добавить исключение"
-                                                                                >
-                                                                                    <Plus size={12} className="mx-auto" />
-                                                                                </button>
-                                                                            </div>
-                                                                            <div className="flex flex-wrap gap-1">
-                                                                                {exceptions.length === 0 ? (
-                                                                                    <span className="text-[10px] text-slate-400">Без исключений</span>
-                                                                                ) : (
-                                                                                    exceptions.map((name) => (
+                                                            </div>
+                                                        </td>
+                                                        {(['cip1', 'cip2', 'cip3']).map((cipKey) => {
+                                                            const isCellActive = (
+                                                                activeTransitionCell?.id === rule.id
+                                                                && activeTransitionCell?.key === cipKey
+                                                            );
+                                                            const exceptions = String(rule[cipKey] || '')
+                                                                .split(',')
+                                                                .map(item => item.trim())
+                                                                .filter(Boolean);
+                                                            return (
+                                                                <td key={cipKey} className="px-3 py-2.5 align-top border-l border-slate-200/40 h-[100px]">
+                                                                    <div className="h-full flex flex-col gap-2 overflow-hidden">
+                                                                        <div className="flex items-center justify-between shrink-0">
+                                                                            <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500 cursor-pointer">
+                                                                                <input
+                                                                                    type="radio"
+                                                                                    name={`base-${rule.id}`}
+                                                                                    checked={rule.baseCip === cipKey}
+                                                                                    onChange={() => updateTransitionRule(rule.id, 'baseCip', cipKey)}
+                                                                                    className="h-3 w-3 text-indigo-600 focus:ring-indigo-500/30"
+                                                                                />
+                                                                                Базовый
+                                                                            </label>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => {
+                                                                                    setActiveTransitionCell(prev => prev?.id === rule.id && prev?.key === cipKey ? null : { id: rule.id, key: cipKey });
+                                                                                    updateTransitionSearch(rule.id, cipKey, transitionSearch[rule.id]?.[cipKey] || '');
+                                                                                }}
+                                                                                className={`h-5 w-5 rounded-full border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50 flex items-center justify-center transition-colors ${isCellActive ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : ''}`}
+                                                                                title="Добавить исключение"
+                                                                            >
+                                                                                <Plus size={12} strokeWidth={2.5} />
+                                                                            </button>
+                                                                        </div>
+                                                                        
+                                                                        <div className="flex-1 overflow-y-auto min-h-0 pr-1 custom-scrollbar">
+                                                                            {exceptions.length === 0 && !isCellActive ? (
+                                                                                <span className="text-[10px] text-slate-300 italic">Нет исключений</span>
+                                                                            ) : (
+                                                                                <div className="flex flex-wrap gap-1">
+                                                                                    {exceptions.map((name) => (
                                                                                         <span
                                                                                             key={`${rule.id}_${cipKey}_${name}`}
-                                                                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px]"
+                                                                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[10px] border border-slate-200/50 max-w-full"
+                                                                                            title={name}
                                                                                         >
-                                                                                            {name}
-                                                                                            {isRowActive && (
-                                                                                                <button
-                                                                                                    onClick={() => {
-                                                                                                        const next = exceptions.filter(item => item !== name);
-                                                                                                        updateTransitionRule(rule.id, cipKey, next.join(', '));
-                                                                                                    }}
-                                                                                                    className="text-slate-400 hover:text-red-500"
-                                                                                                >
-                                                                                                    ×
-                                                                                                </button>
-                                                                                            )}
+                                                                                            <span className="truncate">{name}</span>
+                                                                                            <button
+                                                                                                type="button"
+                                                                                                onClick={() => {
+                                                                                                    const next = exceptions.filter(item => item !== name);
+                                                                                                    updateTransitionRule(rule.id, cipKey, next.join(', '));
+                                                                                                }}
+                                                                                                className="text-slate-400 hover:text-red-500 transition-colors"
+                                                                                            >
+                                                                                                <Plus size={10} className="rotate-45" />
+                                                                                            </button>
                                                                                         </span>
-                                                                                    ))
-                                                                                )}
-                                                                            </div>
-                                                                            {isCellActive && (
-                                                                                <>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+
+                                                                        {isCellActive && (
+                                                                            <div className="shrink-0 mt-auto pt-2 bg-white">
+                                                                                <div className="relative">
                                                                                     <input
                                                                                         type="text"
                                                                                         value={transitionSearch[rule.id]?.[cipKey] || ''}
                                                                                         onChange={(e) => updateTransitionSearch(rule.id, cipKey, e.target.value)}
-                                                                                        className="h-7 w-full rounded-md border border-slate-200 px-2 text-[11px]"
-                                                                                        placeholder="Поиск и добавление..."
+                                                                                        className="h-7 w-full rounded-md border border-slate-200 bg-slate-50 px-2 text-[11px] focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                                                                                        placeholder="Поиск..."
                                                                                         autoFocus
                                                                                     />
                                                                                     {transitionSearch[rule.id]?.[cipKey] && (
-                                                                                        <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-md bg-white">
+                                                                                        <div className="absolute bottom-full left-0 right-0 mb-1 z-20 max-h-32 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
                                                                                             {baseProducts
                                                                                                 .filter((product) =>
                                                                                                     getTransitionKeyForProduct(product)
@@ -2379,31 +2659,32 @@ const PlanningView = () => {
                                                                                                                 updateTransitionRule(rule.id, cipKey, [...current, label].join(', '));
                                                                                                             }
                                                                                                         }}
-                                                                                                        className="w-full text-left px-2 py-1 text-[11px] hover:bg-slate-50"
+                                                                                                        className="w-full text-left px-2 py-1.5 text-[11px] hover:bg-slate-50 text-slate-700"
                                                                                                     >
                                                                                                         {getTransitionKeyForProduct(product) || product.name}
                                                                                                     </button>
                                                                                                 ))}
                                                                                         </div>
                                                                                     )}
-                                                                                </>
-                                                                            )}
-                                                                        </div>
-                                                                    </td>
-                                                                );
-                                                            })}
-                                                            <td className="px-3 py-2 text-right align-top">
-                                                                <button
-                                                                    onClick={() => removeTransitionRule(rule.id)}
-                                                                    className="inline-flex items-center justify-center h-7 w-7 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100"
-                                                                    title="Удалить правило"
-                                                                >
-                                                                    <Trash2 size={14} />
-                                                                </button>
-                                                            </td>
-                                                        </tr>
-                                                    );
-                                                })}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+                                                            );
+                                                        })}
+                                                        <td className="px-2 py-2.5 text-center align-middle border-l border-slate-200/40">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removeTransitionRule(rule.id)}
+                                                                className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                                                                title="Удалить правило"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
                                             </tbody>
                                         </table>
                                     )}
@@ -2412,99 +2693,94 @@ const PlanningView = () => {
 
                         </div>
                     </div>
+                    </div>
                 )}
 
-                {activeTab === 'schedule' && (
+                {visitedTabs.schedule && (
+                    <div style={{ display: activeTab === 'schedule' ? 'block' : 'none' }}>
                     <>
-                        <div className="flex items-center justify-end gap-2">
-                            <label className="flex items-center gap-2 text-xs text-slate-600">
-                                Алгоритм:
-                                <select
-                                    value={transitionAlgorithm}
-                                    onChange={(e) => setTransitionAlgorithm(e.target.value)}
-                                    className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700"
-                                >
-                                    <option value="auto">Авто</option>
-                                    <option value="heldKarp">Held–Karp</option>
-                                    <option value="heuristic">Эвристика</option>
-                                </select>
-                            </label>
-                            <button
-                                onClick={applyTransitionsForCurrentOrder}
-                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-                            >
-                                Расставить переходы
-                            </button>
-                            <button
-                                onClick={() => {
-                                    runTransitionCompare();
-                                    setIsTransitionModalOpen(true);
-                                }}
-                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-slate-700 text-white rounded-lg hover:bg-slate-800"
-                            >
-                                Сверить HK и эвристику
-                            </button>
-                            <button
-                                onClick={() => {
-                                    runTransitionOptimization();
-                                    setIsTransitionModalOpen(true);
-                                }}
-                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-                            >
-                                Найти кратчайший путь
-                            </button>
-                            <button
-                                onClick={handleCreatePlanFromSchedule}
-                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-                            >
-                                Сформировать план
-                            </button>
-                            <button
-                                onClick={() => {
-                                    setPlanImportError('');
-                                    setPasteText('');
-                                    setIsPlanImportOpen(true);
-                                }}
-                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                            >
-                                Импорт в план
-                            </button>
-                                <button
-                                    onClick={() => setIsExportModalOpen(true)}
-                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
-                                >
-                                    Выгрузить
-                                </button>
-                        </div>
+                        <section className="rounded-2xl bg-white/90 p-4 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                            <div className="flex flex-wrap items-center justify-end gap-4">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={addMissingProductsAsRules}
+                                        disabled={productsWithoutRules.length === 0}
+                                        title={productsWithoutRules.length === 0 ? 'Все продукты из графика уже в матрице переходов' : `Добавить ${productsWithoutRules.length} продукт(ов) из графика без правил в матрицу с базовым CIP2`}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        <Plus size={16} />
+                                        Добавить без правил ({productsWithoutRules.length})
+                                    </button>
+                                    <button
+                                        onClick={applyTransitionsForCurrentOrder}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-500/20 transition-colors"
+                                    >
+                                        Расставить переходы
+                                    </button>
+                                    <button
+                                        onClick={() => { runTransitionOptimization(); setIsTransitionModalOpen(true); }}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500/10 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-500/20 transition-colors"
+                                    >
+                                        Найти кратчайший путь
+                                    </button>
+                                </div>
+                                <div className="h-6 w-px bg-slate-200" aria-hidden="true" />
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={handleCreatePlanFromSchedule}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                                    >
+                                        Сформировать план
+                                    </button>
+                                    <button
+                                        onClick={() => { setPlanImportError(''); setPasteText(''); setIsPlanImportOpen(true); }}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                                    >
+                                        Импорт в план
+                                    </button>
+                                    <button
+                                        onClick={() => setIsExportModalOpen(true)}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                                    >
+                                        Выгрузить
+                                    </button>
+                                </div>
+                            </div>
+                        </section>
                         {(planCreateError || planCreateStatus === 'success') && (
-                            <div className="text-xs px-2 pt-1 pb-2">
-                                {planCreateError && <div className="text-red-600">{planCreateError}</div>}
-                                {planCreateStatus === 'success' && <div className="text-emerald-600">План сформирован и сохранён.</div>}
+                            <div className={`rounded-xl px-4 py-3 text-sm ${planCreateError ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                                {planCreateError || 'План сформирован и сохранён.'}
                             </div>
                         )}
 
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-slate-200 flex items-center gap-2">
-                                <Clock4 size={16} className="text-slate-500" />
-                                <div className="text-sm font-semibold text-slate-700">Очередность розлива</div>
-                                <div className="text-xs text-slate-400">({allRows.length} позиций)</div>
+                        <section className="overflow-hidden rounded-2xl bg-white/90 shadow-[0_1px_3px_0_rgba(0,0,0,0.04)] ring-1 ring-slate-200/40">
+                            <div className="flex items-center gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-3.5">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100/80 text-slate-600">
+                                    <Clock4 size={18} strokeWidth={2} />
+                                </div>
+                                <div>
+                                    <h2 className="text-sm font-medium text-slate-700">Очередность розлива</h2>
+                                    <p className="text-xs text-slate-400 tabular-nums">{allRows.length} позиций</p>
+                                </div>
                             </div>
                             <div className="overflow-x-auto">
-                                <table className="w-full text-sm text-left">
-                                    <thead className="bg-slate-50 text-slate-600 font-semibold">
-                                        <tr>
-                                            <th className="px-6 py-3 border-b w-12">№</th>
-                                            <th className="px-2 py-3 border-b w-10"></th>
-                                            <th className="px-6 py-3 border-b">Дата</th>
-                                            <th className="px-6 py-3 border-b">Начало</th>
-                                            <th className="px-6 py-3 border-b">Конец</th>
-                                            <th className="px-6 py-3 border-b">Наименование</th>
-                                            <th className="px-6 py-3 border-b text-right">Количество</th>
-                                            <th className="px-6 py-3 border-b text-right">Скорость</th>
-                                            <th className="px-6 py-3 border-b text-right">Длительность</th>
+                                <table className="w-full text-sm border-collapse table-auto">
+                                    <thead>
+                                        <tr className="bg-slate-50/70 border-b border-slate-200/50">
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider whitespace-nowrap w-0">№</th>
+                                            <th className="px-1 py-3 w-0 border-l border-slate-200/40"></th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Дата нач.</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Дата кон.</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Начало</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Конец</th>
+                                            <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 min-w-[180px]">Наименование</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Кол-во</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Скорость</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Длит.</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100">
+                                    <tbody>
                                         {allRows.map((row, displayIndex) => {
                                             const isCip = row.kind === 'cip';
                                             const isMissingTransition = isCip && row.missingTransition;
@@ -2520,132 +2796,135 @@ const PlanningView = () => {
                                                         moveProduct(dragIndex, row.index);
                                                         setDragIndex(null);
                                                     }}
-                                                    className={`hover:bg-slate-50/60 ${
-                                                        isMissingTransition ? 'bg-red-50/70' : isCip ? 'bg-blue-50/40' : ''
-                                                    }`}
+                                                    className={`border-b border-slate-100/80 transition-colors ${
+                                                        isMissingTransition ? 'bg-red-50/50' : isCip ? 'bg-slate-50/30' : 'bg-white hover:bg-slate-50/40'
+                                                    } ${!isCip ? 'cursor-grab active:cursor-grabbing' : ''}`}
                                                 >
-                                                    <td className="px-6 py-3 text-slate-500">{displayIndex + 1}</td>
-                                                    <td className="px-2 py-3 text-slate-300">
-                                                        {!isCip && <GripVertical size={14} />}
+                                                    <td className="px-3 py-2.5 text-center text-slate-400 tabular-nums">{displayIndex + 1}</td>
+                                                    <td className="px-1 py-2.5 text-center text-slate-300/80 border-l border-slate-200/40">
+                                                        {!isCip && <GripVertical size={16} className="opacity-50 inline-block" />}
                                                     </td>
-                                                    <td className="px-6 py-3">
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40 w-0">
                                                         <input
                                                             type="date"
                                                             value={formatDateInputValue(row.date)}
                                                             onChange={(e) => handleDateChange(row, e.target.value)}
-                                                            className={`h-8 w-full rounded-md border px-2 text-sm ${
-                                                                row.manualDate ? 'bg-orange-50 border-orange-300 text-orange-700' : 'border-slate-200'
+                                                            className={`h-8 w-full min-w-0 rounded-md border px-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300 [&::-webkit-date-and-time-value]:text-center ${
+                                                                row.manualDate ? 'bg-amber-50/80 border-amber-200/80 text-amber-800' : 'border-slate-200/80 bg-white'
                                                             }`}
                                                         />
                                                     </td>
-                                                    <td className="px-6 py-3">
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40 text-center text-slate-500 text-sm tabular-nums whitespace-nowrap w-0">
+                                                        {row.endDate || '—'}
+                                                    </td>
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40 w-0">
                                                         <input
                                                             type="time"
                                                             value={row.start || ''}
                                                             onChange={(e) => handleTimeChange(row, 'start', e.target.value)}
-                                                            className={`h-8 w-full rounded-md border px-2 text-sm ${
-                                                                row.manualStart ? 'bg-orange-50 border-orange-300 text-orange-700' : 'border-slate-200'
+                                                            className={`h-8 w-full min-w-0 rounded-md border px-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300 [&::-webkit-datetime-edit]:text-center ${
+                                                                row.manualStart ? 'bg-amber-50/80 border-amber-200/80 text-amber-800' : 'border-slate-200/80 bg-white'
                                                             }`}
                                                         />
                                                     </td>
-                                                    <td className="px-6 py-3">
+                                                    <td className="px-3 py-2.5 border-l border-slate-200/40 w-0">
                                                         <input
                                                             type="time"
                                                             value={row.end || ''}
                                                             onChange={(e) => handleTimeChange(row, 'end', e.target.value)}
-                                                            className={`h-8 w-full rounded-md border px-2 text-sm ${
-                                                                row.manualEnd ? 'bg-orange-50 border-orange-300 text-orange-700' : 'border-slate-200'
+                                                            className={`h-8 w-full min-w-0 rounded-md border px-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-300/50 focus:border-slate-300 [&::-webkit-datetime-edit]:text-center ${
+                                                                row.manualEnd ? 'bg-amber-50/80 border-amber-200/80 text-amber-800' : 'border-slate-200/80 bg-white'
                                                             }`}
                                                         />
                                                     </td>
-                                                    <td className={`px-6 py-3 font-medium ${isCip ? 'text-blue-700' : 'text-slate-800'}`}>
+                                                    <td className={`px-4 py-2.5 border-l border-slate-200/40 font-medium text-center ${isCip ? 'text-slate-500' : 'text-slate-700'}`}>
                                                 {isCip ? (
-                                                    <div className="flex items-center gap-2">
+                                                    <div className="flex items-center justify-center gap-2">
                                                         <select
                                                             value={row.eventKey || eventOptions[0]?.key || ''}
                                                             onChange={(e) => handleCipTypeChange(row.index, e.target.value)}
-                                                            className={`h-8 rounded-md border px-2 text-sm ${
+                                                            className={`h-8 rounded-md border px-2.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-slate-300/50 ${
                                                                 isMissingTransition
-                                                                    ? 'border-red-300 bg-red-50 text-red-700'
-                                                                    : 'border-blue-200 bg-blue-50 text-blue-700'
+                                                                    ? 'border-red-200/80 bg-red-50/50 text-red-700 focus:ring-red-300/50'
+                                                                    : 'border-slate-200/80 bg-slate-50/50 text-slate-600 focus:ring-slate-300/50'
                                                             }`}
                                                         >
                                                             {eventOptions.map(option => (
-                                                                <option key={option.key} value={option.key}>
-                                                                    {option.label}
-                                                                </option>
+                                                                <option key={option.key} value={option.key}>{option.label}</option>
                                                             ))}
                                                         </select>
                                                         {isMissingTransition ? (
-                                                            <span className="inline-flex items-center rounded-full bg-red-100 text-red-700 text-[10px] font-semibold px-2 py-0.5">
-                                                                Нет правил
-                                                            </span>
+                                                            <span className="rounded bg-red-100/80 px-2 py-0.5 text-xs font-medium text-red-600">Нет правил</span>
                                                         ) : (
-                                                            <span className="inline-flex items-center rounded-full bg-blue-100 text-blue-700 text-[10px] font-semibold px-2 py-0.5">
-                                                                Событие
-                                                            </span>
+                                                            <span className="rounded bg-slate-100/80 px-2 py-0.5 text-xs font-medium text-slate-500">Событие</span>
                                                         )}
                                                     </div>
                                                 ) : (
                                                     row.name
                                                 )}
                                                     </td>
-                                                    <td className={`px-6 py-3 text-right ${isCip ? 'text-slate-400' : 'font-semibold text-slate-700'}`}>
+                                                    <td className={`px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums whitespace-nowrap w-0 ${isCip ? 'text-slate-400' : 'font-medium text-slate-600'}`}>
                                                         {isCip ? '—' : row.qty}
                                                     </td>
-                                                    <td className={`px-6 py-3 text-right ${isCip ? 'text-slate-400' : 'text-slate-600'}`}>
+                                                    <td className={`px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums whitespace-nowrap w-0 ${isCip ? 'text-slate-400' : 'text-slate-500'}`}>
                                                         {isCip ? '—' : `${row.speed}/ч`}
                                                     </td>
-                                                    <td className="px-6 py-3 text-right text-slate-600">{durationLabel}</td>
+                                                    <td className="px-3 py-2.5 text-center border-l border-slate-200/40 text-slate-500 tabular-nums whitespace-nowrap w-0">{durationLabel}</td>
                                                 </tr>
                                             );
                                         })}
                                     </tbody>
                                 </table>
                             </div>
-                        </div>
+                        </section>
                     </>
+                    </div>
                 )}
             </div>
+            {(activeProductSearchCell || activeTransitionCell) && (
+                <div 
+                    className="fixed inset-0 z-40 bg-transparent" 
+                    onClick={() => {
+                        setActiveProductSearchCell(null);
+                        setActiveTransitionCell(null);
+                    }}
+                />
+            )}
             {isProductImportOpen && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                            <div className="text-lg font-semibold text-slate-800">
-                                Импорт в справочник продуктов
-                            </div>
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                    <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4">
+                            <h3 className="text-base font-semibold text-slate-800">Импорт в справочник продуктов</h3>
                             <button
                                 onClick={() => setIsProductImportOpen(false)}
-                                className="text-slate-400 hover:text-slate-600 text-sm"
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             >
                                 Закрыть
                             </button>
                         </div>
                         <div className="p-6 space-y-4">
-                            <div className="text-sm text-slate-600">
-                                Вставьте данные из буфера (Ctrl+V). Кол-во будет проигнорировано.
-                            </div>
+                            <p className="text-sm text-slate-600">Вставьте данные из буфера (Ctrl+V). Кол-во будет проигнорировано.</p>
                             <textarea
                                 value={pasteText}
                                 onChange={(e) => setPasteText(e.target.value)}
                                 rows={8}
-                                className="w-full rounded-lg border border-slate-200 p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
                                 placeholder="Вставьте данные сюда..."
                             />
                             {productImportError && (
-                                <div className="text-sm text-red-600">{productImportError}</div>
+                                <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{productImportError}</div>
                             )}
                         </div>
-                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30">
                             <button
                                 onClick={() => setIsProductImportOpen(false)}
-                                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                             >
                                 Отмена
                             </button>
                             <button
                                 onClick={() => handlePasteImport('reference')}
-                                className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
                             >
                                 Импортировать
                             </button>
@@ -2654,16 +2933,16 @@ const PlanningView = () => {
                 </div>
             )}
             {isExportModalOpen && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                    <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4">
                             <div>
-                                <div className="text-lg font-semibold text-slate-800">Выгрузка отчета</div>
-                                <div className="text-xs text-slate-500">Формируйте отчеты по выбранным линиям</div>
+                                <h3 className="text-base font-semibold text-slate-800">Выгрузка отчёта</h3>
+                                <p className="text-xs text-slate-500 mt-0.5">Формируйте отчёты по выбранным линиям</p>
                             </div>
                             <button
                                 onClick={() => setIsExportModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-600 text-sm"
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             >
                                 Закрыть
                             </button>
@@ -2722,20 +3001,20 @@ const PlanningView = () => {
                                 </div>
                             </div>
                         </div>
-                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30">
                             <button
                                 onClick={() => setIsExportModalOpen(false)}
-                                className="px-3 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                             >
                                 Отмена
                             </button>
                             <button
                                 onClick={handleExportReport}
                                 disabled={exportSections.length === 0}
-                                className={`px-3 py-2 text-sm font-semibold rounded-lg ${
+                                className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
                                     exportSections.length === 0
-                                        ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                        : 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700'
                                 }`}
                             >
                                 {exportType === 'pdf' ? 'Скачать PDF' : 'Открыть HTML'}
@@ -2745,32 +3024,28 @@ const PlanningView = () => {
                 </div>
             )}
             {isPlanImportOpen && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                            <div className="text-lg font-semibold text-slate-800">Импорт в план</div>
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                    <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4">
+                            <h3 className="text-base font-semibold text-slate-800">Импорт в план</h3>
                             <button
                                 onClick={() => setIsPlanImportOpen(false)}
-                                className="text-slate-400 hover:text-slate-600 text-sm"
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             >
                                 Закрыть
                             </button>
                         </div>
                         <div className="p-6 space-y-4">
-                            <div className="text-sm text-slate-600">
-                                Вставьте данные из буфера (Ctrl+V). Кол-во будет учтено.
-                            </div>
-                            <div className="flex flex-col gap-1">
-                                <label className="text-xs font-semibold text-slate-500">Линия</label>
+                            <p className="text-sm text-slate-600">Вставьте данные из буфера (Ctrl+V). Кол-во будет учтено.</p>
+                            <div className="flex flex-col gap-1.5">
+                                <label className="text-xs font-medium text-slate-500">Линия</label>
                                 <select
                                     value={selectedPlanLine}
                                     onChange={(e) => setSelectedPlanLine(e.target.value)}
-                                    className="h-9 rounded-lg border border-slate-200 px-3 text-sm"
+                                    className="h-9 rounded-lg border border-slate-200 bg-slate-50/50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                                 >
                                     {LINE_OPTIONS.map(option => (
-                                        <option key={option} value={option}>
-                                            {option}
-                                        </option>
+                                        <option key={option} value={option}>{option}</option>
                                     ))}
                                 </select>
                             </div>
@@ -2778,23 +3053,23 @@ const PlanningView = () => {
                                 value={pasteText}
                                 onChange={(e) => setPasteText(e.target.value)}
                                 rows={8}
-                                className="w-full rounded-lg border border-slate-200 p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
                                 placeholder="Вставьте данные сюда..."
                             />
                             {planImportError && (
-                                <div className="text-sm text-red-600">{planImportError}</div>
+                                <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{planImportError}</div>
                             )}
                         </div>
-                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
+                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30">
                             <button
                                 onClick={() => setIsPlanImportOpen(false)}
-                                className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                             >
                                 Отмена
                             </button>
                             <button
                                 onClick={() => handlePasteImport('plan')}
-                                className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
                             >
                                 Импортировать
                             </button>
@@ -2803,18 +3078,18 @@ const PlanningView = () => {
                 </div>
             )}
             {isTransitionModalOpen && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden">
-                        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                            <div className="text-lg font-semibold text-slate-800">Предложенная последовательность</div>
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm overflow-y-auto">
+                    <div className="w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80 my-auto">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4 shrink-0">
+                            <h3 className="text-base font-semibold text-slate-800">Предложенная последовательность</h3>
                             <button
                                 onClick={() => setIsTransitionModalOpen(false)}
-                                className="text-slate-400 hover:text-slate-600 text-sm"
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             >
                                 Закрыть
                             </button>
                         </div>
-                        <div className="p-6 space-y-4 text-sm text-slate-700">
+                        <div className="p-6 space-y-4 text-sm text-slate-700 overflow-y-auto min-h-0">
                             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
                                 Статус: {transitionStatus === 'running' ? 'выполняется' : transitionStatus === 'done' ? 'готово' : 'ожидание'}
                                 {transitionStatus === 'running' && (
@@ -2838,30 +3113,16 @@ const PlanningView = () => {
                                 <div className="text-xs text-red-600">{transitionError}</div>
                             )}
                             {transitionStatus === 'done' && (
-                                transitionCompareResult ? (
-                                    <div className="space-y-3">
-                                        <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-                                            <div className="text-xs text-slate-500">Сравнение алгоритмов</div>
-                                            <div className="mt-2 space-y-1 text-sm">
-                                                <div>Held–Karp: {transitionCompareResult.heldKarp?.totalCost ?? 0} мин</div>
-                                                <div>Эвристика: {transitionCompareResult.heuristic?.totalCost ?? 0} мин</div>
-                                                <div className="text-xs text-slate-500">
-                                                    Разница: {(transitionCompareResult.heuristic?.totalCost ?? 0) - (transitionCompareResult.heldKarp?.totalCost ?? 0)} мин
-                                                </div>
-                                                {bestCompareResult && (
-                                                    <div className="text-xs text-emerald-600">
-                                                        Лучший: {bestCompareResult.label} ({bestCompareResult.totalCost} мин)
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
+                                transitionResult?.feasible === false ? (
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                                        Не найден допустимый порядок: не для всех переходов заданы правила в матрице. Заполните правила в таблице «Переходы» и повторите оптимизацию.
                                     </div>
                                 ) : transitionResult?.order?.length > 0 ? (
                                     <div className="space-y-4">
                                         <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                                             <div className="text-xs text-slate-500">Время</div>
                                             <div className="mt-1 text-sm">
-                                                Было: {transitionAnalytics.was.total} мин
+                                                Было: {(transitionResult?.baselineCost != null ? transitionResult.baselineCost : transitionAnalytics.was.total)} мин
                                                 {transitionAnalytics.was.missingRules > 0 && (
                                                     <span className="text-xs text-slate-500">
                                                         {' '}({transitionAnalytics.was.missingRules} без правил)
@@ -2874,7 +3135,7 @@ const PlanningView = () => {
                                                 )}
                                             </div>
                                             <div className="text-sm">
-                                                Стало: {transitionAnalytics.now.total} мин
+                                                Стало: {(transitionResult?.totalCost != null ? transitionResult.totalCost : transitionAnalytics.now.total)} мин
                                                 {transitionAnalytics.now.missingRules > 0 && (
                                                     <span className="text-xs text-slate-500">
                                                         {' '}({transitionAnalytics.now.missingRules} без правил)
@@ -2892,20 +3153,23 @@ const PlanningView = () => {
                                                 Переходы которые стали
                                             </div>
                                             <ol className="mt-2 space-y-1">
-                                                {transitionAnalytics.now.rows.map((row, idx) => (
-                                                    <li key={`${row.from}_${row.to}_${idx}`} className="text-sm">
-                                                        {idx + 1}. {row.from} → {row.to} — {row.cipKey ? row.cipKey.toUpperCase() : 'НЕТ ПРАВИЛ'} (
-                                                        {row.duration === null ? '—' : `${row.duration} мин`}
-                                                        )
-                                                    </li>
-                                                ))}
+                                                {((transitionResult?.transitionRows?.length) ? transitionResult.transitionRows : transitionAnalytics.now.rows).map((row, idx) => {
+                                                    const cipLabel = row.cipKey === 'perenaladka' ? 'Переналадка' : row.cipKey === 'smenaAssortimenta' ? 'Смена ассортимента' : row.cipKey === 'vytesnenie' ? 'Вытеснение' : row.cipKey ? row.cipKey.toUpperCase() : 'НЕТ ПРАВИЛ';
+                                                    return (
+                                                        <li key={`${row.from}_${row.to}_${idx}`} className="text-sm">
+                                                            {idx + 1}. {row.from} → {row.to} — {cipLabel} (
+                                                            {row.duration === null || row.duration === undefined ? '—' : `${row.duration} мин`}
+                                                            )
+                                                        </li>
+                                                    );
+                                                })}
                                             </ol>
-                                            {transitionAnalytics.now.missingDurations > 0 && (
+                                            {!transitionResult?.transitionRows && transitionAnalytics.now.missingDurations > 0 && (
                                                 <div className="mt-2 text-xs text-slate-500">
                                                     Для точного времени заполните нормы CIP в таблице «CIP».
                                                 </div>
                                             )}
-                                            {transitionAnalytics.now.missingRules > 0 && (
+                                            {!transitionResult?.transitionRows && transitionAnalytics.now.missingRules > 0 && (
                                                 <div className="mt-1 text-xs text-slate-500">
                                                     В базе переходов нет правил для некоторых продуктов.
                                                 </div>
@@ -2917,21 +3181,13 @@ const PlanningView = () => {
                                 )
                             )}
                         </div>
-                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2">
-                            {transitionStatus === 'done' && transitionResult?.order?.length > 0 && (
+                        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
+                            {transitionStatus === 'done' && (transitionResult?.order?.length > 0 || transitionResult?.orderIndices?.length > 0) && transitionResult?.feasible !== false && (
                                 <button
-                                    onClick={() => applyOptimizedOrder(transitionResult.order)}
+                                    onClick={() => applyOptimizedOrder(transitionResult.orderIndices ?? transitionResult.order)}
                                     className="px-4 py-2 text-sm font-semibold text-emerald-700 hover:text-emerald-800"
                                 >
                                     Применить
-                                </button>
-                            )}
-                            {transitionStatus === 'done' && bestCompareResult?.order?.length > 0 && (
-                                <button
-                                    onClick={() => applyOptimizedOrder(bestCompareResult.order)}
-                                    className="px-4 py-2 text-sm font-semibold text-emerald-700 hover:text-emerald-800"
-                                >
-                                    Применить лучшее
                                 </button>
                             )}
                             {transitionStatus === 'running' && (
