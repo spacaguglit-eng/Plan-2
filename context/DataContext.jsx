@@ -2207,7 +2207,7 @@ export const DataProvider = ({ children }) => {
         if (!USE_CHESS_WORKER) return;
         if (chessTableWorkerRef.current) return;
 
-        const worker = new Worker(new URL('../workers/chessTable.worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../chessTable.worker.js', import.meta.url), { type: 'module' });
         chessTableWorkerRef.current = worker;
 
         worker.onmessage = (e) => {
