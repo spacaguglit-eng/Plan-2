@@ -20,7 +20,7 @@ import {
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
-import { subscribeToRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser, setRemoteFlushErrorCallback, setRemoteFlushSuccessCallback, saveRemoteStateKey, writeFullRemoteState } from '../services/remoteStorage';
+import { subscribeToRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser, setRemoteFlushErrorCallback, setRemoteFlushSuccessCallback, saveRemoteStateKey, writeFullRemoteState, getClientId } from '../services/remoteStorage';
 import { applyRemoteSnapshot as applyRemoteSnapshotFromService } from '../services/syncStateApplier';
 import { WorkersProvider, useWorkers } from './WorkersContext';
 import { AssignmentsProvider, useAssignments } from './AssignmentsContext';
@@ -102,6 +102,18 @@ export const DataProvider = ({ children }) => {
     const { notify } = useNotification();
 
     const [remoteSnapshot, setRemoteSnapshot] = useState(null);
+    const [pendingUpdates, setPendingUpdates] = useState({});
+    const [pendingMeta, setPendingMeta] = useState({});
+    const pendingUpdatesRef = useRef({});
+    const pendingMetaRef = useRef({});
+    const clientIdRef = useRef(getClientId());
+    const unwrapSnapshotValue = useCallback((entry) => {
+        if (entry && typeof entry === 'object' && 'value' in entry) {
+            return { value: entry.value, meta: entry._meta || null };
+        }
+        return { value: entry, meta: null };
+    }, []);
+
     useEffect(() => {
         if (!isRemoteStorageEnabled() || !useRemoteStorage) {
             setRemoteSnapshot(null);
@@ -126,20 +138,26 @@ export const DataProvider = ({ children }) => {
             if (!failedKeys?.length) return;
             setSyncStatus('error');
             notify({ type: 'error', message: 'Ошибка синхронизации с облаком. Проверьте подключение.', duration: 5000 });
-            if (failedKeys.includes(STORAGE_KEYS.MANUAL_ASSIGNMENTS)) {
-                const cached = remoteSnapshot?.[STORAGE_KEYS.MANUAL_ASSIGNMENTS];
+            const pending = pendingUpdatesRef.current;
+            if (failedKeys.includes(STORAGE_KEYS.MANUAL_ASSIGNMENTS) && !(STORAGE_KEYS.MANUAL_ASSIGNMENTS in pending)) {
+                const cached = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.MANUAL_ASSIGNMENTS]).value;
                 if (cached != null) setManualAssignments(cached);
             }
-            if (failedKeys.includes(STORAGE_KEYS.SAVED_PLANS)) {
-                const cached = remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS];
+            if (failedKeys.includes(STORAGE_KEYS.SAVED_PLANS) && !(STORAGE_KEYS.SAVED_PLANS in pending)) {
+                const cached = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
                 if (Array.isArray(cached)) setSavedPlans(cached);
             }
         });
         return () => setRemoteFlushErrorCallback(null);
-    }, [remoteSnapshot, notify]);
+    }, [remoteSnapshot, notify, unwrapSnapshotValue]);
 
     useEffect(() => {
-        setRemoteFlushSuccessCallback(() => setSyncStatus('idle'));
+        setRemoteFlushSuccessCallback((keys) => {
+            setSyncStatus('idle');
+            if (Array.isArray(keys) && keys.length > 0) {
+                console.log('[SYNC] Успешная запись в облако:', keys, '(pending не снимаем — снимем только когда снапшот из облака совпадёт с нашими данными)');
+            }
+        });
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
 
@@ -148,11 +166,15 @@ export const DataProvider = ({ children }) => {
         saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
     }, [useRemoteStorage]);
 
-    const [pendingUpdates, setPendingUpdates] = useState({});
     const persistStateKey = useCallback((key, value) => {
         if (useRemoteStorage) {
+            const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
+            pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
+            pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
+            console.log('[SYNC] persistStateKey: добавлен в pending', key, 'rev:', meta.rev);
             setPendingUpdates(prev => ({ ...prev, [key]: value }));
-            saveRemoteStateKey(key, value).catch(err => console.error(`Error saving ${key} to remote:`, err));
+            setPendingMeta(prev => ({ ...prev, [key]: meta }));
+            saveRemoteStateKey(key, value, meta).catch(err => console.error(`Error saving ${key} to remote:`, err));
         } else {
             saveToLocalStorage(key, value);
         }
@@ -435,6 +457,10 @@ export const DataProvider = ({ children }) => {
     const hasAppliedRemoteRef = useRef(false);
     useEffect(() => {
         if (!remoteSnapshot) return;
+        const pending = pendingUpdatesRef.current;
+        const pendingMetaMap = pendingMetaRef.current;
+        const pendingKeys = Object.keys(pending);
+        console.log('[SYNC] Применение снапшота из облака. Pending ключи:', pendingKeys.length ? pendingKeys : '(нет)');
         applyRemoteSnapshotFromService(remoteSnapshot, {
             setSavedPlans,
             setCurrentPlanId,
@@ -455,32 +481,54 @@ export const DataProvider = ({ children }) => {
             hydrateWorkerRegistry,
             serializeWorkerRegistry,
             setSavedPlansSourceRef: (value) => { savedPlansSourceRef.current = value; },
-            debugPlans
+            debugPlans,
+            getPendingUpdates: () => pendingUpdatesRef.current,
+            getPendingMeta: () => pendingMetaRef.current,
+            pendingUpdates: pending,
+            pendingMeta: pendingMetaMap,
+            currentClientId: clientIdRef.current,
+            currentPlanId,
+            addSyncLogMessage: (log) => setSyncLog(prev => [log, ...prev].slice(0, 50))
         });
-        setPendingUpdates(prev => {
-            const next = {};
-            for (const k of Object.keys(prev)) {
-                const match = k === STORAGE_KEYS.WORKER_REGISTRY
-                    ? JSON.stringify(serializeWorkerRegistry(prev[k])) === JSON.stringify(remoteSnapshot?.[k])
-                    : JSON.stringify(remoteSnapshot?.[k]) === JSON.stringify(prev[k]);
-                if (!match) next[k] = prev[k];
-            }
-            return next;
+        const nextPending = {};
+        for (const k of Object.keys(pendingUpdatesRef.current)) {
+            const remoteEntry = unwrapSnapshotValue(remoteSnapshot?.[k]);
+            const remoteVal = remoteEntry.value;
+            const prevK = pendingUpdatesRef.current[k];
+            const match = k === STORAGE_KEYS.WORKER_REGISTRY
+                ? JSON.stringify(serializeWorkerRegistry(prevK)) === JSON.stringify(remoteVal)
+                : JSON.stringify(remoteVal) === JSON.stringify(prevK);
+            if (!match) nextPending[k] = prevK;
+        }
+        const remainingPending = Object.keys(nextPending);
+        if (remainingPending.length > 0) {
+            console.log('[SYNC] После применения: оставшиеся в pending (не совпали с remote):', remainingPending);
+        }
+        pendingUpdatesRef.current = nextPending;
+        setPendingUpdates(() => nextPending);
+        const nextMeta = { ...pendingMetaRef.current };
+        Object.keys(nextMeta).forEach((k) => {
+            const remoteEntry = unwrapSnapshotValue(remoteSnapshot?.[k]);
+            const remoteMetaRev = Number(remoteEntry.meta?.rev ?? 0);
+            const localRev = Number(nextMeta[k]?.rev ?? 0);
+            if (remoteMetaRev >= localRev) delete nextMeta[k];
         });
+        pendingMetaRef.current = nextMeta;
+        setPendingMeta(() => nextMeta);
         if (restoring) {
             hasAppliedRemoteRef.current = true;
             setRestoring(false);
         }
-    }, [restoring, remoteSnapshot]);
+    }, [restoring, remoteSnapshot, unwrapSnapshotValue, currentPlanId]);
 
     useEffect(() => {
         if (!useRemoteStorage || restoring) return;
         if (step !== 'upload') return;
-        const plans = remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS];
+        const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
         if (Array.isArray(plans) && plans.length > 0) {
             setStep('dashboard');
         }
-    }, [useRemoteStorage, restoring, step, remoteSnapshot]);
+    }, [useRemoteStorage, restoring, step, remoteSnapshot, unwrapSnapshotValue]);
 
     // --- LOGIC FUNCTIONS ---
 
@@ -2159,7 +2207,7 @@ export const DataProvider = ({ children }) => {
         if (!USE_CHESS_WORKER) return;
         if (chessTableWorkerRef.current) return;
 
-        const worker = new Worker(new URL('../chessTable.worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../workers/chessTable.worker.js', import.meta.url), { type: 'module' });
         chessTableWorkerRef.current = worker;
 
         worker.onmessage = (e) => {
@@ -2839,12 +2887,12 @@ export const DataProvider = ({ children }) => {
     const cloudStatus = useMemo(() => {
         if (!useRemoteStorage || !isRemoteStorageEnabled()) return { status: 'off' };
         if (remoteSnapshot === null) return { status: 'loading' };
-        const plans = remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS];
+        const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
         if (Array.isArray(plans) && plans.length > 0) return { status: 'has_data', planCount: plans.length };
         const keys = Object.keys(remoteSnapshot || {}).filter(k => k !== 'updatedAt');
         if (keys.length > 0) return { status: 'has_data' };
         return { status: 'empty' };
-    }, [useRemoteStorage, remoteSnapshot]);
+    }, [useRemoteStorage, remoteSnapshot, unwrapSnapshotValue]);
 
     const display = useMemo(() => ({
         manualAssignments: pendingUpdates[STORAGE_KEYS.MANUAL_ASSIGNMENTS] ?? manualAssignments,

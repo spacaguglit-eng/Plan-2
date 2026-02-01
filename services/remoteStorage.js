@@ -2,6 +2,48 @@ import { readFirestoreDoc, writeFirestoreDoc, isFirebaseConfigured, subscribeToF
 
 const FIRESTORE_COLLECTION = import.meta.env.VITE_FIREBASE_STATE_COLLECTION || 'plan_state';
 const FIRESTORE_DOCUMENT = import.meta.env.VITE_FIREBASE_STATE_DOC_ID || 'shared';
+const CLIENT_ID_KEY = 'plan_sync_client_id';
+
+let cachedClientId = null;
+const ensureClientId = () => {
+    if (cachedClientId) return cachedClientId;
+    try {
+        const stored = localStorage.getItem(CLIENT_ID_KEY);
+        if (stored) {
+            cachedClientId = stored;
+            return cachedClientId;
+        }
+        const generated = `client_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+        localStorage.setItem(CLIENT_ID_KEY, generated);
+        cachedClientId = generated;
+    } catch {
+        cachedClientId = `client_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+    }
+    return cachedClientId;
+};
+
+export const getClientId = () => ensureClientId();
+
+const revisionCounters = {};
+const nextRevision = (key) => {
+    const now = Date.now();
+    revisionCounters[key] = (revisionCounters[key] || 0) + 1;
+    return now * 1000 + revisionCounters[key]; // монотонно, с локальным счётчиком
+};
+
+const buildEnvelope = (key, value, meta) => {
+    const clientId = meta?.clientId || getClientId();
+    const rev = Number(meta?.rev ?? nextRevision(key));
+    const ts = Number(meta?.ts ?? Date.now());
+    return { value, _meta: { clientId, rev, ts } };
+};
+
+const normalizeEnvelope = (raw) => {
+    if (raw && typeof raw === 'object' && 'value' in raw) {
+        return { value: raw.value, _meta: raw._meta || null };
+    }
+    return { value: raw, _meta: null };
+};
 
 let isUserRemoteEnabled = true;
 export const setRemoteEnabledByUser = (enabled) => { isUserRemoteEnabled = enabled; };
@@ -31,7 +73,7 @@ const addLog = (type, message) => {
 // Queue for debounced updates
 let updateQueue = {};
 let syncTimeout = null;
-let lastKnownState = {}; // Cache to prevent sync loops
+let lastKnownState = {}; // Cache to prevent sync loops (serialized envelopes)
 
 const flushQueue = async () => {
     if (Object.keys(updateQueue).length === 0) return;
@@ -54,7 +96,7 @@ const flushQueue = async () => {
         addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
         await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, trulyChangedData);
         addLog('success', 'Облако успешно обновлено');
-        flushSuccessCallback?.();
+        flushSuccessCallback?.(Object.keys(trulyChangedData));
     } catch (err) {
         console.error('Batch sync failed:', err);
         addLog('error', `Ошибка синхронизации: ${err.message}`);
@@ -62,15 +104,24 @@ const flushQueue = async () => {
     }
 };
 
-export const saveRemoteStateKey = async (key, value) => {
+export const saveRemoteStateKey = async (key, value, meta) => {
     if (!isRemoteStorageEnabled()) return;
     
-    const serializedValue = JSON.stringify(value);
+    const envelope = buildEnvelope(key, value, meta);
+    const serializedValue = JSON.stringify(envelope);
+    const queuedValue = updateQueue[key];
+
+    // Если текущее значение совпадает с облаком, сбрасываем устаревшие очереди по этому ключу
+    if (lastKnownState[key] === serializedValue) {
+        if (queuedValue) delete updateQueue[key];
+        if (Object.keys(updateQueue).length === 0 && syncTimeout) {
+            clearTimeout(syncTimeout);
+            syncTimeout = null;
+        }
+        return;
+    }
     
-    // If value is identical to what we last sent or received, skip it
-    if (lastKnownState[key] === serializedValue) return;
-    
-    // Add to queue
+    // Всегда записываем последнее изменение в очередь, чтобы не отправлять старые значения
     updateQueue[key] = serializedValue;
     
     // Reset debounce timer — короткая задержка для бесшовной синхронизации
@@ -109,9 +160,10 @@ const parseRemoteData = (data) => {
         }
         try {
             const val = data[key];
-            parsedData[key] = typeof val === 'string' ? JSON.parse(val) : val;
+            const parsedVal = typeof val === 'string' ? JSON.parse(val) : val;
+            parsedData[key] = normalizeEnvelope(parsedVal);
         } catch (e) {
-            parsedData[key] = data[key];
+            parsedData[key] = normalizeEnvelope(data[key]);
         }
     });
     return parsedData;
@@ -151,7 +203,8 @@ export const writeFullRemoteState = async (stateObj) => {
     Object.keys(stateObj).forEach((key) => {
         if (key === 'updatedAt') return;
         const val = stateObj[key];
-        serialized[key] = typeof val === 'string' ? val : JSON.stringify(val ?? null);
+        const envelope = buildEnvelope(key, val);
+        serialized[key] = JSON.stringify(envelope ?? null);
     });
     if (Object.keys(serialized).length === 0) return;
     addLog('syncing', 'Загрузка локальных данных в облако...');
