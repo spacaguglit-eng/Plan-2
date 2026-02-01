@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye } from 'lucide-react';
+const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye, Bug } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -18,6 +19,7 @@ import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
+import DebugView from './components/views/DebugView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
@@ -28,6 +30,8 @@ export default function App() {
     const [adminError, setAdminError] = useState('');
     const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
     const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
+    const [brandLogoIndex, setBrandLogoIndex] = useState(0);
+    const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
 
     const {
         step,
@@ -58,6 +62,7 @@ export default function App() {
         setShowSyncLog,
         useRemoteStorage,
         setUseRemoteStorage,
+        pushLocalToCloud,
         userRole,
         setUserRole,
         isReadOnly
@@ -234,28 +239,29 @@ export default function App() {
                 <>
                     <div className="bg-white border-b border-slate-200 shadow-sm px-6 py-3 flex-shrink-0">
                         <div className="max-w-[1800px] mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
-                                <div className="bg-blue-600 text-white p-2 rounded-lg">
-                                    <Briefcase size={24} />
-                                </div>
-                                <div>
-                                    <h1 className="text-xl font-bold text-slate-800">Планировщик</h1>
-                                    <p className="text-xs text-slate-500 hidden sm:block">План/Факт</p>
-                                    {activePlanName && (
-                                        <p className="text-[11px] text-slate-400">Активный план: {activePlanName}</p>
+                            <div className="flex items-center gap-3 mr-6 shrink-0">
+                                <div className="flex items-center justify-center h-14 sm:h-16 min-w-[3rem] max-w-[16rem] overflow-hidden bg-white rounded px-2 py-1.5 shrink-0">
+                                    {showBrandFallback ? (
+                                        <Briefcase size={32} className="shrink-0 text-slate-500" />
+                                    ) : (
+                                        <img
+                                            src={BRAND_IMAGES[brandLogoIndex]}
+                                            alt="Бренд"
+                                            className="max-h-full max-w-full w-auto h-auto object-contain object-center"
+                                            style={{ background: 'white' }}
+                                            onError={() => setBrandLogoIndex((i) => i + 1)}
+                                        />
                                     )}
                                 </div>
+                                {activePlanName && (
+                                    <p className="text-xs text-slate-400 hidden sm:block">Активный план: {activePlanName}</p>
+                                )}
                             </div>
                             <div className="flex items-center gap-3">
                                 <div className="flex items-center gap-2 mr-4">
                                     {syncStatus === 'syncing' && (
-                                        <div className="text-xs text-blue-500 flex items-center gap-1">
+                                        <div className="text-xs text-blue-500 flex items-center gap-1" title="Синхронизация...">
                                             <Loader2 size={12} className="animate-spin" />
-                                        </div>
-                                    )}
-                                    {syncStatus === 'saved' && (
-                                        <div className="text-xs text-green-500 flex items-center gap-1" title="Сохранено локально">
-                                            <Save size={14} />
                                         </div>
                                     )}
                                     {syncStatus === 'error' && (
@@ -379,7 +385,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsExtraMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data')}`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data' || viewMode === 'debug')}`}
                                         >
                                             <Activity size={16} /> Дополнительно
                                             <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
@@ -413,6 +419,17 @@ export default function App() {
                                                 </button>
                                                 <button
                                                     onClick={() => {
+                                                        setViewMode('debug');
+                                                        setIsExtraMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'debug' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Bug size={16} /> Отладка
+                                                </button>
+                                                <button
+                                                    onClick={() => {
                                                         setShowSyncLog(true);
                                                         setIsExtraMenuOpen(false);
                                                     }}
@@ -437,6 +454,16 @@ export default function App() {
                                                     <div className={`w-8 h-4 rounded-full relative transition-colors ${useRemoteStorage ? 'bg-emerald-500' : 'bg-slate-300'}`}>
                                                         <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${useRemoteStorage ? 'right-0.5' : 'left-0.5'}`}></div>
                                                     </div>
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        pushLocalToCloud();
+                                                    }}
+                                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                                                >
+                                                    <Cloud size={16} />
+                                                    <span>Загрузить локальные данные в облако</span>
                                                 </button>
                                                 <button
                                                     onClick={(e) => {
@@ -470,14 +497,6 @@ export default function App() {
                                         dayStats={calculateDailyStats}
                                     />
                                 )}
-                                <div className="h-8 w-px bg-slate-200 mx-2"></div>
-                                <button
-                                    onClick={handleNewFile}
-                                    className="text-sm text-slate-500 hover:text-blue-600 font-medium px-3 py-2 hover:bg-blue-50 rounded-lg transition-colors whitespace-nowrap flex items-center gap-2"
-                                >
-                                    <FileUp size={16} />
-                                    <span>Новый</span>
-                                </button>
                             </div>
                         </div>
                     </div>
@@ -494,6 +513,7 @@ export default function App() {
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
                         {viewMode === 'raw_data' && <RawDataView />}
+                        {viewMode === 'debug' && <DebugView />}
                     </div>
                 </>
             )}

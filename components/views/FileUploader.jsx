@@ -1,5 +1,5 @@
 import React from 'react';
-import { Upload, Loader2, AlertCircle } from 'lucide-react';
+import { Upload, Loader2, AlertCircle, Cloud, CloudOff } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 
 const FileUploader = () => {
@@ -9,7 +9,10 @@ const FileUploader = () => {
         loading,
         restoring,
         error,
-        file
+        file,
+        useRemoteStorage,
+        setUseRemoteStorage,
+        cloudStatus
     } = useData();
 
     return (
@@ -18,6 +21,44 @@ const FileUploader = () => {
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-2">Управление сменами</h1>
                     <p className="text-slate-500">Загрузите файл для расчета</p>
+                    <div className="mt-4 flex flex-col items-center gap-2">
+                        <div className="flex items-center gap-3">
+                            <span className="text-sm text-slate-500">Хранилище:</span>
+                            <button
+                                type="button"
+                                onClick={() => setUseRemoteStorage(!useRemoteStorage)}
+                                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors text-sm font-medium"
+                            >
+                                {useRemoteStorage ? (
+                                    <>
+                                        <Cloud size={16} className="text-emerald-600" />
+                                        <span className="text-emerald-700">Облако</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <CloudOff size={16} className="text-slate-500" />
+                                        <span className="text-slate-600">Локально</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                        <p className="text-xs text-slate-400 max-w-sm">
+                            {!useRemoteStorage
+                                ? 'Данные только в этом браузере.'
+                                : cloudStatus.status === 'loading'
+                                    ? 'Проверка облака...'
+                                    : cloudStatus.status === 'empty'
+                                        ? 'Облако пусто — загрузите файл, данные сохранятся в облако.'
+                                        : cloudStatus.status === 'has_data' && cloudStatus.planCount != null
+                                            ? (() => {
+                                                const n = cloudStatus.planCount;
+                                                const mod10 = n % 10, mod100 = n % 100;
+                                                const word = (mod100 >= 11 && mod100 <= 14) ? 'планов' : (mod10 === 1 ? 'план' : mod10 >= 2 && mod10 <= 4 ? 'плана' : 'планов');
+                                                return `В облаке: ${n} ${word}. Данные подгрузятся автоматически.`;
+                                            })()
+                                            : 'В облаке есть данные. Они подгрузятся автоматически.'}
+                        </p>
+                    </div>
                 </div>
                 {restoring ? (
                     <div className="flex flex-col items-center justify-center p-10 gap-4">

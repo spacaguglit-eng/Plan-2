@@ -80,9 +80,14 @@ const DistributionView = () => {
             />
 
             <div className="p-4 border-b bg-slate-50 flex justify-between items-center flex-shrink-0">
-                <div className="flex items-center gap-2 font-bold text-slate-700">
-                    <LayoutGrid size={20} className="text-blue-600" />
-                    Матрица распределения (Люд)
+                <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-2 font-bold text-slate-700">
+                        <LayoutGrid size={20} className="text-blue-600" />
+                        Матрица распределения (Люд)
+                    </div>
+                    <div className="text-[11px] text-slate-400" title="Лист «Люд» (Справочник): колонки Линия, Должность, Норма, Смена 1–4 (ФИО, компетенции, статус). Повторная загрузка файла обновляет шаблоны.">
+                        Чтобы добавить линию — допишите строки в листе «Люд» в Excel и загрузите файл заново.
+                    </div>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className="text-xs text-slate-400 italic flex items-center gap-1">

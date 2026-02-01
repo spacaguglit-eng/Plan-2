@@ -61,13 +61,17 @@ const parseExceptions = (value) => {
     );
 };
 
+let _debugFlags = {};
+
 const buildRuleMap = (transitions) => {
     const map = new Map();
     (transitions || []).forEach((row) => {
         if (!row?.productName) return;
         const key = normalizeTransitionValue(row.productName);
         if (!key) return;
-        console.log('[Worker] Rule key:', key, '| baseCip:', row.baseCip);
+        if (_debugFlags.workerTransition) {
+            console.log('[Worker] Rule key:', key, '| baseCip:', row.baseCip);
+        }
         map.set(key, {
             baseCip: row.baseCip || 'cip1',
             exceptions: {
@@ -77,7 +81,9 @@ const buildRuleMap = (transitions) => {
             }
         });
     });
-    console.log('[Worker] Total rules in map:', map.size);
+    if (_debugFlags.workerTransition) {
+        console.log('[Worker] Total rules in map:', map.size);
+    }
     return map;
 };
 
@@ -456,6 +462,7 @@ const resolveOptimization = (matrix, timeBudgetMs, onProgress) => {
 };
 
 self.onmessage = (event) => {
+    _debugFlags = event.data?.debug || {};
     const { type, payload } = event.data || {};
     const products = payload?.products || [];
     const transitions = payload?.transitions || [];

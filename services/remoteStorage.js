@@ -11,6 +11,12 @@ export const isRemoteStorageEnabled = () => isFirebaseConfigured() && isUserRemo
 let logCallback = null;
 export const setRemoteLogCallback = (cb) => { logCallback = cb; };
 
+let flushErrorCallback = null;
+export const setRemoteFlushErrorCallback = (cb) => { flushErrorCallback = cb; };
+
+let flushSuccessCallback = null;
+export const setRemoteFlushSuccessCallback = (cb) => { flushSuccessCallback = cb; };
+
 const addLog = (type, message) => {
     if (logCallback) {
         logCallback({
@@ -48,9 +54,11 @@ const flushQueue = async () => {
         addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
         await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, trulyChangedData);
         addLog('success', 'Облако успешно обновлено');
+        flushSuccessCallback?.();
     } catch (err) {
         console.error('Batch sync failed:', err);
         addLog('error', `Ошибка синхронизации: ${err.message}`);
+        flushErrorCallback?.(err, Object.keys(trulyChangedData || dataToSave));
     }
 };
 
@@ -65,9 +73,9 @@ export const saveRemoteStateKey = async (key, value) => {
     // Add to queue
     updateQueue[key] = serializedValue;
     
-    // Reset debounce timer
+    // Reset debounce timer — короткая задержка для бесшовной синхронизации
     if (syncTimeout) clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(flushQueue, 2000);
+    syncTimeout = setTimeout(flushQueue, 400);
 };
 
 export const loadRemoteState = async () => {
@@ -112,16 +120,17 @@ const parseRemoteData = (data) => {
 export const subscribeToRemoteState = (callback) => {
     if (!isRemoteStorageEnabled()) return () => {};
     
-    return subscribeToFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, (data) => {
-        if (data) {
-            // Update cache before calling callback to prevent echo sync
-            Object.keys(data).forEach(key => {
-                if (key !== 'updatedAt') lastKnownState[key] = data[key];
-            });
-            
-            const parsed = parseRemoteData(data);
-            callback(parsed);
-        }
+    return subscribeToFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, (data, metadata = {}) => {
+        if (!data) return;
+        const { fromCache = false, hasPendingWrites = false } = metadata;
+        // Применяем только серверные данные: не из кэша и без незакоммиченных локальных записей.
+        // Иначе кэш/pending перезаписывают только что сделанные изменения (например автоподстановку).
+        if (fromCache || hasPendingWrites) return;
+        Object.keys(data).forEach(key => {
+            if (key !== 'updatedAt') lastKnownState[key] = data[key];
+        });
+        const parsed = parseRemoteData(data);
+        callback(parsed);
     });
 };
 
@@ -129,4 +138,30 @@ export const loadRemoteStateKey = async (key, defaultValue = null) => {
     const state = await loadRemoteState();
     if (!state) return defaultValue;
     return state[key] ?? defaultValue;
+};
+
+/**
+ * Записать полный снимок состояния в облако (merge). Для кнопки «Загрузить локальные данные в облако».
+ * @param {Object} stateObj — объект { [key]: value, ... }, значения сериализуются в JSON
+ */
+export const writeFullRemoteState = async (stateObj) => {
+    if (!isRemoteStorageEnabled()) return;
+    if (!stateObj || typeof stateObj !== 'object') return;
+    const serialized = {};
+    Object.keys(stateObj).forEach((key) => {
+        if (key === 'updatedAt') return;
+        const val = stateObj[key];
+        serialized[key] = typeof val === 'string' ? val : JSON.stringify(val ?? null);
+    });
+    if (Object.keys(serialized).length === 0) return;
+    addLog('syncing', 'Загрузка локальных данных в облако...');
+    try {
+        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, serialized);
+        Object.keys(serialized).forEach((k) => { lastKnownState[k] = serialized[k]; });
+        addLog('success', 'Данные загружены в облако');
+    } catch (err) {
+        console.error('writeFullRemoteState failed:', err);
+        addLog('error', `Ошибка: ${err.message}`);
+        throw err;
+    }
 };

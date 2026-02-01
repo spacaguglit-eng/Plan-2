@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Users, Search, Edit3, Check, X, Calendar, Zap, AlertTriangle, Clock, ChevronDown, ChevronRight, CheckCircle2, XCircle, Filter, Settings, Trash2, Plus } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
+import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
 
@@ -10,7 +10,8 @@ const AllEmployeesView = () => {
         workerRegistry,
         factData,
         savedPlans,
-        viewMode
+        viewMode,
+        persistStateKey
     } = useData();
 
     useRenderTime('all_employees', logPerformanceMetric, viewMode === 'all_employees');
@@ -66,7 +67,7 @@ const AllEmployeesView = () => {
                 const defaults = ['Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
                                 'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'];
                 setDepartmentMasterList(defaults);
-                saveToLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, defaults);
+                persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, defaults);
             }
         }, 0);
     }, []);
@@ -136,7 +137,7 @@ const AllEmployeesView = () => {
             }
 
             if (changed) {
-                saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, updated);
+                persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
             }
             return updated;
         });
@@ -173,7 +174,7 @@ const AllEmployeesView = () => {
                     department: newDepartment
                 }
             };
-            saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, updated);
+            persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
             return updated;
         });
         setEditingDepartment(null);
@@ -839,7 +840,7 @@ const AllEmployeesView = () => {
                     masterList={departmentMasterList}
                     onUpdate={(updated) => {
                         setDepartmentMasterList(updated);
-                        saveToLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, updated);
+                        persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, updated);
                     }}
                 />
             )}

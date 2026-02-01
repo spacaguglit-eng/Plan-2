@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle, Edit3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
+import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
 
@@ -14,7 +14,8 @@ const VerificationView = () => {
         setFactData,
         factDates,
         setFactDates,
-        viewMode
+        viewMode,
+        persistStateKey
     } = useData();
 
     useRenderTime('verification', logPerformanceMetric, viewMode === 'verification');
@@ -393,8 +394,8 @@ const VerificationView = () => {
                 setFactData(parsedFact);
                 setFactDates(allDates);
                 
-                saveToLocalStorage(STORAGE_KEYS.FACT_DATA, parsedFact);
-                saveToLocalStorage(STORAGE_KEYS.FACT_DATES, allDates);
+                persistStateKey(STORAGE_KEYS.FACT_DATA, parsedFact);
+                persistStateKey(STORAGE_KEYS.FACT_DATES, allDates);
                 
                 // Sync employees from SCUD data to allEmployeesData
                 const currentEmployees = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
@@ -419,7 +420,7 @@ const VerificationView = () => {
                 });
                 
                 if (employeesUpdated) {
-                    saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, currentEmployees);
+                    persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, currentEmployees);
                     setAllEmployeesData(currentEmployees);
                 }
                 
@@ -871,7 +872,7 @@ const VerificationView = () => {
                     department: finalDepartment
                 }
             };
-            saveToLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, updated);
+            persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
             return updated;
         });
         setEditingDepartment(null);
@@ -958,8 +959,8 @@ const VerificationView = () => {
                     <button onClick={() => {
                         setFactData(null);
                         setFactDates([]);
-                        saveToLocalStorage(STORAGE_KEYS.FACT_DATA, null);
-                        saveToLocalStorage(STORAGE_KEYS.FACT_DATES, []);
+                        persistStateKey(STORAGE_KEYS.FACT_DATA, null);
+                        persistStateKey(STORAGE_KEYS.FACT_DATES, []);
                     }} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-colors" title="Сбросить файл">
                         <Trash2 size={20} />
                     </button>

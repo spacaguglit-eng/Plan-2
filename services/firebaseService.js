@@ -71,7 +71,10 @@ export const subscribeToFirestoreDoc = (collectionName, docId, callback) => {
     const docRef = getDocRef(collectionName, docId);
     if (!docRef) return () => {};
     return onSnapshot(docRef, snapshot => {
-        callback(snapshot.exists() ? snapshot.data() : null);
+        const data = snapshot.exists() ? snapshot.data() : null;
+        const fromCache = snapshot.metadata?.fromCache ?? false;
+        const hasPendingWrites = snapshot.metadata?.hasPendingWrites ?? false;
+        callback(data, { fromCache, hasPendingWrites });
     });
 };
 

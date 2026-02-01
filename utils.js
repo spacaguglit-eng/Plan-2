@@ -1,7 +1,5 @@
 // src/utils.js
 
-import { isRemoteStorageEnabled, saveRemoteStateKey } from './services/remoteStorage';
-
 // --- CONSTANTS ---
 export const STORAGE_KEYS = {
     RAW_TABLES: 'plan_raw_tables',
@@ -38,11 +36,6 @@ export const saveToLocalStorage = (key, data) => {
         } else {
             console.error('Error saving to localStorage:', e);
         }
-    }
-    if (isRemoteStorageEnabled()) {
-        saveRemoteStateKey(key, data).catch(err => {
-            console.error(`Error saving ${key} to remote storage:`, err);
-        });
     }
 };
 

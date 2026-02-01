@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
-import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage } from '../../utils';
+import { useData } from '../../context/DataContext';
+import { STORAGE_KEYS, loadFromLocalStorage } from '../../utils';
 
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
@@ -51,6 +52,7 @@ const buildConicGradient = (segments) => {
 };
 
 const ProductionView = () => {
+    const { persistStateKey } = useData();
     const STORAGE_KEY = STORAGE_KEYS.PRODUCTION_RESULTS;
     const fileInputRef = useRef(null);
     const [results, setResults] = useState([]);
@@ -668,7 +670,7 @@ const ProductionView = () => {
                 if (type === 'parseFiles') {
                     console.log(`Парсинг завершен, результатов: ${results?.length || 0}`);
                     setResults(results || []);
-                    saveToLocalStorage(STORAGE_KEY, results || []);
+                    persistStateKey(STORAGE_KEY, results || []);
                     setIsParsing(false);
                     // Пересчет flatRows произойдет автоматически через useEffect при изменении results
                 } else if (type === 'calculateFlatRows') {
@@ -920,7 +922,7 @@ const ProductionView = () => {
                                                                     newSet.delete(type);
                                                                 }
                                                                 setExcludedDowntimeTypes(newSet);
-                                                                saveToLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, Array.from(newSet));
+                                                                persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, Array.from(newSet));
                                                             }}
                                                             className="hidden"
                                                         />

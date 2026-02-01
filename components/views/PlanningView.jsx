@@ -4,9 +4,10 @@ import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
+import { log as debugLog, getDebugFlagsForWorker } from '../../utils/debug';
 import CalendarTab from './CalendarTab';
 
-const LINE_OPTIONS = [
+const DEFAULT_LINE_OPTIONS = [
     'Линия 1',
     'Линия 2',
     'Линия 3',
@@ -434,7 +435,14 @@ const PlanningView = () => {
         () => loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}),
         []
     );
-    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, persistStateKey } = useData();
+    const lineOptions = useMemo(() => {
+        const keys = Object.keys(lineTemplates || {});
+        if (keys.length === 0) return DEFAULT_LINE_OPTIONS;
+        const set = new Set(keys);
+        const sameAsDefault = DEFAULT_LINE_OPTIONS.length === keys.length && DEFAULT_LINE_OPTIONS.every(l => set.has(l));
+        return sameAsDefault ? DEFAULT_LINE_OPTIONS : [...keys].sort();
+    }, [lineTemplates]);
     const activePlan = useMemo(
         () => savedPlans?.find(p => p.id === currentPlanId) ?? null,
         [savedPlans, currentPlanId]
@@ -442,7 +450,7 @@ const PlanningView = () => {
     const activePlanName = activePlan?.name ?? null;
     const activePlanHasQueue = !!(activePlan?.data?.planningState);
     const resolveLineOption = (value) => (
-        LINE_OPTIONS.includes(value) ? value : LINE_OPTIONS[0]
+        lineOptions.includes(value) ? value : lineOptions[0]
     );
 
     const defaultPlanningDate = storedPlanning?.products?.[0]?.date || '27.01.2026';
@@ -546,7 +554,7 @@ const PlanningView = () => {
             .map(resolveLineOption)
             .filter(Boolean);
         if (stored.length > 0) return stored;
-        return [resolveLineOption(storedPlanning.selectedPlanLine || LINE_OPTIONS[0])];
+        return [resolveLineOption(storedPlanning.selectedPlanLine || lineOptions[0])];
     });
     const transitionWorkerRef = useRef(null);
     const transitionSaveTimeoutRef = useRef(null);
@@ -831,10 +839,10 @@ const PlanningView = () => {
         if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
         if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
         if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
-        if (loaded.selectedPlanLine && LINE_OPTIONS.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
+        if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
         if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
         if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
-        if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => LINE_OPTIONS.includes(l)));
+        if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
         if (loaded.exportType) setExportType(loaded.exportType);
         if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
         if (loaded.activeTab) setActiveTab(loaded.activeTab);
@@ -848,8 +856,8 @@ const PlanningView = () => {
     }, [useStoredTransitionRules]);
 
     const savePlanningState = useMemo(() => debounce((nextState) => {
-        saveToLocalStorage(STORAGE_KEYS.PLANNING_STATE, nextState);
-    }, 400), []);
+        persistStateKey(STORAGE_KEYS.PLANNING_STATE, nextState);
+    }, 400), [persistStateKey]);
 
     useEffect(() => {
         savePlanningState({
@@ -1070,7 +1078,7 @@ const PlanningView = () => {
             ...prev,
             {
                 category: '',
-                durations: LINE_OPTIONS.reduce((acc, line) => {
+                durations: lineOptions.reduce((acc, line) => {
                     acc[line] = '';
                     return acc;
                 }, {})
@@ -1199,9 +1207,9 @@ const PlanningView = () => {
                 return event?.durations?.[selectedPlanLine] || 0;
             })()
         };
-        console.log('[Optimization] Line products:', lineProducts);
-        console.log('[Optimization] Transition rules:', transitionRules.map(r => r.productName));
-        console.log('[Optimization] CIP durations:', cipDurationsForOptimization);
+        debugLog('optimization', 'Line products:', lineProducts);
+        debugLog('optimization', 'Transition rules:', transitionRules.map(r => r.productName));
+        debugLog('optimization', 'CIP durations:', cipDurationsForOptimization);
         if (lineProducts.length === 0) {
             setTransitionError('Нет продуктов для выбранной линии.');
             return;
@@ -1219,7 +1227,8 @@ const PlanningView = () => {
                 cipDurations: cipDurationsForOptimization,
                 displacementRules,
                 timeBudgetMs
-            }
+            },
+            debug: getDebugFlagsForWorker()
         });
     };
 
@@ -1442,7 +1451,7 @@ const PlanningView = () => {
                 byLine[selectedPlanLine] = { products: importedProducts, cips: importedCips };
                 const nextProducts = [];
                 const nextCipBetween = [];
-                LINE_OPTIONS.forEach((line) => {
+                lineOptions.forEach((line) => {
                     const data = byLine[line];
                     if (!data || !data.products.length) return;
                     data.products.forEach((p, i) => {
@@ -1708,7 +1717,7 @@ const PlanningView = () => {
         setCipBetween(nextCip);
     };
 
-    const demandLineHeaders = useMemo(() => [...LINE_OPTIONS, 'Ручная линия'], []);
+    const demandLineHeaders = useMemo(() => [...lineOptions, 'Ручная линия'], []);
 
     const buildAbsMinutes = (dateStr, timeStr) => {
         const dayIdx = parseDateToDayIndex(dateStr);
@@ -1879,7 +1888,7 @@ const PlanningView = () => {
 
     const allRowsAllLines = useMemo(() => {
         const combined = [];
-        LINE_OPTIONS.forEach((line) => {
+        lineOptions.forEach((line) => {
             const missing = buildMissingTransitionMap(line);
             const rows = buildRows(products, cipBetween, line, missing);
             const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
@@ -1928,7 +1937,7 @@ const PlanningView = () => {
     }, [exportLines, products, cipBetween, buildMissingTransitionMap, eventLabelByKey]);
 
     const ganttSections = useMemo(() => {
-        return LINE_OPTIONS.map((line) => {
+        return lineOptions.map((line) => {
             const missing = buildMissingTransitionMap(line);
             const rows = buildRows(products, cipBetween, line, missing);
             const anchorIndex = rows.findIndex((r) => r.manualStart || r.manualEnd);
@@ -2100,7 +2109,7 @@ const PlanningView = () => {
                                         const ps = plan?.data?.planningState;
                                         const prods = ps?.products ?? [];
                                         const cips = ps?.cipBetween ?? [];
-                                        const lineForCount = ps?.selectedPlanLine && LINE_OPTIONS.includes(ps.selectedPlanLine) ? ps.selectedPlanLine : selectedPlanLine;
+                                        const lineForCount = ps?.selectedPlanLine && lineOptions.includes(ps.selectedPlanLine) ? ps.selectedPlanLine : selectedPlanLine;
                                         const countRowsForLine = (p, cb, line) => {
                                             let n = 0;
                                             (p || []).forEach((item, i) => {
@@ -2138,7 +2147,7 @@ const PlanningView = () => {
                                     onChange={(e) => setSelectedPlanLine(e.target.value)}
                                     className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1"
                                 >
-                                    {LINE_OPTIONS.map(option => (
+                                    {lineOptions.map(option => (
                                         <option key={option} value={option}>{option}</option>
                                     ))}
                                 </select>
@@ -2399,7 +2408,7 @@ const PlanningView = () => {
                                                 <div className="p-4 bg-white border-t border-slate-100/80">
                                                     <div className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Длительности по линиям (мин)</div>
                                                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-2">
-                                                        {LINE_OPTIONS.map((line) => (
+                                                        {lineOptions.map((line) => (
                                                             <div key={line} className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-100/80 last:border-0">
                                                                 <label className="text-sm text-slate-600 shrink-0 min-w-0 truncate" title={line}>{line}</label>
                                                                 <input
@@ -3087,7 +3096,7 @@ const PlanningView = () => {
                         <div className="p-6 space-y-4">
                             <div className="text-sm text-slate-600">Выберите линии для экспорта</div>
                             <div className="grid gap-2 sm:grid-cols-2">
-                                {LINE_OPTIONS.map(line => (
+                                {lineOptions.map(line => (
                                     <label
                                         key={line}
                                         className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:border-slate-400 transition-colors"
@@ -3181,7 +3190,7 @@ const PlanningView = () => {
                                     onChange={(e) => setSelectedPlanLine(e.target.value)}
                                     className="h-9 rounded-lg border border-slate-200 bg-slate-50/50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                                 >
-                                    {LINE_OPTIONS.map(option => (
+                                    {lineOptions.map(option => (
                                         <option key={option} value={option}>{option}</option>
                                     ))}
                                 </select>
