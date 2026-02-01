@@ -23,6 +23,18 @@ import { loadRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemot
 
 const DataContext = createContext(null);
 
+const hasPlanEvents = (p) => (p?.data?.planningState?.products?.length ?? 0) + (p?.data?.planningState?.cipBetween?.length ?? 0) > 0;
+const debugPlans = (op, plans, extra = '') => {
+    if (typeof plans === 'undefined') return;
+    const arr = Array.isArray(plans) ? plans : [];
+    const stats = arr.map(p => {
+        const ps = p?.data?.planningState;
+        const n = (ps?.products?.length ?? 0) + (ps?.cipBetween?.length ?? 0);
+        return `${p?.name || p?.id}: ${n} событий`;
+    });
+    console.log(`[ПЛАНЫ] ${op} | всего планов: ${arr.length} | ${stats.join('; ')} ${extra}`);
+};
+
 export const DataProvider = ({ children }) => {
     // --- STATE ---
     const [file, setFile] = useState(null);
@@ -40,7 +52,10 @@ export const DataProvider = ({ children }) => {
 
     // Multi-plan management
     const [savedPlans, setSavedPlans] = useState(() => loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []));
+    const savedPlansSourceRef = useRef(null);
     const [currentPlanId, setCurrentPlanId] = useState(() => loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null));
+    const [planningStateVersion, setPlanningStateVersion] = useState(0);
+    const [planningStateToLoad, setPlanningStateToLoad] = useState(null);
     const [isLocked, setIsLocked] = useState(false);
 
     const [lineTemplates, setLineTemplates] = useState({});
@@ -186,7 +201,7 @@ export const DataProvider = ({ children }) => {
         return ids;
     };
 
-    const applyPlanData = (planData) => {
+    const applyPlanData = (planData, { switchView = true } = {}) => {
         if (!planData) return;
         const nextRaw = { ...(planData.rawTables || {}) };
         if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
@@ -205,7 +220,7 @@ export const DataProvider = ({ children }) => {
         if (planData.scheduleDates?.length > 0) {
             setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
         }
-        setStep('dashboard');
+        if (switchView) setStep('dashboard');
     };
 
     // --- EFFECT: LOAD FROM LOCAL STORAGE ---
@@ -213,9 +228,13 @@ export const DataProvider = ({ children }) => {
         const restoreData = () => {
             setRestoring(true);
             try {
-                const storedPlans = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
+                let storedPlans = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
+                if (!Array.isArray(storedPlans)) storedPlans = [];
+                storedPlans = storedPlans.filter(p => p && typeof p === 'object' && p.id && p.data);
                 const storedCurrentPlanId = loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null);
-                if (Array.isArray(storedPlans) && storedPlans.length > 0) {
+                if (storedPlans.length > 0) {
+                    debugPlans('RESTORE из localStorage', storedPlans);
+                    savedPlansSourceRef.current = 'restoreData';
                     setSavedPlans(storedPlans);
                     const preferredId = storedCurrentPlanId || storedPlans.find(p => p.type === 'Operational')?.id || storedPlans[0].id;
                     setCurrentPlanId(preferredId);
@@ -223,6 +242,10 @@ export const DataProvider = ({ children }) => {
                     if (selectedPlan?.data) {
                         isLoadingPlanRef.current = true;
                         applyPlanData(selectedPlan.data);
+                        if (selectedPlan.data.planningState) {
+                            saveToLocalStorage(STORAGE_KEYS.PLANNING_STATE, selectedPlan.data.planningState);
+                            setPlanningStateToLoad(selectedPlan.data.planningState);
+                        }
                         isLoadingPlanRef.current = false;
                     } else {
                         // Есть планы, но нет данных в выбранном - переходим в менеджер планов
@@ -275,6 +298,8 @@ export const DataProvider = ({ children }) => {
                                 manualAssignments: savedAssignments
                             }
                         };
+                        debugPlans('MIGRATION создан план', [migratedPlan]);
+                        savedPlansSourceRef.current = 'migration';
                         setSavedPlans([migratedPlan]);
                         setCurrentPlanId(migratedPlan.id);
                         setStep('dashboard');
@@ -302,6 +327,9 @@ export const DataProvider = ({ children }) => {
 
     useEffect(() => {
         if (restoring) return;
+        const src = savedPlansSourceRef.current || 'useEffect(смена savedPlans)';
+        debugPlans('СОХРАНЕНИЕ в localStorage', savedPlans, `| источник: ${src}`);
+        savedPlansSourceRef.current = null;
         saveToLocalStorage(STORAGE_KEYS.SAVED_PLANS, savedPlans);
     }, [savedPlans, restoring]);
 
@@ -347,19 +375,51 @@ export const DataProvider = ({ children }) => {
                 });
             };
 
-            // Handle plans and current ID
+            // Handle plans and current ID — не перезаписываем локальные планы удалёнными, если локальные полнее
             const remotePlans = remoteSnapshot[STORAGE_KEYS.SAVED_PLANS];
             if (Array.isArray(remotePlans)) {
-                setSavedPlans(prev => JSON.stringify(prev) === JSON.stringify(remotePlans) ? prev : remotePlans);
+                debugPlans('REMOTE SYNC получено из Firebase', remotePlans);
+                savedPlansSourceRef.current = 'applyRemoteSnapshot';
+                setSavedPlans(prev => {
+                    const local = prev ?? [];
+                    if (!Array.isArray(local) || local.length === 0) return remotePlans;
+                    if (JSON.stringify(local) === JSON.stringify(remotePlans)) return prev;
+                    const localHasMorePlans = local.length > remotePlans.length;
+                    const localHasEvents = local.some(hasPlanEvents);
+                    const remoteHasEmptyPlans = remotePlans.some(rp => !hasPlanEvents(rp));
+                    if (localHasMorePlans || (localHasEvents && remoteHasEmptyPlans)) {
+                        debugPlans('REMOTE SYNC: предпочитаем ЛОКАЛЬНЫЕ планы', local);
+                        return local.map(lp => {
+                            const remote = remotePlans.find(rp => rp.id === lp.id);
+                            if (!remote) return lp;
+                            if (hasPlanEvents(lp) && !hasPlanEvents(remote)) return lp;
+                            return remote;
+                        });
+                    }
+                    return remotePlans.map(rp => {
+                        const localPlan = local.find(p => p.id === rp.id);
+                        if (hasPlanEvents(localPlan) && !hasPlanEvents(rp)) {
+                            return { ...rp, data: { ...rp.data, planningState: localPlan.data.planningState } };
+                        }
+                        return rp;
+                    });
+                });
                 
-                const remotePlanId = remoteSnapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
-                if (remotePlanId) {
-                    setCurrentPlanId(prev => prev === remotePlanId ? prev : remotePlanId);
-                    
-                    const remotePlansParsed = remotePlans;
-                    const planToLoad = remotePlansParsed.find(p => p.id === remotePlanId);
-                    if (planToLoad?.data) {
-                        applyPlanData(planToLoad.data);
+                const preferLocal = (() => {
+                    const local = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
+                    if (!Array.isArray(local) || local.length === 0) return false;
+                    if (local.length > remotePlans.length) return true;
+                    if (remotePlans.some(rp => !hasPlanEvents(rp)) && local.some(hasPlanEvents)) return true;
+                    return false;
+                })();
+                
+                if (!preferLocal) {
+                    debugPlans('REMOTE SYNC: применены планы из Firebase', remotePlans);
+                    const remotePlanId = remoteSnapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
+                    if (remotePlanId) {
+                        setCurrentPlanId(prev => prev === remotePlanId ? prev : remotePlanId);
+                        const planToLoad = remotePlans.find(p => p.id === remotePlanId);
+                        if (planToLoad?.data) applyPlanData(planToLoad.data);
                     }
                 }
             }
@@ -794,6 +854,7 @@ export const DataProvider = ({ children }) => {
                         type: 'Operational',
                         data: buildPlanSnapshot()
                     };
+                    savedPlansSourceRef.current = 'parseExcelToPlanData';
                     setSavedPlans(prev => {
                         const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
                         return [...cleared, nextPlan];
@@ -841,10 +902,13 @@ export const DataProvider = ({ children }) => {
         floaters: planData.floaters || { day: [], night: [] },
         workerRegistry: planData.workerRegistry || {},
         manualAssignments: planData.manualAssignments || {},
-        manualLines: planData.manualLines || {}
+        manualLines: planData.manualLines || {},
+        planningState: planData.planningState || null
     }), []);
 
-    const createPlanFromSchedule = useCallback(({ demand, roster, name } = {}) => {
+    const createPlanFromSchedule = useCallback(({ demand, roster, name, planningState } = {}) => {
+        const eventsCount = (planningState?.products?.length ?? 0) + (planningState?.cipBetween?.length ?? 0);
+        console.log(`[ПЛАНЫ] CREATE план "${name}" | ${eventsCount} событий (products: ${planningState?.products?.length ?? 0}, cipBetween: ${planningState?.cipBetween?.length ?? 0})`);
         if (!Array.isArray(demand) || demand.length === 0) throw new Error('Пустое расписание (demand).');
         if (!Array.isArray(roster) || roster.length === 0) throw new Error('Пустой справочник (roster).');
 
@@ -883,7 +947,8 @@ export const DataProvider = ({ children }) => {
             workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
             manualAssignments: {},
             manualLines,
-            assignmentClones
+            assignmentClones,
+            planningState: planningState || null
         };
         const existingByName = savedPlans.find(p => (p.name || '').trim() === planName);
         const planId = existingByName ? existingByName.id : (draftPlanIdRef.current || generatePlanId());
@@ -894,14 +959,12 @@ export const DataProvider = ({ children }) => {
             type: existingByName ? existingByName.type : null,
             data: planData
         };
+        savedPlansSourceRef.current = 'createPlanFromSchedule';
         setSavedPlans(prev => {
             const idx = prev.findIndex(p => p.id === planId);
-            if (idx !== -1) {
-                const next = [...prev];
-                next[idx] = plan;
-                return next;
-            }
-            return [...prev, plan];
+            const next = idx !== -1 ? (() => { const n = [...prev]; n[idx] = plan; return n; })() : [...prev, plan];
+            debugPlans('CREATE план сохранён', next, `| planId: ${planId}`);
+            return next;
         });
         setCurrentPlanId(planId);
         draftPlanIdRef.current = null;
@@ -1136,6 +1199,7 @@ export const DataProvider = ({ children }) => {
     }, [buildPlanSlots, normalizePlanData]);
 
     const addPlan = useCallback((plan) => {
+        savedPlansSourceRef.current = 'addPlan';
         setSavedPlans(prev => {
             const cleared = plan.type ? prev.map(p => (p.type === plan.type ? { ...p, type: null } : p)) : prev;
             return [...cleared, plan];
@@ -1152,6 +1216,7 @@ export const DataProvider = ({ children }) => {
         const snapshot = buildPlanSnapshot();
         const existing = savedPlans.find(p => (p.name || '').trim() === planName);
         const targetPlanId = existing ? existing.id : generatePlanId();
+        savedPlansSourceRef.current = 'saveCurrentAsNewPlan';
         setSavedPlans(prev => {
             const existingIdx = prev.findIndex(p => (p.name || '').trim() === planName);
             const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
@@ -1176,15 +1241,32 @@ export const DataProvider = ({ children }) => {
         setCurrentPlanId(targetPlanId);
     }, [buildPlanSnapshot, isReadOnly, savedPlans]);
 
-    const loadPlan = useCallback((planId) => {
+    const loadPlan = useCallback((planId, { switchToDashboard = true } = {}) => {
         const plan = savedPlans.find(p => p.id === planId);
         if (!plan?.data) return;
+        const n = (plan?.data?.planningState?.products?.length ?? 0) + (plan?.data?.planningState?.cipBetween?.length ?? 0);
+        console.log(`[ПЛАНЫ] LOAD план "${plan?.name}" (${planId}) | ${n} событий | switchToDashboard: ${switchToDashboard}`);
         isLoadingPlanRef.current = true;
-        applyPlanData(plan.data);
+        applyPlanData(plan.data, { switchView: switchToDashboard });
         setCurrentPlanId(plan.id);
+        if (plan.data.planningState) {
+            saveToLocalStorage(STORAGE_KEYS.PLANNING_STATE, plan.data.planningState);
+            setPlanningStateToLoad(plan.data.planningState);
+            setPlanningStateVersion(v => v + 1);
+        }
         setTimeout(() => {
             isLoadingPlanRef.current = false;
         }, 0);
+    }, [savedPlans]);
+
+    const loadPlanQueue = useCallback((planId) => {
+        const plan = savedPlans.find(p => p.id === planId);
+        if (!plan?.data?.planningState) return;
+        const n = (plan?.data?.planningState?.products?.length ?? 0) + (plan?.data?.planningState?.cipBetween?.length ?? 0);
+        console.log(`[ПЛАНЫ] LOAD_QUEUE план "${plan?.name}" | ${n} событий загружено в форму`);
+        saveToLocalStorage(STORAGE_KEYS.PLANNING_STATE, plan.data.planningState);
+        setPlanningStateToLoad(plan.data.planningState);
+        setPlanningStateVersion(v => v + 1);
     }, [savedPlans]);
 
     const setPlanType = useCallback((planId, type) => {
@@ -1192,6 +1274,7 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Изменение типа недоступно.' });
             return;
         }
+        savedPlansSourceRef.current = 'setPlanType';
         setSavedPlans(prev => prev.map(plan => {
             if (plan.id === planId) return { ...plan, type };
             if (type && plan.type === type) return { ...plan, type: null };
@@ -1204,7 +1287,12 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
             return;
         }
-        setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
+        savedPlansSourceRef.current = 'deletePlan';
+        setSavedPlans(prev => {
+            const next = prev.filter(plan => plan.id !== planId);
+            debugPlans('DELETE план', next, `| удалён: ${planId}`);
+            return next;
+        });
         if (currentPlanId === planId) {
             setCurrentPlanId(null);
             setRawTables({});
@@ -1257,21 +1345,24 @@ export const DataProvider = ({ children }) => {
         if (isLoadingPlanRef.current) return;
         
         const snapshot = buildPlanSnapshot();
-        
+        savedPlansSourceRef.current = 'useEffect(buildPlanSnapshot автосохр.)';
         setSavedPlans(prev => {
             const idx = prev.findIndex(p => p.id === currentPlanId);
             if (idx === -1) return prev;
             
-            // Сравниваем только полезные данные, чтобы не частить с updatedAt
+            const existingPlanningState = prev[idx]?.data?.planningState;
+            const mergedData = {
+                ...snapshot,
+                planningState: existingPlanningState ?? snapshot.planningState ?? null
+            };
             const currentDataStr = JSON.stringify(prev[idx].data);
-            const newDataStr = JSON.stringify(snapshot);
-            
+            const newDataStr = JSON.stringify(mergedData);
             if (currentDataStr === newDataStr) return prev;
 
             const next = [...prev];
             next[idx] = {
                 ...next[idx],
-                data: snapshot,
+                data: mergedData,
                 updatedAt: new Date().toISOString()
             };
             return next;
@@ -2668,7 +2759,7 @@ export const DataProvider = ({ children }) => {
         // State
         file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, userRole, isReadOnly,
         rawTables, scheduleDates, planHashes,
-        savedPlans, currentPlanId,
+        savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         isLocked,
         lineTemplates, floaters, workerRegistry,
         step, setStep, viewMode, setViewMode, selectedDate, setSelectedDate,
@@ -2692,6 +2783,7 @@ export const DataProvider = ({ children }) => {
         setSyncStatus, setShowSyncLog, setUseRemoteStorage, setUserRole,
         
         // Actions / Setters
+        setCurrentPlanId,
         setWorkerRegistry, setLineTemplates, setFloaters,
         fileInputRef,
         
@@ -2700,6 +2792,7 @@ export const DataProvider = ({ children }) => {
         parseExcelToPlanData,
         saveCurrentAsNewPlan,
         loadPlan,
+        loadPlanQueue,
         setPlanType,
         deletePlan,
         importPlanFromJson,
@@ -2727,7 +2820,7 @@ export const DataProvider = ({ children }) => {
         // ТОЛЬКО состояние, НЕ setState функции!
         file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, userRole, isReadOnly,
         rawTables, scheduleDates, planHashes,
-        savedPlans, currentPlanId,
+        savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         isLocked,
         lineTemplates, floaters, workerRegistry,
         step, viewMode, selectedDate,
@@ -2752,6 +2845,7 @@ export const DataProvider = ({ children }) => {
         parseExcelToPlanData,
         saveCurrentAsNewPlan,
         loadPlan,
+        loadPlanQueue,
         setPlanType,
         deletePlan,
         importPlanFromJson,

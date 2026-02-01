@@ -434,7 +434,13 @@ const PlanningView = () => {
         () => loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}),
         []
     );
-    const { createPlanFromSchedule } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad } = useData();
+    const activePlan = useMemo(
+        () => savedPlans?.find(p => p.id === currentPlanId) ?? null,
+        [savedPlans, currentPlanId]
+    );
+    const activePlanName = activePlan?.name ?? null;
+    const activePlanHasQueue = !!(activePlan?.data?.planningState);
     const resolveLineOption = (value) => (
         LINE_OPTIONS.includes(value) ? value : LINE_OPTIONS[0]
     );
@@ -533,6 +539,7 @@ const PlanningView = () => {
     const [transitionPage, setTransitionPage] = useState(1);
     const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+    const [planSaveName, setPlanSaveName] = useState('');
     const [exportType, setExportType] = useState(() => storedPlanning.exportType || 'html');
     const [exportLines, setExportLines] = useState(() => {
         const stored = (storedPlanning.exportLines || [])
@@ -815,6 +822,24 @@ const PlanningView = () => {
         }
         normalizedLinesRef.current = true;
     }, [products, cipBetween, selectedPlanLine]);
+
+    useEffect(() => {
+        const loaded = planningStateToLoad || (planningStateVersion > 0 ? loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}) : null);
+        if (!loaded || typeof loaded !== 'object') return;
+        if (Array.isArray(loaded.products)) setProducts(loaded.products);
+        if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
+        if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
+        if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
+        if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
+        if (loaded.selectedPlanLine && LINE_OPTIONS.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
+        if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
+        if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
+        if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => LINE_OPTIONS.includes(l)));
+        if (loaded.exportType) setExportType(loaded.exportType);
+        if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
+        if (loaded.activeTab) setActiveTab(loaded.activeTab);
+        if (planningStateToLoad && setPlanningStateToLoad) setPlanningStateToLoad(null);
+    }, [planningStateVersion, planningStateToLoad, setPlanningStateToLoad]);
 
     useEffect(() => {
         if (!useStoredTransitionRules) {
@@ -1818,10 +1843,26 @@ const PlanningView = () => {
             const autoShifts = buildShiftsFromRows(allRowsAllLines);
             const demand = buildDemandFromSchedule(allRowsAllLines, autoShifts);
             const roster = buildRosterFromDistribution();
+            const planName = (planSaveName || activePlanName || `План ${new Date().toLocaleDateString('ru-RU')}`).trim();
             createPlanFromSchedule({
                 demand,
                 roster,
-                name: `План ${new Date().toLocaleDateString('ru-RU')}`,
+                name: planName,
+                planningState: {
+                    activeTab,
+                    cipDurations,
+                    baseProducts,
+                    speedLines,
+                    products,
+                    cipBetween,
+                    selectedPlanLine,
+                    transitionRules,
+                    transitionRulesVersion: TRANSITION_RULES_VERSION,
+                    lineEvents,
+                    exportLines,
+                    exportType,
+                    displacementRules
+                }
             });
             setPlanCreateStatus('success');
         } catch (err) {
@@ -1969,6 +2010,15 @@ const PlanningView = () => {
         setProducts(next);
     };
 
+    const removeProductAt = (index) => {
+        if (index < 0 || index >= products.length) return;
+        setProducts(prev => [...prev.slice(0, index), ...prev.slice(index + 1)]);
+        setCipBetween(prev => {
+            if (index >= prev.length) return prev;
+            return [...prev.slice(0, index), ...prev.slice(index + 1)];
+        });
+    };
+
     const toggleExportLine = (line) => {
         setExportLines((prev) => {
             if (prev.includes(line)) {
@@ -2015,18 +2065,84 @@ const PlanningView = () => {
                         <div className="flex-1 min-w-0">
                             <h1 className="text-xl font-semibold text-slate-800 tracking-tight">Планирование очередности розлива</h1>
                             <p className="text-sm text-slate-500 mt-0.5">Настройка графика и справочников для линии</p>
+                            {activePlanName && (
+                                activePlanHasQueue ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => loadPlanQueue?.(currentPlanId)}
+                                        className="text-xs text-indigo-600 font-medium mt-1 hover:text-indigo-800 hover:underline text-left"
+                                        title="Загрузить очередь плана для редактирования"
+                                    >
+                                        Активный план: {activePlanName} →
+                                    </button>
+                                ) : (
+                                    <p className="text-xs text-slate-500 mt-1">Активный план: {activePlanName}</p>
+                                )
+                            )}
                         </div>
-                        <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200/80 px-4 py-2.5 shrink-0">
-                            <span className="text-slate-500 text-sm">Линия:</span>
-                            <select
-                                value={selectedPlanLine}
-                                onChange={(e) => setSelectedPlanLine(e.target.value)}
-                                className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1"
-                            >
-                                {LINE_OPTIONS.map(option => (
-                                    <option key={option} value={option}>{option}</option>
-                                ))}
-                            </select>
+                        <div className="flex items-center gap-4 shrink-0">
+                            <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200/80 px-4 py-2.5">
+                                <span className="text-slate-500 text-sm">План:</span>
+                                <select
+                                    value={currentPlanId || ''}
+                                    onChange={(e) => {
+                                        const id = e.target.value || null;
+                                        if (id) {
+                                            loadPlan?.(id, { switchToDashboard: false });
+                                        } else {
+                                            setCurrentPlanId?.(null);
+                                        }
+                                    }}
+                                    className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1 min-w-[140px]"
+                                >
+                                    <option value="">— не выбран —</option>
+                                    {savedPlans?.map((plan) => {
+                                        const ps = plan?.data?.planningState;
+                                        const prods = ps?.products ?? [];
+                                        const cips = ps?.cipBetween ?? [];
+                                        const lineForCount = ps?.selectedPlanLine && LINE_OPTIONS.includes(ps.selectedPlanLine) ? ps.selectedPlanLine : selectedPlanLine;
+                                        const countRowsForLine = (p, cb, line) => {
+                                            let n = 0;
+                                            (p || []).forEach((item, i) => {
+                                                if ((item?.line || '') !== line) return;
+                                                n++;
+                                                const cip = (cb || [])[i];
+                                                if (cip && ((cip?.line || item?.line) === line)) n++;
+                                            });
+                                            return n;
+                                        };
+                                        let count = countRowsForLine(prods, cips, lineForCount);
+                                        if (count <= 0 && prods.length > 0) {
+                                            const firstLine = prods.find(p => p?.line)?.line;
+                                            if (firstLine) count = countRowsForLine(prods, cips, firstLine);
+                                        }
+                                        if (count <= 0) {
+                                            const demand = plan?.data?.rawTables?.demand;
+                                            if (Array.isArray(demand) && demand.length > 1) {
+                                                count = demand.slice(1).reduce((s, row) => s + ((row.slice(15) || []).filter(c => c === 1 || c === '1').length), 0);
+                                            }
+                                        }
+                                        const countStr = count > 0 ? ` (${count})` : '';
+                                        return (
+                                            <option key={plan.id} value={plan.id}>
+                                                {plan.name || plan.id}{countStr}
+                                            </option>
+                                        );
+                                    })}
+                                </select>
+                            </div>
+                            <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200/80 px-4 py-2.5">
+                                <span className="text-slate-500 text-sm">Линия:</span>
+                                <select
+                                    value={selectedPlanLine}
+                                    onChange={(e) => setSelectedPlanLine(e.target.value)}
+                                    className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1"
+                                >
+                                    {LINE_OPTIONS.map(option => (
+                                        <option key={option} value={option}>{option}</option>
+                                    ))}
+                                </select>
+                            </div>
                         </div>
                     </div>
                 </header>
@@ -2727,6 +2843,14 @@ const PlanningView = () => {
                                 </div>
                                 <div className="h-6 w-px bg-slate-200" aria-hidden="true" />
                                 <div className="flex items-center gap-2">
+                                    <input
+                                        type="text"
+                                        value={planSaveName}
+                                        onChange={(e) => setPlanSaveName(e.target.value)}
+                                        placeholder={activePlanName || `План ${new Date().toLocaleDateString('ru-RU')}`}
+                                        className="h-9 w-48 rounded-lg border border-slate-200 px-3 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                                        title="Имя сохраняемого плана"
+                                    />
                                     <button
                                         onClick={handleCreatePlanFromSchedule}
                                         className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
@@ -2778,6 +2902,7 @@ const PlanningView = () => {
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Кол-во</th>
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Скорость</th>
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Длит.</th>
+                                            <th className="px-2 py-3 w-0 border-l border-slate-200/40" title="Удалить"> </th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -2870,6 +2995,18 @@ const PlanningView = () => {
                                                         {isCip ? '—' : `${row.speed}/ч`}
                                                     </td>
                                                     <td className="px-3 py-2.5 text-center border-l border-slate-200/40 text-slate-500 tabular-nums whitespace-nowrap w-0">{durationLabel}</td>
+                                                    <td className="px-2 py-2.5 text-center border-l border-slate-200/40 w-0">
+                                                        {!isCip && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removeProductAt(row.index)}
+                                                                className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                                                                title="Удалить из очереди"
+                                                            >
+                                                                <Trash2 size={14} />
+                                                            </button>
+                                                        )}
+                                                    </td>
                                                 </tr>
                                             );
                                         })}

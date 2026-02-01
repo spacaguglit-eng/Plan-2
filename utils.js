@@ -30,9 +30,14 @@ export const STORAGE_KEYS = {
 // --- LOCAL STORAGE HELPERS ---
 export const saveToLocalStorage = (key, data) => {
     try {
-        localStorage.setItem(key, JSON.stringify(data));
+        const str = JSON.stringify(data);
+        localStorage.setItem(key, str);
     } catch (e) {
-        console.error('Error saving to localStorage:', e);
+        if (e.name === 'QuotaExceededError') {
+            console.error('localStorage переполнен. Удалите старые планы или отключите синхронизацию.');
+        } else {
+            console.error('Error saving to localStorage:', e);
+        }
     }
     if (isRemoteStorageEnabled()) {
         saveRemoteStateKey(key, data).catch(err => {
@@ -44,9 +49,11 @@ export const saveToLocalStorage = (key, data) => {
 export const loadFromLocalStorage = (key, defaultValue = null) => {
     try {
         const item = localStorage.getItem(key);
-        return item ? JSON.parse(item) : defaultValue;
+        if (!item) return defaultValue;
+        const parsed = JSON.parse(item);
+        return parsed ?? defaultValue;
     } catch (e) {
-        console.error('Error loading from localStorage:', e);
+        console.error(`Ошибка чтения ${key} из localStorage:`, e.message);
         return defaultValue;
     }
 };
