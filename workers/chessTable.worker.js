@@ -1,4 +1,4 @@
-import { cleanVal, extractShiftNumber, normalizeName, matchNames, isLineMatch, checkWorkerAvailability } from './utils.js';
+import { cleanVal, extractShiftNumber, normalizeName, matchNames, isLineMatch, checkWorkerAvailability } from '../utils.js';
 
 const normalizeManualRoleForId = (roleTitle) => {
   return String(roleTitle || 'role').replace(/\s+/g, '_');
@@ -190,7 +190,6 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
 
     const freeAgents = allShiftWorkers.filter((w) => !w.isBusy && w.isAvailable);
     
-    // Автоподстановка работает только если включена
     if (autoReassignEnabled) {
       lineTasks.forEach((lt) => {
         lt.slots.forEach((slot) => {
@@ -253,7 +252,6 @@ function buildChessTable(payload) {
   const dates = Array.isArray(scheduleDates) ? scheduleDates : [];
   if (!demand || dates.length === 0) return null;
 
-  // Restore competencies Set for reassignment logic
   const workerRegistry = {};
   Object.entries(rawWorkerRegistry || {}).forEach(([k, v]) => {
     workerRegistry[k] = { ...v, competencies: new Set(v?.competencies || []) };
@@ -290,10 +288,9 @@ function buildChessTable(payload) {
     });
   });
 
-  // --- Build workers list ---
   const workerMeta = new Map();
-  Object.keys(lineTemplates || {}).forEach((lineKey) => {
-    (lineTemplates[lineKey] || []).forEach((pos) => {
+  Object.keys(lineTemplates || {}).forEach((lKey) => {
+    (lineTemplates[lKey] || []).forEach((pos) => {
       const roster = pos?.roster || {};
       Object.entries(roster).forEach(([bId, val]) => {
         if (!val) return;
@@ -303,7 +300,7 @@ function buildChessTable(payload) {
           .filter((n) => n.length > 1)
           .forEach((name) => {
             if (!workerMeta.has(name)) {
-              workerMeta.set(name, { name, role: pos.role, homeLine: lineKey, homeBrigades: new Set(), category: 'staff', sortShift: 99 });
+              workerMeta.set(name, { name, role: pos.role, homeLine: lKey, homeBrigades: new Set(), category: 'staff', sortShift: 99 });
             }
             const w = workerMeta.get(name);
             w.homeBrigades.add(bId);
@@ -333,7 +330,6 @@ function buildChessTable(payload) {
     workersBySurname.get(surname).push(w);
   });
 
-  // --- Facts index ---
   const factLookupByDate = new Map();
   const factBySurnameByDate = new Map();
   if (factData) {
@@ -369,7 +365,6 @@ function buildChessTable(payload) {
     return null;
   };
 
-  // --- Add unexpected workers ---
   if (factData) {
     const unexpectedWorkersMap = new Map();
     dates.forEach((date) => {
@@ -412,7 +407,6 @@ function buildChessTable(payload) {
     }
   }
 
-  // --- Fill cells ---
   workers.forEach((w) => { w.cells = {}; });
 
   const getAvailabilityCached = (name, dateStr) => {
@@ -477,7 +471,6 @@ function buildChessTable(payload) {
             verificationStatus = 'missing';
           }
         } else {
-          // Человек был в плане, но факт отсутствует - это прогул
           verificationStatus = 'missing';
         }
       } else if (idleWorkers.has(worker.name)) {
@@ -506,7 +499,6 @@ function buildChessTable(payload) {
     });
   });
 
-  // Serialize Set for structured clone
   const workersOut = workers.map((w) => ({
     ...w,
     homeBrigades: Array.from(w.homeBrigades || []),
@@ -524,4 +516,3 @@ self.onmessage = (e) => {
     self.postMessage({ requestId, error: err?.message || String(err) });
   }
 };
-

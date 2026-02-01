@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Droplet, Plus, Clock4, Database, GripVertical, Trash2 } from 'lucide-react';
 import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from '../../utils';
-import { TRANSITION_RULES_BASE } from './transitionRulesBase';
+import { TRANSITION_RULES_BASE } from '../../utils/transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 
 const LINE_OPTIONS = [

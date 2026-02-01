@@ -52,4 +52,3 @@ console.log('1. Остановите dev сервер (Ctrl+C)');
 console.log('2. Очистите кэш браузера (Ctrl+Shift+R)');
 console.log('3. Запустите: npm run dev');
 console.log('4. Откройте адрес из терминала в браузере');
-

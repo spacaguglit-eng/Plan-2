@@ -77,6 +77,79 @@ export const DataProvider = ({ children }) => {
 
     const { notify } = useNotification();
 
+<<<<<<< Updated upstream
+=======
+    const [remoteSnapshot, setRemoteSnapshot] = useState(null);
+    useEffect(() => {
+        if (!isRemoteStorageEnabled() || !useRemoteStorage) {
+            setRemoteSnapshot(null);
+            return () => {};
+        }
+        const unsubscribe = subscribeToRemoteState((parsed) => {
+            setRemoteSnapshot(parsed);
+        });
+        return () => {
+            unsubscribe();
+        };
+    }, [useRemoteStorage]);
+
+    useEffect(() => {
+        setRemoteLogCallback((log) => {
+            setSyncLog(prev => [log, ...prev].slice(0, 50));
+        });
+    }, []);
+
+    useEffect(() => {
+        setRemoteFlushErrorCallback((err, failedKeys) => {
+            if (!failedKeys?.length) return;
+            setSyncStatus('error');
+            notify({ type: 'error', message: 'Ошибка синхронизации с облаком. Проверьте подключение.', duration: 5000 });
+            if (failedKeys.includes(STORAGE_KEYS.MANUAL_ASSIGNMENTS)) {
+                const cached = remoteSnapshot?.[STORAGE_KEYS.MANUAL_ASSIGNMENTS];
+                if (cached != null) setManualAssignments(cached);
+            }
+            if (failedKeys.includes(STORAGE_KEYS.SAVED_PLANS)) {
+                const cached = remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS];
+                if (Array.isArray(cached)) setSavedPlans(cached);
+            }
+        });
+        return () => setRemoteFlushErrorCallback(null);
+    }, [remoteSnapshot, notify]);
+
+    useEffect(() => {
+        setRemoteFlushSuccessCallback(() => setSyncStatus('idle'));
+        return () => setRemoteFlushSuccessCallback(null);
+    }, []);
+
+    useEffect(() => {
+        setRemoteEnabledByUser(useRemoteStorage);
+        saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
+    }, [useRemoteStorage]);
+
+    const [pendingUpdates, setPendingUpdates] = useState({});
+    const pendingUpdatesRef = useRef({});
+    const persistStateKey = useCallback((key, value) => {
+        if (useRemoteStorage) {
+            setPendingUpdates(prev => ({ ...prev, [key]: value }));
+            saveRemoteStateKey(key, value).catch(err => console.error(`Error saving ${key} to remote:`, err));
+        } else {
+            saveToLocalStorage(key, value);
+        }
+    }, [useRemoteStorage]);
+
+    useEffect(() => {
+        pendingUpdatesRef.current = pendingUpdates;
+    }, [pendingUpdates]);
+
+    useEffect(() => {
+        if (userRole) {
+            localStorage.setItem('plan_user_role', JSON.stringify(userRole));
+        }
+    }, [userRole]);
+
+    const isReadOnly = userRole === 'guest';
+
+>>>>>>> Stashed changes
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
@@ -306,6 +379,59 @@ export const DataProvider = ({ children }) => {
         setIsLocked(activePlan?.type === 'Master');
     }, [currentPlanId, savedPlans]);
 
+<<<<<<< Updated upstream
+=======
+    const hasAppliedRemoteRef = useRef(false);
+    useEffect(() => {
+        if (!remoteSnapshot) return;
+        applyRemoteSnapshotFromService(remoteSnapshot, {
+            setSavedPlans,
+            setCurrentPlanId,
+            setManualAssignments,
+            setManualLines,
+            setAssignmentClones,
+            setAutoReassignEnabled,
+            setFactData,
+            setFactDates,
+            setRawTables,
+            setScheduleDates,
+            setPlanHashes,
+            setLineTemplates,
+            setFloaters,
+            setWorkerRegistry,
+            applyPlanData,
+            loadFromLocalStorage,
+            hydrateWorkerRegistry,
+            serializeWorkerRegistry,
+            setSavedPlansSourceRef: (value) => { savedPlansSourceRef.current = value; },
+            debugPlans
+        }, { pendingGuard: pendingUpdatesRef.current });
+        setPendingUpdates(prev => {
+            const next = {};
+            for (const k of Object.keys(prev)) {
+                const match = k === STORAGE_KEYS.WORKER_REGISTRY
+                    ? JSON.stringify(serializeWorkerRegistry(prev[k])) === JSON.stringify(remoteSnapshot?.[k])
+                    : JSON.stringify(remoteSnapshot?.[k]) === JSON.stringify(prev[k]);
+                if (!match) next[k] = prev[k];
+            }
+            return next;
+        });
+        if (restoring) {
+            hasAppliedRemoteRef.current = true;
+            setRestoring(false);
+        }
+    }, [restoring, remoteSnapshot]);
+
+    useEffect(() => {
+        if (!useRemoteStorage || restoring) return;
+        if (step !== 'upload') return;
+        const plans = remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS];
+        if (Array.isArray(plans) && plans.length > 0) {
+            setStep('dashboard');
+        }
+    }, [useRemoteStorage, restoring, step, remoteSnapshot]);
+
+>>>>>>> Stashed changes
     // --- LOGIC FUNCTIONS ---
 
     const saveSourceDataToLocal = (tables, hashes) => {
@@ -1709,7 +1835,7 @@ export const DataProvider = ({ children }) => {
         if (!USE_CHESS_WORKER) return;
         if (chessTableWorkerRef.current) return;
 
-        const worker = new Worker(new URL('../chessTable.worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../workers/chessTable.worker.js', import.meta.url), { type: 'module' });
         chessTableWorkerRef.current = worker;
 
         worker.onmessage = (e) => {

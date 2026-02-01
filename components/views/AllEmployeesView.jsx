@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Users, Search, Edit3, Check, X, Calendar, Zap, AlertTriangle, Clock, ChevronDown, ChevronRight, CheckCircle2, XCircle, Filter, Settings, Trash2, Plus } from 'lucide-react';
 import { useData } from '../../context/DataContext';
+<<<<<<< Updated upstream
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
+=======
+import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
+>>>>>>> Stashed changes
 
 const AllEmployeesView = () => {
     const {

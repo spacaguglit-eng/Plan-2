@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
+<<<<<<< Updated upstream
 import { generateProductionReportHtml } from './productionReportHtml';
+=======
+import { generateProductionReportHtml } from '../../utils/productionReportHtml';
+import { useData } from '../../context/DataContext';
+import { STORAGE_KEYS, loadFromLocalStorage } from '../../utils';
+>>>>>>> Stashed changes
 
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
@@ -649,7 +655,7 @@ const ProductionView = () => {
 
         try {
             console.log('Инициализация production worker...');
-            const worker = new Worker(new URL('../../production.worker.js', import.meta.url), { type: 'module' });
+            const worker = new Worker(new URL('../../workers/production.worker.js', import.meta.url), { type: 'module' });
             productionWorkerRef.current = worker;
 
             worker.onmessage = (e) => {

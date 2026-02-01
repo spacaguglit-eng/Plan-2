@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Save, AlertCircle, Loader2, FileUp, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar } from 'lucide-react';
 import { useData } from './context/DataContext';
-import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
-import { PerformanceView } from './PerformanceMonitor';
-import { usePerformanceMetrics } from './performanceStore';
+import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './components/UIComponents';
+import { PerformanceView } from './components/PerformanceMonitor';
+import { usePerformanceMetrics } from './context/performanceStore';
 
 // Import view components
 import DashboardView from './components/views/DashboardView';

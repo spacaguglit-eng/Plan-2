@@ -6,7 +6,7 @@ import {
     ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2, Save, Undo2,
     FileSpreadsheet
 } from 'lucide-react';
-import { checkWorkerAvailability, getRealNeighborDateStrings } from './utils';
+import { checkWorkerAvailability, getRealNeighborDateStrings } from '../utils';
 
 export const MatrixAssignmentModal = ({ isOpen, onClose, context, currentNames, workerRegistry, lineTemplates, onSave }) => {
     const [searchTerm, setSearchTerm] = useState('');

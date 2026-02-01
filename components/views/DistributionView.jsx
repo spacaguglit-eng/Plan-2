@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { LayoutGrid, Search, Edit3, GraduationCap } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { MatrixAssignmentModal } from '../../UIComponents';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { MatrixAssignmentModal } from '../UIComponents';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
 
 const DistributionView = () => {
     const {

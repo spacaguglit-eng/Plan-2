@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { Users, Search, Plus, SlidersHorizontal, ChevronUp, ChevronDown, ArrowUpDown, Edit3, GraduationCap, X } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
 
 const EmployeesListView = () => {
     const {

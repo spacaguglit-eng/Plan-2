@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
 
 const TimesheetView = () => {
     const {

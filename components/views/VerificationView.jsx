@@ -2,9 +2,15 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle, Edit3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
+<<<<<<< Updated upstream
 import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
+=======
+import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
+>>>>>>> Stashed changes
 
 const VerificationView = () => {
     const {
@@ -563,7 +569,7 @@ const VerificationView = () => {
         if (!USE_VERIFICATION_WORKER) return;
         if (verificationWorkerRef.current) return;
 
-        const worker = new Worker(new URL('../../verification.worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../../workers/verification.worker.js', import.meta.url), { type: 'module' });
         verificationWorkerRef.current = worker;
 
         worker.onmessage = (e) => {

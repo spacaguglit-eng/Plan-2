@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { RvPickerModal, DayStatusHeader } from '../UIComponents';
+import { useRenderTime } from '../PerformanceMonitor';
+import { logPerformanceMetric } from '../../context/performanceStore';
 import { normalizeName } from '../../utils';
 
 const DashboardView = () => {

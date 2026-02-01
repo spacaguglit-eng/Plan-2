@@ -1,4 +1,4 @@
-import { normalizeName, matchNames } from './utils.js';
+import { normalizeName, matchNames } from '../utils.js';
 
 const getSurnameNorm = (fullName) => {
   const first = String(fullName || '').trim().split(/\s+/)[0] || '';
@@ -207,4 +207,3 @@ self.onmessage = (e) => {
     self.postMessage({ requestId, error: err?.message || String(err) });
   }
 };
-
