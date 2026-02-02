@@ -162,6 +162,21 @@ export const isLineMatch = (planLine, rosterLine) => {
     return false;
 };
 
+/** Составную линию "Линия 1-2" раскладывает в ["Линия 1", "Линия 2"] для однозначного использования везде. */
+export const expandCompositeLineKey = (key) => {
+    if (!key || typeof key !== 'string') return [key];
+    const match = key.match(/(\d+)\s*-\s*(\d+)/);
+    if (!match) return [key];
+    const from = parseInt(match[1], 10);
+    const to = parseInt(match[2], 10);
+    if (from > to) return [key];
+    const prefix = key.replace(/\d+\s*-\s*\d+.*$/, '').trim() || 'Линия ';
+    const sep = prefix.endsWith(' ') ? '' : ' ';
+    const result = [];
+    for (let i = from; i <= to; i++) result.push(prefix + sep + i);
+    return result;
+};
+
 export const cyrb53 = (str, seed = 0) => {
     let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {

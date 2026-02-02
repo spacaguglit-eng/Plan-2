@@ -19,6 +19,7 @@ import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
+import ShiftReportsView from './components/views/ShiftReportsView';
 import DebugView from './components/views/DebugView';
 import PinModal from './components/common/PinModal';
 
@@ -30,6 +31,7 @@ export default function App() {
     const [adminError, setAdminError] = useState('');
     const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
     const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
+    const [isReportsMenuOpen, setIsReportsMenuOpen] = useState(false);
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
     const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
 
@@ -68,8 +70,6 @@ export default function App() {
         isReadOnly
     } = useData();
 
-    const activePlanName = savedPlans.find(p => p.id === currentPlanId)?.name;
-
     // Scroll to target brigade when targetScrollBrigadeId changes
     useEffect(() => {
         if (viewMode === 'dashboard' && selectedDate) {
@@ -78,17 +78,19 @@ export default function App() {
     }, [viewMode, selectedDate]);
 
     useEffect(() => {
-        if (!isExtraMenuOpen && !isStaffMenuOpen) return;
+        if (!isExtraMenuOpen && !isStaffMenuOpen && !isReportsMenuOpen) return;
         const handleClickOutside = () => {
             setIsExtraMenuOpen(false);
             setIsStaffMenuOpen(false);
+            setIsReportsMenuOpen(false);
         };
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
-    }, [isExtraMenuOpen, isStaffMenuOpen]);
+    }, [isExtraMenuOpen, isStaffMenuOpen, isReportsMenuOpen]);
 
     const isStaffView = ['dashboard', 'chess', 'employees_list', 'employees_roster', 'verification', 'all_employees']
         .includes(viewMode);
+    const isReportsActive = ['reports', 'shift_reports'].includes(viewMode);
 
     const getTabStyle = (mode, isActive) => {
         const styles = {
@@ -253,9 +255,6 @@ export default function App() {
                                         />
                                     )}
                                 </div>
-                                {activePlanName && (
-                                    <p className="text-xs text-slate-400 hidden sm:block">Активный план: {activePlanName}</p>
-                                )}
                             </div>
                             <div className="flex items-center gap-3">
                                 <div className="flex items-center gap-2 mr-4">
@@ -349,13 +348,46 @@ export default function App() {
                                     </div>
 
                                     {/* Reports Menu Item */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                    <div className="relative flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
-                                            onClick={() => setViewMode('reports')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('reports', viewMode === 'reports')}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIsReportsMenuOpen((prev) => !prev);
+                                            }}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('reports', isReportsActive)}`}
                                         >
                                             <BarChart size={16} /> Отчёты
+                                            <ChevronDown size={14} className={`transition-transform ${isReportsMenuOpen ? 'rotate-180' : ''}`} />
                                         </button>
+                                        {isReportsMenuOpen && (
+                                            <div
+                                                className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('reports');
+                                                        setIsReportsMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'reports' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <BarChart size={16} /> Отчёты по производству
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('shift_reports');
+                                                        setIsReportsMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'shift_reports' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <Calendar size={16} /> Отчёты по сменам
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Production Menu Item */}
@@ -510,6 +542,7 @@ export default function App() {
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
                         {viewMode === 'reports' && <ReportsView />}
+                        {viewMode === 'shift_reports' && <ShiftReportsView />}
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
                         {viewMode === 'raw_data' && <RawDataView />}

@@ -263,9 +263,6 @@ const PlansView = () => {
                     </div>
                     <div>
                         <h2 className="text-lg font-bold text-slate-800">Планы</h2>
-                        <div className="text-xs text-slate-500">
-                            Активный план: {activePlan?.name || 'не выбран'}
-                        </div>
                     </div>
                 </div>
                 <div className="flex items-center gap-3">

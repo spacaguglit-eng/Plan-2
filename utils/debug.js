@@ -10,6 +10,14 @@ export const DEBUG_CATEGORIES = {
         label: 'Планы',
         description: 'Загрузка/сохранение планов, RESTORE, CREATE, LOAD, DELETE, REMOTE SYNC с Firebase'
     },
+    planning: {
+        label: 'Планирование (график)',
+        description: 'Линии графика (lineOptions), загрузка очереди, применение состояния из плана/localStorage'
+    },
+    sync: {
+        label: 'Синхронизация (SYNC)',
+        description: 'Запись в облако, pending, применение снапшота из облака, applyField, пропуски по rev'
+    },
     roster: {
         label: 'Справочник (Roster)',
         description: 'Парсинг листа Люд, создание линий, позиций, резерв'
@@ -21,6 +29,10 @@ export const DEBUG_CATEGORIES = {
     workerTransition: {
         label: 'Worker: Transition Optimizer',
         description: 'Правила переходов в воркере оптимизации'
+    },
+    production: {
+        label: 'Производство (Production)',
+        description: 'Отправка файлов воркеру, инициализация production worker'
     }
 };
 

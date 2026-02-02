@@ -13,6 +13,7 @@ import {
     normalizeName,
     matchNames,
     isLineMatch,
+    expandCompositeLineKey,
     cyrb53,
     parseWorkerStatus,
     checkWorkerAvailability,
@@ -155,7 +156,7 @@ export const DataProvider = ({ children }) => {
         setRemoteFlushSuccessCallback((keys) => {
             setSyncStatus('idle');
             if (Array.isArray(keys) && keys.length > 0) {
-                console.log('[SYNC] Успешная запись в облако:', keys, '(pending не снимаем — снимем только когда снапшот из облака совпадёт с нашими данными)');
+                debugLog('sync', 'Успешная запись в облако:', keys, '(pending не снимаем — снимем только когда снапшот из облака совпадёт с нашими данными)');
             }
         });
         return () => setRemoteFlushSuccessCallback(null);
@@ -171,7 +172,7 @@ export const DataProvider = ({ children }) => {
             const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
             pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
             pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
-            console.log('[SYNC] persistStateKey: добавлен в pending', key, 'rev:', meta.rev);
+            debugLog('sync', 'persistStateKey: добавлен в pending', key, 'rev:', meta.rev);
             setPendingUpdates(prev => ({ ...prev, [key]: value }));
             setPendingMeta(prev => ({ ...prev, [key]: meta }));
             saveRemoteStateKey(key, value, meta).catch(err => console.error(`Error saving ${key} to remote:`, err));
@@ -280,7 +281,7 @@ export const DataProvider = ({ children }) => {
         if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
 
         // lineTemplates, floaters, workerRegistry восстанавливаем из roster — чтобы новые линии из Excel не терялись при смене плана
-        let lineTemplatesToApply = planData.lineTemplates || {};
+        let lineTemplatesToApply = normalizeLineTemplates(planData.lineTemplates || {});
         let floatersToApply = planData.floaters || { day: [], night: [] };
         let workerRegistryToApply = hydrateWorkerRegistry(planData.workerRegistry || {});
         if (nextRaw.demand && nextRaw.roster) {
@@ -303,7 +304,7 @@ export const DataProvider = ({ children }) => {
             registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
         });
         persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
-        setManualAssignments(planData.manualAssignments || {});
+        setManualAssignments(normalizeManualAssignments(planData.manualAssignments || {}));
         const savedManualLines = planData.manualLines || loadFromLocalStorage(STORAGE_KEYS.MANUAL_LINES, {});
         setManualLines(savedManualLines);
         const savedClones = planData.assignmentClones || loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
@@ -460,11 +461,19 @@ export const DataProvider = ({ children }) => {
         const pending = pendingUpdatesRef.current;
         const pendingMetaMap = pendingMetaRef.current;
         const pendingKeys = Object.keys(pending);
-        console.log('[SYNC] Применение снапшота из облака. Pending ключи:', pendingKeys.length ? pendingKeys : '(нет)');
+        debugLog('sync', 'Применение снапшота из облака. Pending ключи:', pendingKeys.length ? pendingKeys : '(нет)');
+        const setLineTemplatesNorm = (updater) => setLineTemplates((prev) => {
+            const next = typeof updater === 'function' ? updater(prev) : updater;
+            return (next != null && typeof next === 'object' && !Array.isArray(next) ? normalizeLineTemplates(next) : next) ?? prev;
+        });
+        const setManualAssignmentsNorm = (updater) => setManualAssignments((prev) => {
+            const next = typeof updater === 'function' ? updater(prev) : updater;
+            return (next != null && typeof next === 'object' && !Array.isArray(next) ? normalizeManualAssignments(next) : next) ?? prev;
+        });
         applyRemoteSnapshotFromService(remoteSnapshot, {
             setSavedPlans,
             setCurrentPlanId,
-            setManualAssignments,
+            setManualAssignments: setManualAssignmentsNorm,
             setManualLines,
             setAssignmentClones,
             setAutoReassignEnabled,
@@ -473,7 +482,7 @@ export const DataProvider = ({ children }) => {
             setRawTables,
             setScheduleDates,
             setPlanHashes,
-            setLineTemplates,
+            setLineTemplates: setLineTemplatesNorm,
             setFloaters,
             setWorkerRegistry,
             applyPlanData,
@@ -502,7 +511,7 @@ export const DataProvider = ({ children }) => {
         }
         const remainingPending = Object.keys(nextPending);
         if (remainingPending.length > 0) {
-            console.log('[SYNC] После применения: оставшиеся в pending (не совпали с remote):', remainingPending);
+            debugLog('sync', 'После применения: оставшиеся в pending (не совпали с remote):', remainingPending);
         }
         pendingUpdatesRef.current = nextPending;
         setPendingUpdates(() => nextPending);
@@ -766,6 +775,37 @@ export const DataProvider = ({ children }) => {
         return cyrb53(`${dateStr}|${shiftNum}|${shiftType}|${linesFingerprint}`);
     };
 
+    /** Составные ключи "Линия 1-2" раскладывает в "Линия 1" и "Линия 2" с одинаковым составом. */
+    const normalizeLineTemplates = (templates) => {
+        const result = {};
+        Object.entries(templates || {}).forEach(([key, positions]) => {
+            expandCompositeLineKey(key).forEach((atomic) => {
+                result[atomic] = positions;
+            });
+        });
+        return result;
+    };
+
+    /** SlotId вида date_shift_lineName_role_index: составную линию раскладывает в отдельные ключи. */
+    const normalizeManualAssignments = (assignments) => {
+        const result = {};
+        Object.entries(assignments || {}).forEach(([slotId, value]) => {
+            const parts = slotId.split('_');
+            if (parts.length >= 5) {
+                const linePart = parts[2];
+                const expanded = expandCompositeLineKey(linePart);
+                expanded.forEach((atomic) => {
+                    const newParts = [...parts];
+                    newParts[2] = atomic;
+                    result[newParts.join('_')] = value;
+                });
+            } else {
+                result[slotId] = value;
+            }
+        });
+        return result;
+    };
+
     const preAnalyzeRoster = (rosterData) => {
         const templates = {};
         let lastLineName = '';
@@ -776,8 +816,11 @@ export const DataProvider = ({ children }) => {
             if (lineName) lastLineName = lineName;
             const countVal = cleanVal(row[6]);
             if (lineName && role && !role.toLowerCase().includes('подсобник')) {
-                if (!templates[lineName]) templates[lineName] = [];
-                templates[lineName].push({ role, count: parseInt(countVal) || 1 });
+                const entry = { role, count: parseInt(countVal) || 1 };
+                expandCompositeLineKey(lineName).forEach((atomic) => {
+                    if (!templates[atomic]) templates[atomic] = [];
+                    templates[atomic].push(entry);
+                });
             }
         });
         return { templates };
@@ -830,10 +873,8 @@ export const DataProvider = ({ children }) => {
             }
 
             if (lineName && role) {
-                if (!templates[lineName]) {
-                    templates[lineName] = [];
-                    debugLog('roster', `Новая линия: "${lineName}"`);
-                }
+                const atomicLines = expandCompositeLineKey(lineName);
+                const homeLine = atomicLines[0];
                 const rosterMap = {};
                 shiftConfig.forEach(cfg => {
                     const rawName = cleanVal(row[cfg.n]);
@@ -846,7 +887,7 @@ export const DataProvider = ({ children }) => {
                             const parsedStatus = parseWorkerStatus(rawStat);
                             const comps = rawComp ? rawComp.split(/[,;]+/).map(s => s.trim()) : [];
                             if (!registry[name]) {
-                                registry[name] = { name, role, homeLine: lineName, competencies: new Set(comps), status: parsedStatus };
+                                registry[name] = { name, role, homeLine, competencies: new Set(comps), status: parsedStatus };
                             } else {
                                 comps.forEach(c => registry[name].competencies.add(c));
                                 if (!registry[name].status && parsedStatus) registry[name].status = parsedStatus;
@@ -854,8 +895,15 @@ export const DataProvider = ({ children }) => {
                         });
                     }
                 });
-                templates[lineName].push({ role, count: parseInt(countVal) || 1, roster: rosterMap });
-                debugLog('roster', `Строка ${rowIdx + 2}: линия="${lineName}" роль="${role}" норма=${parseInt(countVal) || 1}`);
+                const entry = { role, count: parseInt(countVal) || 1, roster: rosterMap };
+                atomicLines.forEach((atomic) => {
+                    if (!templates[atomic]) {
+                        templates[atomic] = [];
+                        debugLog('roster', `Новая линия: "${atomic}"`);
+                    }
+                    templates[atomic].push(entry);
+                });
+                debugLog('roster', `Строка ${rowIdx + 2}: линия="${lineName}"→[${atomicLines.join(', ')}] роль="${role}" норма=${parseInt(countVal) || 1}`);
             } else {
                 debugLog('roster', `Строка ${rowIdx + 2} пропущена: E="${row[4]}" F="${row[5]}"`);
             }
@@ -1397,6 +1445,32 @@ export const DataProvider = ({ children }) => {
         setPlanningStateVersion(v => v + 1);
     }, [savedPlans]);
 
+    const updateOperationalTimeline = useCallback((updater) => {
+        if (!currentPlanId || typeof updater !== 'function') return;
+        savedPlansSourceRef.current = 'updateOperationalTimeline';
+        setSavedPlans(prev => {
+            const idx = prev.findIndex(p => p.id === currentPlanId);
+            if (idx === -1) return prev;
+            const nextData = { ...prev[idx].data, operationalTimeline: updater(prev[idx].data?.operationalTimeline ?? null) };
+            const next = [...prev];
+            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
+            return next;
+        });
+    }, [currentPlanId]);
+
+    const updateOperationalFacts = useCallback((updater) => {
+        if (!currentPlanId || typeof updater !== 'function') return;
+        savedPlansSourceRef.current = 'updateOperationalFacts';
+        setSavedPlans(prev => {
+            const idx = prev.findIndex(p => p.id === currentPlanId);
+            if (idx === -1) return prev;
+            const nextData = { ...prev[idx].data, operationalFacts: updater(prev[idx].data?.operationalFacts ?? null) };
+            const next = [...prev];
+            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
+            return next;
+        });
+    }, [currentPlanId]);
+
     const setPlanType = useCallback((planId, type) => {
         if (isReadOnly) {
             notify({ type: 'error', message: 'Вы вошли как гость. Изменение типа недоступно.' });
@@ -1479,9 +1553,13 @@ export const DataProvider = ({ children }) => {
             if (idx === -1) return prev;
             
             const existingPlanningState = prev[idx]?.data?.planningState;
+            const existingOperationalTimeline = prev[idx]?.data?.operationalTimeline;
+            const existingOperationalFacts = prev[idx]?.data?.operationalFacts;
             const mergedData = {
                 ...snapshot,
-                planningState: existingPlanningState ?? snapshot.planningState ?? null
+                planningState: existingPlanningState ?? snapshot.planningState ?? null,
+                operationalTimeline: existingOperationalTimeline ?? null,
+                operationalFacts: existingOperationalFacts ?? null
             };
             const currentDataStr = JSON.stringify(prev[idx].data);
             const newDataStr = JSON.stringify(mergedData);
@@ -2944,13 +3022,13 @@ export const DataProvider = ({ children }) => {
         savedPlans: display.savedPlans, currentPlanId: display.currentPlanId, isLocked,
         setCurrentPlanId,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
-        loadPlan, loadPlanQueue, setPlanType, deletePlan,
+        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
         createPlanFromSchedule, comparePlanSnapshots
     }), [
         display.savedPlans, display.currentPlanId, isLocked,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
-        loadPlan, loadPlanQueue, setPlanType, deletePlan,
+        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
         createPlanFromSchedule, comparePlanSnapshots
     ]);
@@ -3000,6 +3078,8 @@ export const DataProvider = ({ children }) => {
         saveCurrentAsNewPlan,
         loadPlan,
         loadPlanQueue,
+        updateOperationalTimeline,
+        updateOperationalFacts,
         setPlanType,
         deletePlan,
         importPlanFromJson,
@@ -3047,6 +3127,8 @@ export const DataProvider = ({ children }) => {
         saveCurrentAsNewPlan,
         loadPlan,
         loadPlanQueue,
+        updateOperationalTimeline,
+        updateOperationalFacts,
         setPlanType,
         deletePlan,
         importPlanFromJson,

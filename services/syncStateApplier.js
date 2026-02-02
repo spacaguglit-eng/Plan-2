@@ -1,4 +1,5 @@
 import { STORAGE_KEYS } from '../utils';
+import { log as debugLog } from '../utils/debug';
 
 const hasPlanEvents = (p) =>
     (p?.data?.planningState?.products?.length ?? 0) + (p?.data?.planningState?.cipBetween?.length ?? 0) > 0;
@@ -59,8 +60,8 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     const pendingMetaMap = (typeof getPendingMeta === 'function' ? getPendingMeta() : pendingMetaState) || {};
     const skippedKeys = [];
     const pendingKeysList = Object.keys(pending);
-    console.log('[SYNC] applyRemoteSnapshot: ключи в snapshot:', Object.keys(snapshot || {}));
-    console.log('[SYNC] applyRemoteSnapshot: pending ключи', pendingKeysList.length ? pendingKeysList : '(нет)', 'currentPlanId:', currentPlanId);
+    debugLog('sync', 'applyRemoteSnapshot: ключи в snapshot:', Object.keys(snapshot || {}));
+    debugLog('sync', 'applyRemoteSnapshot: pending ключи', pendingKeysList.length ? pendingKeysList : '(нет)', 'currentPlanId:', currentPlanId);
 
     const unwrap = (entry) => {
         if (entry && typeof entry === 'object' && 'value' in entry) {
@@ -77,7 +78,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
             const localRev = Number(localMeta.rev ?? 0);
             if (remoteRev <= localRev) {
                 skippedKeys.push(`${key}(rev ${remoteRev}<=${localRev})`);
-                console.log('[SYNC] shouldSkip: пропуск по rev', key, 'remoteRev', remoteRev, '<= localRev', localRev);
+                debugLog('sync', 'shouldSkip: пропуск по rev', key, 'remoteRev', remoteRev, '<= localRev', localRev);
                 return true;
             }
         }
@@ -86,7 +87,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
                 const same = JSON.stringify(pending[key]) === JSON.stringify(remoteVal);
                 if (!same) {
                     skippedKeys.push(`${key}(pending mismatch)`);
-                    console.log('[SYNC] shouldSkip: пропуск по pending mismatch', key);
+                    debugLog('sync', 'shouldSkip: пропуск по pending mismatch', key);
                     return true;
                 }
             } catch {
@@ -100,7 +101,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         const entry = snapshot[key];
         if (entry === undefined || entry === null) return;
         if (shouldSkip(key, entry)) return;
-        console.log('[SYNC] applyField: применяем из снапшота', key);
+        debugLog('sync', 'applyField: применяем из снапшота', key);
         const { value: valueToSet } = unwrap(entry);
         setter((prev) => {
             const stringifiedPrev = JSON.stringify(prev);
@@ -115,12 +116,12 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     const pendingPlanningState = pending[STORAGE_KEYS.PLANNING_STATE];
     const hasPendingPlanningState = pendingPlanningState != null && typeof pendingPlanningState === 'object';
     if (hasPendingPlanningState) {
-        console.log('[SYNC] Есть pending PLANNING_STATE — будем подмешивать в текущий план');
+        debugLog('sync', 'Есть pending PLANNING_STATE — будем подмешивать в текущий план');
     }
 
     if (remotePlans) {
         if (shouldSkip(STORAGE_KEYS.SAVED_PLANS, remotePlansEntry)) {
-            console.log('[SYNC] SAVED_PLANS: пропуск (pending/ревизия новее локально)');
+            debugLog('sync', 'SAVED_PLANS: пропуск (pending/ревизия новее локально)');
             debugPlans?.('REMOTE SYNC: пропустили SAVED_PLANS (pending/ревизия новее локально)');
         } else {
             debugPlans?.('REMOTE SYNC получено из Firebase', remotePlans);
@@ -177,7 +178,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
                             if (hasPendingPlanningState) merged.push('planningState');
                             if (pending[STORAGE_KEYS.MANUAL_LINES] != null) merged.push('manualLines');
                             if (pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] != null) merged.push('manualAssignments');
-                            console.log('[SYNC] applyPlanData: подмешиваем локальный pending в данные плана:', merged);
+                            debugLog('sync', 'applyPlanData: подмешиваем локальный pending в данные плана:', merged);
                             dataToApply = {
                                 ...planToLoad.data,
                                 ...(hasPendingPlanningState && { planningState: pendingPlanningState }),
@@ -221,7 +222,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
 
     if (skippedKeys.length > 0) {
         const msg = `REMOTE SYNC: пропущены поля (локальные pending/ревизия новее) [${currentClientId ?? 'unknown'}]: ${skippedKeys.join(', ')}`;
-        console.log('[SYNC] Итого пропущенные поля:', skippedKeys);
+        debugLog('sync', 'Итого пропущенные поля:', skippedKeys);
         debugPlans?.(msg);
         if (typeof addSyncLogMessage === 'function') {
             addSyncLogMessage({ id: `sync-skip-${Date.now()}`, type: 'info', message: msg, timestamp: new Date().toISOString() });

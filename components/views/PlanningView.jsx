@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, CalendarDays, Droplet, Plus, Clock4, Database, GripVertical, Trash2, BarChart2, Package, Zap, Beaker, GitBranch, ChevronDown, ChevronRight, Replace } from 'lucide-react';
-import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce } from '../../utils';
+import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce, isLineMatch, expandCompositeLineKey } from '../../utils';
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
@@ -436,13 +436,35 @@ const PlanningView = () => {
         []
     );
     const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, persistStateKey } = useData();
+    const getTemplateKeyForLine = useCallback((line) => {
+        if (!line || !lineTemplates) return line;
+        const key = Object.keys(lineTemplates).find((k) => isLineMatch(line, k));
+        return key ?? line;
+    }, [lineTemplates]);
     const lineOptions = useMemo(() => {
         const keys = Object.keys(lineTemplates || {});
         if (keys.length === 0) return DEFAULT_LINE_OPTIONS;
-        const set = new Set(keys);
-        const sameAsDefault = DEFAULT_LINE_OPTIONS.length === keys.length && DEFAULT_LINE_OPTIONS.every(l => set.has(l));
-        return sameAsDefault ? DEFAULT_LINE_OPTIONS : [...keys].sort();
+        const expanded = keys.flatMap((k) => expandCompositeLineKey(k));
+        const unique = Array.from(new Set(expanded));
+        const filtered = unique.filter((name) => !/^Резерв\s/i.test(String(name)));
+        const extractNum = (s) => {
+            const m = String(s).match(/Линия\s*(\d+)/i);
+            return m ? parseInt(m[1], 10) : null;
+        };
+        const sorted = filtered.sort((a, b) => {
+            const na = extractNum(a);
+            const nb = extractNum(b);
+            if (na != null && nb != null) return na - nb;
+            if (na != null) return -1;
+            if (nb != null) return 1;
+            return String(a).localeCompare(b, undefined, { numeric: true });
+        });
+        debugLog('planning', 'lineOptions для графика', { rawKeys: keys, expanded: unique, excluded: unique.filter((n) => /^Резерв\s/i.test(String(n))), result: sorted });
+        return sorted.length ? sorted : DEFAULT_LINE_OPTIONS;
     }, [lineTemplates]);
+    const lineMatchesSelected = useCallback((line, selected) => {
+        return line === selected || (!!line && !!selected && isLineMatch(line, selected));
+    }, []);
     const activePlan = useMemo(
         () => savedPlans?.find(p => p.id === currentPlanId) ?? null,
         [savedPlans, currentPlanId]
@@ -559,6 +581,7 @@ const PlanningView = () => {
     const transitionWorkerRef = useRef(null);
     const transitionSaveTimeoutRef = useRef(null);
     const normalizedLinesRef = useRef(false);
+    const skipNextLocalStorageApplyRef = useRef(false);
     const baseProductByName = useMemo(
         () => new Map(baseProducts.map((product) => [product.name, product])),
         [baseProducts]
@@ -613,15 +636,15 @@ const PlanningView = () => {
 
     const lineTransitionKeys = useMemo(() => (
         products
-            .filter(product => product.line === selectedPlanLine)
+            .filter(product => lineMatchesSelected(product.line, selectedPlanLine))
             .map(product => getTransitionKeyForName(product.name))
-    ), [products, selectedPlanLine, getTransitionKeyForName]);
+    ), [products, selectedPlanLine, getTransitionKeyForName, lineMatchesSelected]);
 
     const buildMissingTransitionMap = useCallback((line) => {
         const map = new Map();
         const lineProducts = products
             .map((product, index) => ({ product, index }))
-            .filter(({ product }) => product.line === line);
+            .filter(({ product }) => lineMatchesSelected(product.line, line));
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
@@ -633,7 +656,7 @@ const PlanningView = () => {
             }
         }
         return map;
-    }, [products, transitionRuleMap, getTransitionKeyForName]);
+    }, [products, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected]);
 
     const missingTransitionByIndex = useMemo(
         () => buildMissingTransitionMap(selectedPlanLine),
@@ -657,7 +680,8 @@ const PlanningView = () => {
             if (!re) return null;
             const event = lineEvents.find(e => re.test(e.category));
             if (!event) return null;
-            const raw = event.durations?.[selectedPlanLine];
+            const templateKey = getTemplateKeyForLine(selectedPlanLine);
+            const raw = event.durations?.[selectedPlanLine] ?? event.durations?.[templateKey];
             if (raw === '' || raw === null || raw === undefined) return null;
             const value = Number(raw);
             return Number.isFinite(value) ? value : null;
@@ -690,7 +714,7 @@ const PlanningView = () => {
         const was = getTransitions(lineTransitionKeys);
         const now = getTransitions(optimizedOrderKeys);
         return { was, now };
-    }, [lineEvents, selectedPlanLine, transitionRuleMap, lineTransitionKeys, optimizedOrderKeys]);
+    }, [lineEvents, selectedPlanLine, transitionRuleMap, lineTransitionKeys, optimizedOrderKeys, getTemplateKeyForLine]);
 
     const TRANSITION_PAGE_SIZE = 20;
 
@@ -832,22 +856,63 @@ const PlanningView = () => {
     }, [products, cipBetween, selectedPlanLine]);
 
     useEffect(() => {
-        const loaded = planningStateToLoad || (planningStateVersion > 0 ? loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}) : null);
-        if (!loaded || typeof loaded !== 'object') return;
-        if (Array.isArray(loaded.products)) setProducts(loaded.products);
-        if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
-        if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
-        if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
-        if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
-        if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
-        if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
-        if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
-        if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
-        if (loaded.exportType) setExportType(loaded.exportType);
-        if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
-        if (loaded.activeTab) setActiveTab(loaded.activeTab);
-        if (planningStateToLoad && setPlanningStateToLoad) setPlanningStateToLoad(null);
+        if (planningStateToLoad && typeof planningStateToLoad === 'object') {
+            const loaded = planningStateToLoad;
+            const source = 'planningStateToLoad';
+            debugLog('planning', 'apply loaded state', { source, activeTab: loaded.activeTab, productsCount: loaded.products?.length, cipCount: loaded.cipBetween?.length });
+            if (Array.isArray(loaded.products)) setProducts(loaded.products);
+            if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
+            if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
+            if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
+            if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
+            if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
+            if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
+            if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
+            if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
+            if (loaded.exportType) setExportType(loaded.exportType);
+            if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
+            if (loaded.activeTab) {
+                debugLog('planning', 'setActiveTab from loaded', loaded.activeTab);
+                setActiveTab(loaded.activeTab);
+            }
+            skipNextLocalStorageApplyRef.current = true;
+            if (setPlanningStateToLoad) setPlanningStateToLoad(null);
+            return;
+        }
+        if (planningStateVersion > 0) {
+            if (skipNextLocalStorageApplyRef.current) {
+                skipNextLocalStorageApplyRef.current = false;
+                debugLog('planning', 'skip localStorage apply (just applied plan queue)');
+                return;
+            }
+            const loaded = loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {});
+            if (!loaded || typeof loaded !== 'object') return;
+            const source = 'localStorage';
+            debugLog('planning', 'apply loaded state', { source, activeTab: loaded.activeTab, productsCount: loaded.products?.length, cipCount: loaded.cipBetween?.length });
+            if (Array.isArray(loaded.products)) setProducts(loaded.products);
+            if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
+            if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
+            if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
+            if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
+            if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
+            if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
+            if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
+            if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
+            if (loaded.exportType) setExportType(loaded.exportType);
+            if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
+            if (loaded.activeTab) {
+                debugLog('planning', 'setActiveTab from loaded', loaded.activeTab);
+                setActiveTab(loaded.activeTab);
+            }
+        }
     }, [planningStateVersion, planningStateToLoad, setPlanningStateToLoad]);
+
+    useEffect(() => {
+        if (activeTab === 'schedule' && currentPlanId && activePlanHasQueue && loadPlanQueue) {
+            debugLog('planning', 'schedule tab: auto loadPlanQueue', { currentPlanId, activePlanHasQueue });
+            loadPlanQueue(currentPlanId);
+        }
+    }, [activeTab, currentPlanId, activePlanHasQueue, loadPlanQueue]);
 
     useEffect(() => {
         if (!useStoredTransitionRules) {
@@ -1107,13 +1172,13 @@ const PlanningView = () => {
     const productsWithoutRules = useMemo(() => {
         const keys = new Set();
         products
-            .filter((p) => p.line === selectedPlanLine && p.name)
+            .filter((p) => lineMatchesSelected(p.line, selectedPlanLine) && p.name)
             .forEach((p) => {
                 const key = getTransitionKeyForName(p.name);
                 if (key && !transitionRuleMap.has(key)) keys.add(key);
             });
         return Array.from(keys);
-    }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName]);
+    }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected]);
 
     const addMissingProductsAsRules = () => {
         if (productsWithoutRules.length === 0) return;
@@ -1177,35 +1242,19 @@ const PlanningView = () => {
         }
         if (!transitionWorkerRef.current) return;
         const lineProducts = products
-            .filter(product => product.line === selectedPlanLine)
+            .filter(product => lineMatchesSelected(product.line, selectedPlanLine))
             .map(product => product.name)
             .filter(Boolean);
+        const templateKey = getTemplateKeyForLine(selectedPlanLine);
+        const dur = (event) => event?.durations?.[selectedPlanLine] ?? event?.durations?.[templateKey] ?? 0;
         const timeBudgetMs = 2500;
         const cipDurationsForOptimization = {
-            cip1: (() => {
-                const event = lineEvents.find(e => /CIP1/i.test(e.category));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            cip2: (() => {
-                const event = lineEvents.find(e => /CIP2/i.test(e.category));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            cip3: (() => {
-                const event = lineEvents.find(e => /CIP3/i.test(e.category));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            perenaladka: (() => {
-                const event = lineEvents.find(e => e.category && e.category.includes('Переналадка'));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            smenaAssortimenta: (() => {
-                const event = lineEvents.find(e => e.category && e.category.includes('Смена ассортимента'));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })(),
-            vytesnenie: (() => {
-                const event = lineEvents.find(e => e.category && e.category.includes('Вытеснение'));
-                return event?.durations?.[selectedPlanLine] || 0;
-            })()
+            cip1: dur(lineEvents.find(e => /CIP1/i.test(e.category))) || 0,
+            cip2: dur(lineEvents.find(e => /CIP2/i.test(e.category))) || 0,
+            cip3: dur(lineEvents.find(e => /CIP3/i.test(e.category))) || 0,
+            perenaladka: dur(lineEvents.find(e => e.category && e.category.includes('Переналадка'))) || 0,
+            smenaAssortimenta: dur(lineEvents.find(e => e.category && e.category.includes('Смена ассортимента'))) || 0,
+            vytesnenie: dur(lineEvents.find(e => e.category && e.category.includes('Вытеснение'))) || 0
         };
         debugLog('optimization', 'Line products:', lineProducts);
         debugLog('optimization', 'Transition rules:', transitionRules.map(r => r.productName));
@@ -1237,7 +1286,7 @@ const PlanningView = () => {
         const lineItems = [];
         const lineIndices = [];
         products.forEach((product, index) => {
-            if (product.line !== selectedPlanLine) return;
+            if (!lineMatchesSelected(product.line, selectedPlanLine)) return;
             lineIndices.push(index);
             lineItems.push({
                 index,
@@ -1293,7 +1342,7 @@ const PlanningView = () => {
 
         const lineProducts = nextProducts
             .map((product, index) => ({ product, index }))
-            .filter(({ product }) => product.line === selectedPlanLine);
+            .filter(({ product }) => lineMatchesSelected(product.line, selectedPlanLine));
         let missingRules = 0;
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
@@ -1334,7 +1383,7 @@ const PlanningView = () => {
         setTransitionError('');
         const lineProducts = products
             .map((product, index) => ({ product, index }))
-            .filter(({ product }) => product.line === selectedPlanLine);
+            .filter(({ product }) => lineMatchesSelected(product.line, selectedPlanLine));
         if (lineProducts.length < 2) {
             setTransitionError('Недостаточно продуктов для расстановки переходов.');
             return;
@@ -1564,7 +1613,8 @@ const PlanningView = () => {
             durations = eventDurationByKey[eventKey.split('__')[0]];
         }
         if (!durations) return 0;
-        const value = durations[lineName];
+        const templateKey = getTemplateKeyForLine(lineName);
+        const value = durations[lineName] ?? durations[templateKey];
         if (value !== undefined && value !== null && value !== '') {
             const n = Number.isFinite(value) ? value : parseNumeric(value);
             if (Number.isFinite(n)) return Math.max(0, n);
@@ -1592,7 +1642,7 @@ const PlanningView = () => {
         const rows = [];
         const safeMissing = missingMap || new Map();
         nextProducts.forEach((p, i) => {
-            if (p.line !== lineFilter) return;
+            if (!lineMatchesSelected(p.line, lineFilter)) return;
             rows.push({
                 kind: 'product',
                 index: i,
@@ -1603,7 +1653,7 @@ const PlanningView = () => {
                 const cip = nextCipBetween[i];
                 if (!cip) return;
                 const rowLine = cip.line || p.line || lineFilter;
-                if (rowLine !== lineFilter) return;
+                if (!lineMatchesSelected(rowLine, lineFilter)) return;
                 const eventKey = cip.eventKey || (eventOptions[0]?.key ?? '');
                 const rawCipMinutes = getEventDurationMinutes(eventKey, rowLine);
                 rows.push({
@@ -1759,7 +1809,7 @@ const PlanningView = () => {
             row[13] = shift.type || '';
             row[14] = shift.shiftId ? `Смена ${shift.shiftId}` : 'Смена';
             demandLineHeaders.forEach((line, idx) => {
-                const active = rows.some((r) => r.line === line && isRowActiveForShift(r, shift));
+                const active = rows.some((r) => lineMatchesSelected(r.line, line) && isRowActiveForShift(r, shift));
                 row[15 + idx] = active ? 1 : '';
             });
             table.push(row);
@@ -2074,19 +2124,15 @@ const PlanningView = () => {
                         <div className="flex-1 min-w-0">
                             <h1 className="text-xl font-semibold text-slate-800 tracking-tight">Планирование очередности розлива</h1>
                             <p className="text-sm text-slate-500 mt-0.5">Настройка графика и справочников для линии</p>
-                            {activePlanName && (
-                                activePlanHasQueue ? (
-                                    <button
-                                        type="button"
-                                        onClick={() => loadPlanQueue?.(currentPlanId)}
-                                        className="text-xs text-indigo-600 font-medium mt-1 hover:text-indigo-800 hover:underline text-left"
-                                        title="Загрузить очередь плана для редактирования"
-                                    >
-                                        Активный план: {activePlanName} →
-                                    </button>
-                                ) : (
-                                    <p className="text-xs text-slate-500 mt-1">Активный план: {activePlanName}</p>
-                                )
+                            {activePlanHasQueue && (
+                                <button
+                                    type="button"
+                                    onClick={() => loadPlanQueue?.(currentPlanId)}
+                                    className="text-xs text-indigo-600 font-medium mt-1 hover:text-indigo-800 hover:underline text-left"
+                                    title="Загрузить очередь плана для редактирования"
+                                >
+                                    Загрузить очередь плана →
+                                </button>
                             )}
                         </div>
                         <div className="flex items-center gap-4 shrink-0">
