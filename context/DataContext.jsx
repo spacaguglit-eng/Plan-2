@@ -192,6 +192,7 @@ export const DataProvider = ({ children }) => {
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
+    const hasAutoLoadedLastPlanRef = useRef(false);
     const draftPlanIdRef = useRef(null);
 
     const TARGET_CONFIG = useMemo(() => ([
@@ -336,16 +337,7 @@ export const DataProvider = ({ children }) => {
                     const preferredId = storedCurrentPlanId || storedPlans.find(p => p.type === 'Operational')?.id || storedPlans[0].id;
                     setCurrentPlanId(preferredId);
                     const selectedPlan = storedPlans.find(p => p.id === preferredId);
-                    if (selectedPlan?.data) {
-                        isLoadingPlanRef.current = true;
-                        applyPlanData(selectedPlan.data);
-                        if (selectedPlan.data.planningState) {
-                            persistStateKey(STORAGE_KEYS.PLANNING_STATE, selectedPlan.data.planningState);
-                            setPlanningStateToLoad(selectedPlan.data.planningState);
-                        }
-                        isLoadingPlanRef.current = false;
-                    } else {
-                        // Есть планы, но нет данных в выбранном - переходим в менеджер планов
+                    if (!selectedPlan?.data) {
                         setStep('dashboard');
                         setViewMode('plans');
                     }
@@ -1585,6 +1577,17 @@ export const DataProvider = ({ children }) => {
         manualAssignments,
         manualLines
     ]);
+
+    // Автозагрузка последнего активного плана после восстановления (localStorage или облако).
+    useEffect(() => {
+        if (restoring) return;
+        if (hasAutoLoadedLastPlanRef.current) return;
+        if (!currentPlanId || !savedPlans.length) return;
+        const plan = savedPlans.find(p => p.id === currentPlanId);
+        if (!plan?.data) return;
+        hasAutoLoadedLastPlanRef.current = true;
+        loadPlan(currentPlanId, { switchToDashboard: false });
+    }, [restoring, currentPlanId, savedPlans, loadPlan]);
 
     const handleDragStart = useCallback((e, worker) => {
         if (isReadOnly) {

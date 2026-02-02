@@ -421,7 +421,16 @@ function applyAllFacts(planFlat, operationalFacts, boundaries, scheduleDates) {
         }
         return String(a.key).localeCompare(String(b.key));
     });
-    if (entries.length === 0) return assignSegmentIds(planFlat);
+    // Даже без фактов разбиваем план по границам смен (продукт, переходящий через ночь → два сегмента).
+    if (entries.length === 0) {
+        let safeBoundaries = boundaries;
+        if (!safeBoundaries.length && planFlat.length) {
+            const planDates = [...new Set(planFlat.map((e) => e.date).filter(Boolean))];
+            safeBoundaries = getShiftBoundariesForDates(planDates);
+        }
+        const withSplits = recalcTail(planFlat, -1, null, null, null, null, null, safeBoundaries, scheduleDates);
+        return assignSegmentIds(withSplits);
+    }
 
     let expanded = assignSegmentIds(planFlat.map((e) => ({ ...e })));
     if (typeof window !== 'undefined') window.__shiftReportsLog = true;
