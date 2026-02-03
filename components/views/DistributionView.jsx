@@ -55,6 +55,9 @@ const DistributionView = () => {
                             {status && !status.permanent && (
                                 <div className="text-[10px] opacity-75">{status.raw}</div>
                             )}
+                            {reg?.fiveDay && (
+                                <div className="text-[10px] text-blue-600 font-medium mt-0.5">Пятидневка</div>
+                            )}
                             {reg?.competencies.size > 0 && (
                                 <div className="text-[9px] text-slate-400 mt-0.5 truncate max-w-[150px]">
                                     {Array.from(reg.competencies).join(', ')}

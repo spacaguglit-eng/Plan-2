@@ -200,7 +200,7 @@ export const UpdateReportModal = ({ data, onClose }) => {
     );
 };
 
-export const RvPickerModal = ({ isOpen, onClose, slotData, lineTemplates, workerRegistry, globalSchedule, scheduleDates, currentShiftId, onAssign }) => {
+export const RvPickerModal = ({ isOpen, onClose, slotData, lineTemplates, workerRegistry, globalSchedule, scheduleDates, onAssign }) => {
     const [showAll, setShowAll] = useState(false);
 
     if (!isOpen || !slotData) return null;
@@ -477,6 +477,7 @@ export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, au
 export const EditWorkerModal = ({ worker, onClose, onSave, onDelete, workerRegistry, lineTemplates }) => {
     const [name, setName] = useState(worker ? worker.name : '');
     const [statusType, setStatusType] = useState(worker?.status?.type || 'active');
+    const [fiveDay, setFiveDay] = useState(worker?.fiveDay ?? false);
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
     const [selectedCompetencies, setSelectedCompetencies] = useState(
@@ -551,7 +552,8 @@ export const EditWorkerModal = ({ worker, onClose, onSave, onDelete, workerRegis
             oldName: worker ? worker.name : null,
             newName: name.trim(),
             competencies: compSet,
-            status: newStatus
+            status: newStatus,
+            fiveDay
         });
         onClose();
     };
@@ -627,9 +629,9 @@ export const EditWorkerModal = ({ worker, onClose, onSave, onDelete, workerRegis
 
                     <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Статус</label>
-                        <div className="flex gap-2 mb-3">
+                        <div className="flex gap-2 mb-3 flex-wrap">
                             {['active', 'vacation', 'sick', 'fired'].map(t => (
-                                <button key={t} onClick={() => setStatusType(t)} className={`flex-1 py-1.5 text-xs font-bold rounded capitalize border ${statusType === t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>
+                                <button key={t} onClick={() => setStatusType(t)} className={`flex-1 min-w-[80px] py-1.5 text-xs font-bold rounded capitalize border ${statusType === t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}>
                                     {t === 'active' ? 'Работает' : (t === 'vacation' ? 'Отпуск' : (t === 'sick' ? 'Болеет' : 'Уволен'))}
                                 </button>
                             ))}
@@ -641,6 +643,10 @@ export const EditWorkerModal = ({ worker, onClose, onSave, onDelete, workerRegis
                                 <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="flex-1 border border-slate-300 rounded p-1 text-xs" />
                             </div>
                         )}
+                        <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                            <input type="checkbox" checked={fiveDay} onChange={e => setFiveDay(e.target.checked)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                            <span className="text-sm font-medium text-slate-700">Пятидневка (только дневная смена)</span>
+                        </label>
                     </div>
                 </div>
                 <div className="bg-slate-50 px-6 py-4 border-t border-slate-200 flex justify-between rounded-b-2xl">

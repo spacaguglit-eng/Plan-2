@@ -15,6 +15,7 @@ import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
+import BothPlansTableView from './components/views/BothPlansTableView';
 import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
@@ -31,6 +32,7 @@ export default function App() {
     const [adminError, setAdminError] = useState('');
     const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
     const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
+    const [isPlansMenuOpen, setIsPlansMenuOpen] = useState(false);
     const [isReportsMenuOpen, setIsReportsMenuOpen] = useState(false);
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
     const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
@@ -78,15 +80,16 @@ export default function App() {
     }, [viewMode, selectedDate]);
 
     useEffect(() => {
-        if (!isExtraMenuOpen && !isStaffMenuOpen && !isReportsMenuOpen) return;
+        if (!isExtraMenuOpen && !isStaffMenuOpen && !isPlansMenuOpen && !isReportsMenuOpen) return;
         const handleClickOutside = () => {
             setIsExtraMenuOpen(false);
             setIsStaffMenuOpen(false);
+            setIsPlansMenuOpen(false);
             setIsReportsMenuOpen(false);
         };
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
-    }, [isExtraMenuOpen, isStaffMenuOpen, isReportsMenuOpen]);
+    }, [isExtraMenuOpen, isStaffMenuOpen, isPlansMenuOpen, isReportsMenuOpen]);
 
     const isStaffView = ['dashboard', 'chess', 'employees_list', 'employees_roster', 'verification', 'all_employees']
         .includes(viewMode);
@@ -337,14 +340,47 @@ export default function App() {
                                         )}
                                     </div>
 
-                                    {/* Plans Menu Item */}
-                                    <div className="flex items-center border-l border-slate-300 ml-2 pl-2">
+                                    {/* Plans Menu */}
+                                    <div className="relative flex items-center border-l border-slate-300 ml-2 pl-2">
                                         <button
-                                            onClick={() => setViewMode('plans')}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans')}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIsPlansMenuOpen((prev) => !prev);
+                                            }}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans' || viewMode === 'both_plans')}`}
                                         >
                                             <FolderOpen size={16} /> Планы
+                                            <ChevronDown size={14} className={`transition-transform ${isPlansMenuOpen ? 'rotate-180' : ''}`} />
                                         </button>
+                                        {isPlansMenuOpen && (
+                                            <div
+                                                className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('plans');
+                                                        setIsPlansMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'plans' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <FolderOpen size={16} /> Список планов
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('both_plans');
+                                                        setIsPlansMenuOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
+                                                        viewMode === 'both_plans' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <FolderOpen size={16} /> Оба плана таблицей
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Reports Menu Item */}
@@ -541,6 +577,7 @@ export default function App() {
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
+                        {viewMode === 'both_plans' && <BothPlansTableView />}
                         {viewMode === 'reports' && <ReportsView />}
                         {viewMode === 'shift_reports' && <ShiftReportsView />}
                         {viewMode === 'production' && <ProductionView />}

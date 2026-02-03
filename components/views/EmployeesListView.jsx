@@ -79,6 +79,8 @@ const EmployeesListView = () => {
             if (statusFilter === 'active') {
                 if (w.status && !w.status.permanent && (w.status.type === 'vacation' || w.status.type === 'sick')) return false;
                 if (w.status?.type === 'fired') return false;
+            } else if (statusFilter === 'fiveDay') {
+                if (!w.fiveDay) return false;
             } else {
                 if (w.status?.type !== statusFilter) return false;
             }
@@ -163,6 +165,7 @@ const EmployeesListView = () => {
                             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-full text-sm border-slate-200 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 outline-none">
                                 <option value="">Все статусы</option>
                                 <option value="active">Работает (Активен)</option>
+                                <option value="fiveDay">Пятидневка</option>
                                 <option value="vacation">В отпуске</option>
                                 <option value="sick">На больничном</option>
                                 <option value="fired">Уволен</option>
@@ -207,6 +210,14 @@ const EmployeesListView = () => {
                                 statusBadge = <span className="px-2 py-1 rounded-md text-xs font-bold bg-red-100 text-red-700">Уволен</span>;
                             } else {
                                 statusBadge = <span className="px-2 py-1 rounded-md text-xs font-bold bg-green-50 text-green-600">Работает</span>;
+                            }
+                            if (worker.fiveDay) {
+                                statusBadge = (
+                                    <span className="flex items-center gap-1 flex-wrap">
+                                        {statusBadge}
+                                        <span className="px-2 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">Пятидневка</span>
+                                    </span>
+                                );
                             }
 
                             return (

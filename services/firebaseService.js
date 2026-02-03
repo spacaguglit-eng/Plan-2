@@ -2,7 +2,9 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
     getFirestore,
     doc,
+    collection,
     getDoc,
+    getDocs,
     setDoc,
     onSnapshot,
     serverTimestamp
@@ -75,6 +77,28 @@ export const subscribeToFirestoreDoc = (collectionName, docId, callback) => {
         const fromCache = snapshot.metadata?.fromCache ?? false;
         const hasPendingWrites = snapshot.metadata?.hasPendingWrites ?? false;
         callback(data, { fromCache, hasPendingWrites });
+    });
+};
+
+/** Читает все документы коллекции. Возвращает массив { id, data }. */
+export const readFirestoreCollection = async (collectionName) => {
+    const db = getFirestoreInstance();
+    if (!db) return [];
+    const colRef = collection(db, collectionName);
+    const snapshot = await getDocs(colRef);
+    return snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+};
+
+/** Подписка на изменения всей коллекции. callback(docs: { id, data }[]) вызывается при любом изменении. */
+export const subscribeToFirestoreCollection = (collectionName, callback) => {
+    const db = getFirestoreInstance();
+    if (!db) return () => {};
+    const colRef = collection(db, collectionName);
+    return onSnapshot(colRef, snapshot => {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const fromCache = snapshot.metadata?.fromCache ?? false;
+        const hasPendingWrites = snapshot.metadata?.hasPendingWrites ?? false;
+        callback(docs, { fromCache, hasPendingWrites });
     });
 };
 

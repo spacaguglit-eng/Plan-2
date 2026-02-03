@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useData } from '../../context/DataContext';
-import { normalizeName } from '../../utils';
+import { normalizeName, matchNames, cleanVal, extractShiftNumber, isLineMatch, normalizeExcelDate, formatDateLocal, expandCompositeLineKey } from '../../utils';
 import { 
     Users, 
     Clock, 
@@ -16,7 +16,8 @@ import {
     LayoutGrid,
     UserCircle2,
     Search,
-    X
+    X,
+    Bug
 } from 'lucide-react';
 
 const reportOptions = [
@@ -45,13 +46,15 @@ const changeLabels = {
     lost: 'Удаление',
     replaced: 'Замена',
     moved: 'Перемещение',
-    matched: 'Совпадает'
+    matched: 'Совпадает',
+    skud_only: 'Выход вне графика'
 };
 
 const isRvAssignment = (row) => row?.changeType === 'added' && (row?.assignmentType === 'external' || row?.factAssignmentType === 'external' || row?.factSlotMeta?.assignmentType === 'external');
 
 const getChangeLabel = (row) => {
     if (isRvAssignment(row)) return 'Выход по РВ';
+    if (row?.changeType === 'skud_only') return 'Выход вне графика';
     return changeLabels[row?.changeType] || row?.changeType || '';
 };
 
@@ -65,7 +68,8 @@ const changeColors = {
     lost: 'bg-rose-50 text-rose-700 border-rose-100',
     replaced: 'bg-amber-50 text-amber-700 border-amber-100',
     moved: 'bg-blue-50 text-blue-700 border-blue-100',
-    matched: 'bg-slate-50 text-slate-600 border-slate-100'
+    matched: 'bg-slate-50 text-slate-600 border-slate-100',
+    skud_only: 'bg-violet-50 text-violet-700 border-violet-100'
 };
 
 const emptySummary = () => ({ added: 0, lost: 0, replaced: 0, moved: 0 });
@@ -76,6 +80,133 @@ const slotMeta = (slot) => slot ? {
     source: slot.source || null
 } : { slotId: null, assignmentType: null, source: null };
 
+const normalizeManualRoleForId = (roleTitle) => {
+    return String(roleTitle || 'role').replace(/\s+/g, '_');
+};
+
+const createManualSlotId = (date, shiftId, lineId, roleTitle, index) => {
+    const roleKey = normalizeManualRoleForId(roleTitle);
+    return `${date}_${shiftId}_manual_${lineId}_${roleKey}_${index}`;
+};
+
+const buildPlanLineDailyCounts = (planData) => {
+    const demandData = planData?.rawTables?.demand;
+    const templates = planData?.lineTemplates || {};
+    const assignments = planData?.manualAssignments || {};
+    const manualLines = planData?.manualLines || {};
+    const useRosterAsFill = planData?.autoReassignEnabled !== false;
+    if (!Array.isArray(demandData) || demandData.length === 0) return {};
+
+    const headers = Array.isArray(demandData[0]) ? demandData[0] : [];
+    const result = new Map();
+
+    const rowAt = (row, idx) => {
+        if (row == null) return undefined;
+        if (Array.isArray(row)) return row[idx];
+        if (typeof row === 'object') return row[idx] ?? row[String(idx)];
+        return undefined;
+    };
+
+    const splitNames = (val) => {
+        if (!val) return [];
+        return String(val)
+            .split(/[,;\n/]+/)
+            .map(s => s.trim())
+            .filter(s => s.length > 1);
+    };
+
+    const getRosterNames = (pos, shiftNum) => {
+        const roster = pos?.roster;
+        if (!roster) return [];
+        const val = roster[shiftNum] ?? roster[String(shiftNum)] ?? roster[Number(shiftNum)];
+        return splitNames(val);
+    };
+
+    const ensureLine = (dateStr, lineName) => {
+        if (!result.has(dateStr)) result.set(dateStr, new Map());
+        const dateMap = result.get(dateStr);
+        if (!dateMap.has(lineName)) dateMap.set(lineName, { filled: 0, unique: new Set() });
+        return dateMap.get(lineName);
+    };
+
+    demandData.slice(1).forEach(row => {
+        if (!row) return;
+        const dateVal = rowAt(row, 11);
+        const normalizedDate = normalizeExcelDate(dateVal);
+        if (!normalizedDate) return;
+        const dateStr = formatDateLocal(normalizedDate);
+        if (!dateStr || dateStr.length < 5) return;
+
+        const shiftRaw = cleanVal(rowAt(row, 14));
+        const shiftNum = extractShiftNumber(shiftRaw);
+        if (!shiftNum) return;
+
+        const activeLines = new Set();
+        for (let i = 15; i <= 26; i++) {
+            if ((parseInt(rowAt(row, i), 10) || 0) > 0) {
+                const headerName = cleanVal(rowAt(headers, i));
+                if (headerName) {
+                    expandCompositeLineKey(headerName).forEach(lineKey => {
+                        if (lineKey) activeLines.add(lineKey);
+                    });
+                }
+            }
+        }
+
+        Array.from(activeLines).forEach(activeLineName => {
+            const lineBucket = ensureLine(dateStr, activeLineName);
+            const templateName = Object.keys(templates).find(t => isLineMatch(activeLineName, t));
+            const positions = templateName ? templates[templateName] : [];
+            positions.forEach(pos => {
+                const assignedNamesList = getRosterNames(pos, shiftNum);
+                const totalSlots = Math.max(parseInt(pos?.count) || 1, assignedNamesList.length);
+                for (let i = 0; i < totalSlots; i++) {
+                    const slotId = `${dateStr}_${shiftNum}_${activeLineName}_${pos.role}_${i}`;
+                    const baseName = useRosterAsFill ? (assignedNamesList[i] || null) : null;
+                    const manual = assignments[slotId];
+                    let name = baseName;
+                    if (manual) {
+                        if (manual.type === 'vacancy') {
+                            name = null;
+                        } else {
+                            name = manual.name || baseName;
+                        }
+                    }
+                    if (name) {
+                        lineBucket.filled += 1;
+                        lineBucket.unique.add(name);
+                    }
+                }
+            });
+        });
+
+        const manualLineDefs = manualLines?.[`${dateStr}_${shiftNum}`] || [];
+        manualLineDefs.forEach(manualLine => {
+            const lineBucket = ensureLine(dateStr, manualLine.displayName || manualLine.id);
+            (manualLine.positions || []).forEach(pos => {
+                const count = Math.max(1, parseInt(pos.count, 10) || 1);
+                for (let idx = 0; idx < count; idx++) {
+                    const slotId = createManualSlotId(dateStr, shiftNum, manualLine.id, pos.roleTitle || pos.role, idx);
+                    const manual = assignments[slotId];
+                    const name = manual?.type === 'vacancy' ? null : (manual?.name || null);
+                    if (name) {
+                        lineBucket.filled += 1;
+                        lineBucket.unique.add(name);
+                    }
+                }
+            });
+        });
+    });
+
+    const output = {};
+    result.forEach((lineMap, dateStr) => {
+        output[dateStr] = {};
+        lineMap.forEach((value, lineName) => {
+            output[dateStr][lineName] = { filled: value.filled, unique: value.unique.size };
+        });
+    });
+    return output;
+};
 const buildSummaryFromRows = (rows) => {
     const summary = emptySummary();
     (rows || []).forEach(row => {
@@ -85,14 +216,102 @@ const buildSummaryFromRows = (rows) => {
     return summary;
 };
 
+const getSurnameNorm = (fullName) => {
+    const first = String(fullName || '').trim().split(/\s+/)[0] || '';
+    return normalizeName(first);
+};
+
+const buildFactMap = (dayFact) => {
+    if (!dayFact) return { byNormKey: new Map(), byNormRawName: new Map(), bySurname: new Map() };
+    const byNormKey = new Map();
+    const byNormRawName = new Map();
+    const bySurname = new Map();
+    Object.entries(dayFact).forEach(([key, value]) => {
+        if (!value) return;
+        const normKey = normalizeName(key);
+        byNormKey.set(normKey, value);
+        if (value.rawName) {
+            const normRawName = normalizeName(value.rawName);
+            byNormRawName.set(normRawName, value);
+            const surname = getSurnameNorm(value.rawName);
+            if (!bySurname.has(surname)) bySurname.set(surname, []);
+            bySurname.get(surname).push(value);
+        }
+    });
+    return { byNormKey, byNormRawName, bySurname };
+};
+
+const resolveFactEntry = (planName, factMap) => {
+    if (!planName || !factMap) return null;
+    const normName = normalizeName(planName);
+    let factEntry = factMap.byNormKey.get(normName) || factMap.byNormRawName.get(normName);
+    if (factEntry) return factEntry;
+    const surname = getSurnameNorm(planName);
+    const candidates = factMap.bySurname.get(surname) || [];
+    for (const candidate of candidates) {
+        if (candidate?.rawName && matchNames(planName, candidate.rawName)) return candidate;
+    }
+    return null;
+};
+
+const formatFactTime = (factEntry) => {
+    if (!factEntry) return '—';
+    if (factEntry.hasOvernightShift && factEntry.nextDayExit) return `${factEntry.entryTime} → ${factEntry.nextDayExit} (+1)`;
+    if (factEntry.hasOvernightShift) return `Вход: ${factEntry.entryTime} (ночная)`;
+    if (factEntry.entryTime && !factEntry.exitTime) return `Вход: ${factEntry.entryTime}`;
+    if (factEntry.entryTime && factEntry.exitTime) return `${factEntry.entryTime} → ${factEntry.exitTime}`;
+    return factEntry.time || '—';
+};
+
+const parseTimeToMinutes = (timeStr) => {
+    if (!timeStr || typeof timeStr !== 'string') return null;
+    const m = timeStr.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+};
+
+const STANDARD_SHIFT_HOURS = 12;
+
+const computeOvertimeHours = (factEntry) => {
+    if (!factEntry) return 0;
+    const entryM = parseTimeToMinutes(factEntry.entryTime);
+    const exitM = parseTimeToMinutes(factEntry.exitTime);
+    const nextExitM = parseTimeToMinutes(factEntry.nextDayExit);
+    if (factEntry.hasOvernightShift && nextExitM != null) {
+        if (entryM == null) return 0;
+        const durationM = (24 * 60 - entryM) + nextExitM;
+        const durationH = durationM / 60;
+        return Math.max(0, durationH - STANDARD_SHIFT_HOURS);
+    }
+    if (entryM != null && exitM != null) {
+        let durationM = exitM - entryM;
+        if (durationM < 0) durationM += 24 * 60;
+        const durationH = durationM / 60;
+        return Math.max(0, durationH - STANDARD_SHIFT_HOURS);
+    }
+    return 0;
+};
+
 export default function ReportsView() {
-    const { scheduleDates = [], getShiftsForDate, savedPlans, comparePlanSnapshots } = useData();
+    const { scheduleDates = [], getShiftsForDate, savedPlans, comparePlanSnapshots, buildPlanSlots, currentPlanId, autoReassignEnabled, factData, factDates } = useData();
     const [reportType, setReportType] = useState('lineDetail');
     const [showOnlyDiffs, setShowOnlyDiffs] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filterByPlan, setFilterByPlan] = useState(true);
     const [filterOffPlan, setFilterOffPlan] = useState(true);
     const [filterRv, setFilterRv] = useState(true);
+    const [filterOvertime, setFilterOvertime] = useState(false);
+    const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
+    const [showSkudModal, setShowSkudModal] = useState(false);
+    const [showLineDebugModal, setShowLineDebugModal] = useState(false);
+    const [selectedLineDebug, setSelectedLineDebug] = useState(null);
+    const [showMasterPlanModal, setShowMasterPlanModal] = useState(false);
+    const [showAllPlansModal, setShowAllPlansModal] = useState(false);
+    const [employeeDisplayLimit, setEmployeeDisplayLimit] = useState(20);
+    const [employeeAnalysisWorkerStatus, setEmployeeAnalysisWorkerStatus] = useState({ status: 'idle', error: null, requestId: 0 });
+    const [employeeAnalysisWorkerResult, setEmployeeAnalysisWorkerResult] = useState(null);
+    const employeeAnalysisWorkerRef = useRef(null);
+    const employeeAnalysisWorkerReqIdRef = useRef(0);
 
     const masterPlan = useMemo(() => savedPlans.find(plan => plan.type === 'Master'), [savedPlans]);
     const operationalPlan = useMemo(() => savedPlans.find(plan => plan.type === 'Operational'), [savedPlans]);
@@ -155,7 +374,25 @@ export default function ReportsView() {
                 factAssignmentType: factSlot?.assignmentType || null,
                 factSource: factSlot?.source || null,
                 planSlotMeta,
-                factSlotMeta
+                factSlotMeta,
+                debugInfo: {
+                    planSlot: planSlot ? {
+                        slotId: planSlot.slotId,
+                        assignedName: planSlot.assignedName,
+                        assignmentType: planSlot.assignmentType,
+                        source: planSlot.source,
+                        lineName: planSlot.lineName || planSlot.line,
+                        role: planSlot.role || planSlot.roleTitle
+                    } : null,
+                    factSlot: factSlot ? {
+                        slotId: factSlot.slotId,
+                        assignedName: factSlot.assignedName,
+                        assignmentType: factSlot.assignmentType,
+                        source: factSlot.source,
+                        lineName: factSlot.lineName || factSlot.line,
+                        role: factSlot.role || factSlot.roleTitle
+                    } : null
+                }
             });
         };
 
@@ -287,6 +524,93 @@ export default function ReportsView() {
             .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     }, [reportType, masterPlan?.id, operationalPlan?.id, comparePlanSnapshots]);
 
+    useEffect(() => {
+        if (employeeAnalysisWorkerRef.current) return;
+        const worker = new Worker(new URL('../../workers/reportsEmployeeAnalysis.worker.js', import.meta.url), { type: 'module' });
+        employeeAnalysisWorkerRef.current = worker;
+        worker.onmessage = (e) => {
+            const { requestId, extendedEmployeeHierarchy, skudCacheArray, error } = e.data || {};
+            if (requestId !== employeeAnalysisWorkerReqIdRef.current) return;
+            if (error) {
+                setEmployeeAnalysisWorkerStatus({ status: 'error', error: String(error), requestId });
+                return;
+            }
+            setEmployeeAnalysisWorkerResult({ extendedEmployeeHierarchy: extendedEmployeeHierarchy || [], skudCacheArray: skudCacheArray || [] });
+            setEmployeeAnalysisWorkerStatus({ status: 'ready', error: null, requestId });
+        };
+        worker.onerror = (err) => {
+            setEmployeeAnalysisWorkerStatus((prev) => ({ ...prev, status: 'error', error: err?.message || 'Worker error' }));
+        };
+        return () => {
+            try { worker.terminate(); } catch (_) {}
+            employeeAnalysisWorkerRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (reportType !== 'employeeAnalysis' || !factData || typeof factData !== 'object') return;
+        const worker = employeeAnalysisWorkerRef.current;
+        if (!worker) return;
+        const requestId = ++employeeAnalysisWorkerReqIdRef.current;
+        setEmployeeAnalysisWorkerStatus({ status: 'calculating', error: null, requestId });
+        setEmployeeAnalysisWorkerResult(null);
+        worker.postMessage({
+            requestId,
+            employeeHierarchy,
+            factData,
+            factDates: factDates || Object.keys(factData)
+        });
+    }, [reportType, factData, factDates, employeeHierarchy]);
+
+    const factMapsByDate = useMemo(() => {
+        const m = {};
+        if (!factData) return m;
+        (factDates || Object.keys(factData)).forEach(d => {
+            if (factData[d]) m[d] = buildFactMap(factData[d]);
+        });
+        return m;
+    }, [factData, factDates]);
+
+    const useWorkerForAnalysis = reportType === 'employeeAnalysis' && factData && typeof factData === 'object';
+    const workerReady = useWorkerForAnalysis && employeeAnalysisWorkerStatus.status === 'ready' && employeeAnalysisWorkerResult;
+
+    const employeeHierarchyForReport = useMemo(() => {
+        if (!useWorkerForAnalysis) return employeeHierarchy;
+        if (workerReady) return employeeAnalysisWorkerResult.extendedEmployeeHierarchy || employeeHierarchy;
+        return employeeHierarchy;
+    }, [useWorkerForAnalysis, workerReady, employeeAnalysisWorkerResult, employeeHierarchy]);
+
+    const skudCache = useMemo(() => {
+        const map = new Map();
+        if (reportType !== 'employeeAnalysis' || !factData) return map;
+        if (workerReady && Array.isArray(employeeAnalysisWorkerResult.skudCacheArray)) {
+            employeeAnalysisWorkerResult.skudCacheArray.forEach(({ key, status, timeDisplay, overtimeHours }) => {
+                map.set(key, { status, timeDisplay, overtimeHours });
+            });
+        }
+        return map;
+    }, [reportType, factData, workerReady, employeeAnalysisWorkerResult]);
+
+    const getSkudForWorkerDate = (workerName, date) => {
+        if (!workerName || !date) return { status: 'unassigned', timeDisplay: '—', overtimeHours: 0 };
+        const key = `${normalizeName(workerName)}__${date}`;
+        return skudCache.get(key) || { status: 'unassigned', timeDisplay: '—', overtimeHours: 0 };
+    };
+
+    const getEmployeeSkudCounts = (worker) => {
+        const counts = { exits: 0, noShow: 0, overtimeDays: 0, totalOvertimeHours: 0 };
+        (worker?.dates || []).forEach(dateNode => {
+            const skud = getSkudForWorkerDate(worker.name, dateNode.date);
+            if (skud.status === 'ok') counts.exits += 1;
+            if (skud.status === 'missing') counts.noShow += 1;
+            if (skud.overtimeHours > 0) {
+                counts.overtimeDays += 1;
+                counts.totalOvertimeHours += skud.overtimeHours;
+            }
+        });
+        return counts;
+    };
+
     const rowPredicate = (row) => row.changeType !== 'matched';
     const filterRows = (rows) => {
         return showOnlyDiffs ? rows.filter(rowPredicate) : rows;
@@ -369,8 +693,8 @@ export default function ReportsView() {
     }, [buildLineHierarchy, showOnlyDiffs]);
 
     const filteredEmployeeHierarchy = useMemo(() => {
-        if (!showOnlyDiffs) return employeeHierarchy;
-        return employeeHierarchy
+        if (!showOnlyDiffs) return employeeHierarchyForReport;
+        return employeeHierarchyForReport
             .map(worker => {
                 const dates = worker.dates
                     .map(dateNode => {
@@ -389,7 +713,7 @@ export default function ReportsView() {
                 return { ...worker, dates };
             })
             .filter(Boolean);
-    }, [employeeHierarchy, showOnlyDiffs]);
+    }, [employeeHierarchyForReport, showOnlyDiffs]);
 
     const searchNorm = useMemo(() => normalizeName(searchQuery), [searchQuery]);
 
@@ -405,20 +729,101 @@ export default function ReportsView() {
         if (searchNorm) {
             list = list.filter(w => normalizeName(w.name || '').includes(searchNorm));
         }
-        const anyFilterOn = filterByPlan || filterOffPlan || filterRv;
+        const anyFilterOn = filterByPlan || filterOffPlan || filterRv || filterOvertime;
         if (!anyFilterOn) return list;
         return list.filter(worker => {
             const c = getEmployeeReportCounts(worker);
-            return (filterByPlan && c.byPlan > 0) || (filterOffPlan && c.offPlan > 0) || (filterRv && c.rv > 0);
+            const skud = filterOvertime ? getEmployeeSkudCounts(worker) : null;
+            const hasOvertime = filterOvertime && factData && skud?.overtimeDays > 0;
+            if (filterByPlan && c.byPlan <= 0) return false;
+            if (filterOffPlan && c.offPlan <= 0) return false;
+            if (filterRv && c.rv <= 0) return false;
+            if (filterOvertime && !hasOvertime) return false;
+            return true;
         });
-    }, [filteredEmployeeHierarchy, searchNorm, filterByPlan, filterOffPlan, filterRv]);
+    }, [filteredEmployeeHierarchy, searchNorm, filterByPlan, filterOffPlan, filterRv, filterOvertime, factData]);
 
-    const originalHierarchy = reportType === 'lineDetail' ? buildLineHierarchy : employeeHierarchy;
+    const employeeDisplayList = useMemo(() => {
+        if (reportType !== 'employeeAnalysis') return [];
+        return searchFilteredEmployeeHierarchy.slice(0, employeeDisplayLimit);
+    }, [reportType, searchFilteredEmployeeHierarchy, employeeDisplayLimit]);
+
+    useEffect(() => {
+        setEmployeeDisplayLimit(20);
+    }, [searchNorm, filterByPlan, filterOffPlan, filterRv, filterOvertime, reportType]);
+
+    const originalHierarchy = reportType === 'lineDetail' ? buildLineHierarchy : employeeHierarchyForReport;
     const showFallback = scheduleDates.length === 0 || originalHierarchy.length === 0;
     const hasPlansForDiff = Boolean(masterPlan?.data && operationalPlan?.data);
     const fallbackText = reportType === 'lineDetail'
         ? 'Нет данных по линиям — загрузите план.'
         : 'Нет данных для сравнения — назначьте основной и оперативный план.';
+
+    const getPlanDiagnostics = (plan, { includeLineDailyCounts = false } = {}) => {
+        if (!plan) return { label: '—', summary: {}, lineNames: [], dataKeys: [], autoReassignRaw: undefined };
+        const d = plan.data || {};
+        const demandRows = Array.isArray(d.rawTables?.demand) ? d.rawTables.demand.length : 0;
+        const assignmentCount = d.manualAssignments && typeof d.manualAssignments === 'object' ? Object.keys(d.manualAssignments).length : 0;
+        const lineNames = d.lineTemplates && typeof d.lineTemplates === 'object' ? Object.keys(d.lineTemplates) : [];
+        const manualLineKeys = d.manualLines && typeof d.manualLines === 'object' ? Object.keys(d.manualLines).length : 0;
+        const autoReassignRaw = d.autoReassignEnabled;
+        const autoReassignLabel = autoReassignRaw === true ? 'вкл' : autoReassignRaw === false ? 'выкл' : 'не сохранено в плане';
+        const lineDailyCounts = includeLineDailyCounts ? buildPlanLineDailyCounts(d) : null;
+        return {
+            label: `${plan.name || plan.id || 'План'} (${plan.type || '—'})`,
+            summary: {
+                'Даты в расписании': Array.isArray(d.scheduleDates) ? d.scheduleDates.length : 0,
+                'Строк в demand': demandRows,
+                'Ручных назначений (manualAssignments)': assignmentCount,
+                'Линий (lineTemplates)': lineNames.length,
+                'Ключей manualLines': manualLineKeys,
+                'Автоподстановка (в данных плана)': autoReassignLabel
+            },
+            lineNames,
+            dataKeys: d ? Object.keys(d) : [],
+            autoReassignRaw,
+            lineDailyCounts
+        };
+    };
+
+    const masterDiag = useMemo(() => getPlanDiagnostics(masterPlan, { includeLineDailyCounts: showDiagnosticsModal }), [masterPlan, showDiagnosticsModal]);
+    const operationalDiag = useMemo(() => getPlanDiagnostics(operationalPlan, { includeLineDailyCounts: showDiagnosticsModal }), [operationalPlan, showDiagnosticsModal]);
+
+    const renderLineDailyCounts = (diag) => {
+        const counts = diag?.lineDailyCounts;
+        if (!counts) return null;
+        const dates = Object.keys(counts).sort();
+        if (dates.length === 0) {
+            return <div className="mt-2 text-xs text-slate-400">Нет данных по линиям.</div>;
+        }
+        return (
+            <div className="mt-3 text-xs text-slate-600">
+                <div className="font-semibold text-slate-700 mb-2">Люди по дням и линиям</div>
+                <div className="space-y-2 max-h-64 overflow-auto pr-1 custom-scrollbar">
+                    {dates.map(date => {
+                        const lines = counts[date] || {};
+                        const lineNames = Object.keys(lines).sort();
+                        return (
+                            <details key={date} className="border border-slate-100 rounded-md overflow-hidden">
+                                <summary className="px-2.5 py-1.5 bg-slate-50 cursor-pointer font-medium text-slate-700">
+                                    {date} · линий: {lineNames.length}
+                                </summary>
+                                <div className="px-2.5 py-2 bg-white border-t border-slate-100 space-y-1">
+                                    {lineNames.length === 0 && <div className="text-slate-400">Нет данных по линиям.</div>}
+                                    {lineNames.map(lineName => (
+                                        <div key={lineName} className="flex items-center justify-between gap-2">
+                                            <span className="text-slate-600">{lineName}</span>
+                                            <span className="text-slate-500">заполнений: {lines[lineName].filled} · уникальных: {lines[lineName].unique}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </details>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    };
 
     return (
         <div className="h-full w-full flex flex-col gap-4">
@@ -477,8 +882,506 @@ export default function ReportsView() {
                         Показывать только отклонения
                     </span>
                 </label>
+
+                <button
+                    type="button"
+                    onClick={() => setShowDiagnosticsModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
+                    title="Состояние основного и оперативного планов для диагностики"
+                >
+                    <Bug size={16} className="text-slate-500" />
+                    Диагностика планов
+                </button>
+                    <button
+                    type="button"
+                    onClick={() => setShowSkudModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
+                    title="Что загружено из СКУД и как это читается"
+                >
+                    <Clock size={16} className="text-slate-500" />
+                    Данные СКУД
+                </button>
+                {reportType === 'lineDetail' && (
+                    <button
+                        type="button"
+                        onClick={() => {
+                            if (filteredLineHierarchy.length > 0 && filteredLineHierarchy[0].dates.length > 0 && filteredLineHierarchy[0].dates[0].shifts.length > 0) {
+                                setSelectedLineDebug({
+                                    line: filteredLineHierarchy[0],
+                                    date: filteredLineHierarchy[0].dates[0],
+                                    shift: filteredLineHierarchy[0].dates[0].shifts[0]
+                                });
+                                setShowLineDebugModal(true);
+                            }
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
+                        title="Источники данных по расстановке"
+                    >
+                        <Bug size={16} className="text-slate-500" />
+                        Отладка расстановки
+                    </button>
+                )}
+                {masterPlan?.data && buildPlanSlots && (
+                    <button
+                        type="button"
+                        onClick={() => setShowMasterPlanModal(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-indigo-100 border border-indigo-200 rounded-xl hover:bg-indigo-200 transition-colors text-indigo-800 text-sm font-medium"
+                        title="Вывести основной план как он виден системе"
+                    >
+                        <LayoutGrid size={16} className="text-indigo-600" />
+                        Основной план
+                    </button>
+                )}
+                {savedPlans?.length > 0 && buildPlanSlots && (
+                    <button
+                        type="button"
+                        onClick={() => setShowAllPlansModal(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-rose-100 border border-rose-200 rounded-xl hover:bg-rose-200 transition-colors text-rose-800 text-sm font-medium"
+                        title="Состояние ВСЕХ сохранённых планов"
+                    >
+                        <LayoutGrid size={16} className="text-rose-600" />
+                        Все копии планов
+                    </button>
+                )}
                 </div>
             </div>
+
+            {showDiagnosticsModal && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowDiagnosticsModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                                <Bug size={20} className="text-slate-500" />
+                                Состояние планов (диагностика)
+                            </h3>
+                            <button type="button" onClick={() => setShowDiagnosticsModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-auto flex-1 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="border border-indigo-200 rounded-xl bg-indigo-50/30 overflow-hidden">
+                                <div className="px-4 py-2 bg-indigo-100 border-b border-indigo-200 font-semibold text-indigo-800 text-sm">
+                                    Основной (Master)
+                                </div>
+                                <div className="p-4 text-sm font-mono space-y-1">
+                                    <div className="font-semibold text-slate-700 mb-2">{masterDiag.label}</div>
+                                    {Object.entries(masterDiag.summary).map(([k, v]) => (
+                                        <div key={k} className="text-slate-600"><span className="text-slate-400">{k}:</span> {String(v)}</div>
+                                    ))}
+                                    {masterDiag.lineNames?.length > 0 && (
+                                        <div className="mt-2 text-slate-500 text-xs">Линии: {masterDiag.lineNames.join(', ')}</div>
+                                    )}
+                                    <div className="mt-2 text-slate-400 text-xs">Ключи в data: {masterDiag.dataKeys.join(', ')}</div>
+                                    {renderLineDailyCounts(masterDiag)}
+                                </div>
+                            </div>
+                            <div className="border border-emerald-200 rounded-xl bg-emerald-50/30 overflow-hidden">
+                                <div className="px-4 py-2 bg-emerald-100 border-b border-emerald-200 font-semibold text-emerald-800 text-sm">
+                                    Оперативный (Operational)
+                                </div>
+                                <div className="p-4 text-sm font-mono space-y-1">
+                                    <div className="font-semibold text-slate-700 mb-2">{operationalDiag.label}</div>
+                                    {Object.entries(operationalDiag.summary).map(([k, v]) => (
+                                        <div key={k} className="text-slate-600"><span className="text-slate-400">{k}:</span> {String(v)}</div>
+                                    ))}
+                                    {operationalDiag.lineNames?.length > 0 && (
+                                        <div className="mt-2 text-slate-500 text-xs">Линии: {operationalDiag.lineNames.join(', ')}</div>
+                                    )}
+                                    <div className="mt-2 text-slate-400 text-xs">Ключи в data: {operationalDiag.dataKeys.join(', ')}</div>
+                                    {renderLineDailyCounts(operationalDiag)}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="px-6 py-3 border-t border-slate-200 bg-amber-50/80 rounded-b-2xl space-y-2">
+                            <div className="text-sm font-medium text-amber-800">
+                                Сейчас активен: {savedPlans.find(p => p.id === currentPlanId)?.name || currentPlanId || '—'} · Автоподстановка в редакторе смен: <strong>{autoReassignEnabled ? 'вкл' : 'выкл'}</strong>
+                            </div>
+                            {(masterDiag.autoReassignRaw === undefined || operationalDiag.autoReassignRaw === undefined) && (
+                                <div className="bg-red-50 border-l-4 border-red-400 p-3 rounded">
+                                    <p className="text-sm font-bold text-red-800 mb-1">⚠️ КРИТИЧЕСКАЯ ПРОБЛЕМА</p>
+                                    <p className="text-xs text-red-700 mb-2">
+                                        У одного или обоих планов автоподстановка = «не сохранено в плане». Это означает, что план был сохранён ДО добавления сохранения этой настройки.
+                                    </p>
+                                    <p className="text-xs text-red-700 mb-2">
+                                        <strong>По умолчанию</strong> при отсутствии значения используется <strong>вкл</strong> (roster заполняется). 
+                                        Поэтому если у одного плана галочка была выключена, а план не пересохранён — отчёты будут показывать одинаковые данные!
+                                    </p>
+                                    <p className="text-xs text-red-700 font-semibold">
+                                        ✅ РЕШЕНИЕ: Загрузите каждый план, переключите галочку автоподстановки туда-сюда, дождитесь автосохранения (2-3 сек). Тогда в данных плана будет сохранено явное значение вкл/выкл.
+                                    </p>
+                                </div>
+                            )}
+                            <p className="text-xs text-slate-600">
+                                Если у плана «Автоподстановка» = «не сохранено в плане», значение не было в сохранённых данных (старое сохранение или план ещё не пересохранён). Переключитесь на план, включите/выключите галочку и дождитесь автосохранения или сохраните план — тогда в диагностике будет вкл/выкл.
+                            </p>
+                            <p className="text-xs text-slate-500">
+                                Сравнение отчётов учитывает автоподстановку: при выкл. в плане слоты из матрицы считаются пустыми, при вкл. — заполненными из roster. «Ручных назначений» — только явные перетаскивания/РВ/аутсорс.
+                            </p>
+                            <p className="text-xs text-slate-500">
+                                Сравнение отчётов строится по слотам из demand и manualAssignments. Если «Даты в расписании» или «Строк в demand» отличаются — часть слотов может не совпадать.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showMasterPlanModal && masterPlan?.data && buildPlanSlots && (() => {
+                const { slots } = buildPlanSlots(masterPlan.data);
+                const byDate = {};
+                slots.forEach(s => {
+                    if (!byDate[s.date]) byDate[s.date] = {};
+                    const dk = s.date;
+                    const sk = `${s.shiftId}`;
+                    if (!byDate[dk][sk]) byDate[dk][sk] = [];
+                    byDate[dk][sk].push(s);
+                });
+                const dates = Object.keys(byDate).sort();
+                return (
+                    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowMasterPlanModal(false)}>
+                        <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-indigo-50 rounded-t-2xl">
+                                <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2">
+                                    <LayoutGrid size={20} className="text-indigo-600" />
+                                    Основной план — как его видит система ({masterPlan.name || 'Master'})
+                                </h3>
+                                <button type="button" onClick={() => setShowMasterPlanModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="p-6 overflow-auto flex-1">
+                                <div className="text-sm text-slate-600 mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                                    <strong>buildPlanSlots(masterPlan.data)</strong> — слоты по дате/смене/линии. source: roster = из матрицы (roster), manual = ручное назначение, vacancy = вакансия.
+                                </div>
+                                <div className="space-y-4 max-h-[60vh] overflow-auto custom-scrollbar">
+                                    {dates.map(date => (
+                                        <details key={date} className="border border-slate-200 rounded-xl overflow-hidden" open={dates.length <= 3}>
+                                            <summary className="px-4 py-3 bg-slate-100 cursor-pointer font-semibold text-slate-700 hover:bg-slate-200">
+                                                {date} — смен: {Object.keys(byDate[date]).length}, слотов: {Object.values(byDate[date]).flat().length}
+                                            </summary>
+                                            <div className="p-4 bg-white border-t border-slate-100 space-y-4">
+                                                {Object.keys(byDate[date]).sort((a, b) => parseInt(a, 10) - parseInt(b, 10)).map(shiftId => {
+                                                    const shiftSlots = byDate[date][shiftId] || [];
+                                                    const byLine = {};
+                                                    shiftSlots.forEach(s => {
+                                                        const ln = s.lineName || '—';
+                                                        if (!byLine[ln]) byLine[ln] = [];
+                                                        byLine[ln].push(s);
+                                                    });
+                                                    return (
+                                                        <div key={`${date}-${shiftId}`} className="border border-slate-100 rounded-lg overflow-hidden">
+                                                            <div className="px-3 py-2 bg-indigo-50 font-semibold text-indigo-800 text-sm">
+                                                                Смена {shiftId} — {shiftSlots.length} слотов
+                                                            </div>
+                                                            <div className="p-3 space-y-2">
+                                                                {Object.entries(byLine).sort((a, b) => (a[0] || '').localeCompare(b[0] || '')).map(([lineName, lineSlots]) => (
+                                                                    <div key={lineName} className="border-l-4 border-indigo-200 pl-3">
+                                                                        <div className="font-bold text-slate-700 text-sm mb-1">{lineName}</div>
+                                                                        <div className="space-y-1">
+                                                                            {lineSlots.map((s, idx) => (
+                                                                                <div key={s.slotId || idx} className="flex items-center gap-3 text-xs">
+                                                                                    <span className="font-mono text-slate-500 min-w-[160px] truncate">{s.role}</span>
+                                                                                    <span className={`font-semibold ${s.assignedName ? 'text-slate-800' : 'text-slate-400 italic'}`}>
+                                                                                        {s.assignedName || '(вакансия)'}
+                                                                                    </span>
+                                                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.source === 'roster' ? 'bg-emerald-100 text-emerald-700' : s.source === 'manual' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                                                        {s.source || '—'}
+                                                                                    </span>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </details>
+                                    ))}
+                                </div>
+                                <div className="mt-4 text-xs text-slate-500">
+                                    Всего слотов: {slots.length}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {showAllPlansModal && savedPlans?.length > 0 && buildPlanSlots && (() => {
+                const planColors = [
+                    { bg: 'bg-indigo-50', border: 'border-indigo-200', header: 'bg-indigo-100 border-indigo-200 text-indigo-800' },
+                    { bg: 'bg-emerald-50', border: 'border-emerald-200', header: 'bg-emerald-100 border-emerald-200 text-emerald-800' },
+                    { bg: 'bg-amber-50', border: 'border-amber-200', header: 'bg-amber-100 border-amber-200 text-amber-800' },
+                    { bg: 'bg-rose-50', border: 'border-rose-200', header: 'bg-rose-100 border-rose-200 text-rose-800' },
+                    { bg: 'bg-violet-50', border: 'border-violet-200', header: 'bg-violet-100 border-violet-200 text-violet-800' },
+                    { bg: 'bg-cyan-50', border: 'border-cyan-200', header: 'bg-cyan-100 border-cyan-200 text-cyan-800' },
+                ];
+                const renderPlanSlots = (plan) => {
+                    const { slots } = buildPlanSlots(plan.data);
+                    const byDate = {};
+                    slots.forEach(s => {
+                        if (!byDate[s.date]) byDate[s.date] = {};
+                        const sk = `${s.shiftId}`;
+                        if (!byDate[s.date][sk]) byDate[s.date][sk] = [];
+                        byDate[s.date][sk].push(s);
+                    });
+                    const dates = Object.keys(byDate).sort();
+                    const autoReassign = plan.data?.autoReassignEnabled;
+                    const autoLabel = autoReassign === true ? 'вкл' : autoReassign === false ? 'выкл' : 'не сохранено (по умолч. вкл)';
+                    return (
+                        <div key={plan.id} className="space-y-3">
+                            <div className="text-xs text-slate-500 font-medium">
+                                autoReassignEnabled: {autoLabel} · слотов: {slots.length} · заполнено: {slots.filter(s => s.assignedName).length}
+                            </div>
+                            <div className="space-y-2 max-h-64 overflow-auto custom-scrollbar">
+                                {dates.slice(0, 7).map(date => (
+                                    <details key={date} className="border border-slate-200 rounded-lg overflow-hidden">
+                                        <summary className="px-3 py-2 bg-slate-100 cursor-pointer font-semibold text-slate-700 text-sm hover:bg-slate-200">
+                                            {date} — {Object.values(byDate[date]).flat().length} слотов
+                                        </summary>
+                                        <div className="p-2 bg-white border-t border-slate-100 space-y-2">
+                                            {Object.keys(byDate[date]).sort((a, b) => parseInt(a, 10) - parseInt(b, 10)).map(shiftId => {
+                                                const shiftSlots = byDate[date][shiftId] || [];
+                                                const byLine = {};
+                                                shiftSlots.forEach(s => {
+                                                    const ln = s.lineName || '—';
+                                                    if (!byLine[ln]) byLine[ln] = [];
+                                                    byLine[ln].push(s);
+                                                });
+                                                return (
+                                                    <div key={`${date}-${shiftId}`} className="border-l-2 border-slate-200 pl-2">
+                                                        <div className="font-bold text-slate-600 text-xs mb-1">Смена {shiftId}</div>
+                                                        {Object.entries(byLine).sort((a, b) => (a[0] || '').localeCompare(b[0] || '')).map(([lineName, lineSlots]) => (
+                                                            <div key={lineName} className="mb-1">
+                                                                <div className="font-semibold text-slate-700 text-xs">{lineName}</div>
+                                                                <div className="flex flex-wrap gap-1 mt-0.5">
+                                                                    {lineSlots.map((s, idx) => (
+                                                                        <span key={s.slotId || idx} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${s.assignedName ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'}`} title={s.source || ''}>
+                                                                            {s.assignedName || '(вак)'} <span className="text-[9px] opacity-70">{s.source || '—'}</span>
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </details>
+                                ))}
+                                {dates.length > 7 && <div className="text-xs text-slate-400">… ещё {dates.length - 7} дат</div>}
+                            </div>
+                        </div>
+                    );
+                };
+                return (
+                    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowAllPlansModal(false)}>
+                        <div className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-rose-50 rounded-t-2xl">
+                                <h3 className="font-bold text-lg text-rose-900 flex items-center gap-2">
+                                    <LayoutGrid size={20} className="text-rose-600" />
+                                    Состояние ВСЕХ сохранённых планов ({savedPlans.length} шт.)
+                                </h3>
+                                <button type="button" onClick={() => setShowAllPlansModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="p-6 overflow-auto flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                {savedPlans.map((plan, idx) => {
+                                    const colors = planColors[idx % planColors.length];
+                                    const typeLabel = plan.type === 'Master' ? 'Основной' : plan.type === 'Operational' ? 'Оперативный' : '—';
+                                    return (
+                                        <div key={plan.id} className={`border ${colors.border} rounded-xl overflow-hidden ${colors.bg}`}>
+                                            <div className={`px-4 py-2 border-b ${colors.header} font-semibold text-sm flex items-center justify-between`}>
+                                                <span className="truncate" title={plan.name}>{plan.name || plan.id}</span>
+                                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/60">{typeLabel}</span>
+                                            </div>
+                                            <div className="p-3 text-sm">
+                                                {plan.data ? renderPlanSlots(plan) : <div className="text-slate-500 italic">Нет данных</div>}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 rounded-b-2xl text-xs text-slate-600">
+                                Каждая карточка — buildPlanSlots(plan.data). source: roster = из матрицы, manual = ручное, vacancy/вак = вакансия.
+                                autoReassignEnabled влияет на roster: при вкл слоты заполняются из матрицы, при выкл — пусто.
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {showLineDebugModal && selectedLineDebug && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowLineDebugModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                                <Bug size={20} className="text-slate-500" />
+                                Отладка расстановки: {selectedLineDebug.line?.displayName} / {selectedLineDebug.date?.date} / {selectedLineDebug.shift?.shiftName}
+                            </h3>
+                            <button type="button" onClick={() => setShowLineDebugModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-auto flex-1">
+                            <div className="space-y-4">
+                                <div className="text-sm text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                                    <strong>Источник данных:</strong> Отчет сравнивает слоты из <strong>основного (Master)</strong> и <strong>оперативного (Operational)</strong> планов. 
+                                    Каждая строка показывает, какой слот (роль+человек) был в основном плане и стал в оперативном.
+                                </div>
+                                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                    <table className="w-full text-xs border-collapse">
+                                        <thead>
+                                            <tr className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold">
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">Роль</th>
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">План (Master)</th>
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">Факт (Operational)</th>
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">Тип изм.</th>
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">SlotID Master</th>
+                                                <th className="px-3 py-2 text-left border-b border-slate-200">SlotID Operational</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                            {selectedLineDebug.shift?.rows?.map((row, idx) => (
+                                                <tr key={idx} className="hover:bg-slate-50">
+                                                    <td className="px-3 py-2 text-slate-700 font-medium">{row.roleTitle}</td>
+                                                    <td className="px-3 py-2">
+                                                        <div className="font-semibold text-slate-800">{row.planName || '—'}</div>
+                                                        {row.debugInfo?.planSlot && (
+                                                            <div className="text-[10px] text-slate-500 mt-0.5">
+                                                                source: {row.debugInfo.planSlot.source || '—'}, type: {row.debugInfo.planSlot.assignmentType || '—'}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        <div className="font-semibold text-slate-800">{row.factName || '—'}</div>
+                                                        {row.debugInfo?.factSlot && (
+                                                            <div className="text-[10px] text-slate-500 mt-0.5">
+                                                                source: {row.debugInfo.factSlot.source || '—'}, type: {row.debugInfo.factSlot.assignmentType || '—'}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                        <span className={`inline-flex px-2 py-0.5 rounded text-[9px] font-bold ${getChangeColor(row)}`}>
+                                                            {getChangeLabel(row)}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 font-mono text-[10px] text-slate-600">
+                                                        {row.debugInfo?.planSlot?.slotId || '—'}
+                                                    </td>
+                                                    <td className="px-3 py-2 font-mono text-[10px] text-slate-600">
+                                                        {row.debugInfo?.factSlot?.slotId || '—'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showSkudModal && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSkudModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                                <Clock size={20} className="text-slate-500" />
+                                Данные СКУД — что загружено и как читается
+                            </h3>
+                            <button type="button" onClick={() => setShowSkudModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-auto flex-1 space-y-6">
+                            <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                <div className="px-4 py-2 bg-slate-100 border-b border-slate-200 font-semibold text-slate-700 text-sm">
+                                    factDates (список дат из СКУД)
+                                </div>
+                                <div className="p-4 text-sm font-mono">
+                                    {!factDates || factDates.length === 0 ? (
+                                        <span className="text-amber-600">Нет данных — массив пуст или не загружен.</span>
+                                    ) : (
+                                        <div className="flex flex-wrap gap-2">
+                                            {factDates.map(d => <span key={d} className="px-2 py-1 bg-slate-100 rounded text-slate-700">{d}</span>)}
+                                        </div>
+                                    )}
+                                    <div className="mt-2 text-slate-400 text-xs">Всего дат: {Array.isArray(factDates) ? factDates.length : 0}</div>
+                                </div>
+                            </div>
+                            <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                <div className="px-4 py-2 bg-slate-100 border-b border-slate-200 font-semibold text-slate-700 text-sm">
+                                    factData (по датам: ключ даты → записи по сотрудникам)
+                                </div>
+                                <div className="p-4 text-sm">
+                                    {!factData || typeof factData !== 'object' ? (
+                                        <span className="text-amber-600">Нет данных — factData не загружен (null или не объект).</span>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {Object.keys(factData).length === 0 ? (
+                                                <span className="text-amber-600">Объект пуст — нет ни одной даты.</span>
+                                            ) : (
+                                                Object.entries(factData).slice(0, 5).map(([date, dayFact]) => (
+                                                    <details key={date} className="border border-slate-100 rounded-lg overflow-hidden">
+                                                        <summary className="px-3 py-2 bg-slate-50 cursor-pointer font-medium text-slate-700">
+                                                            {date} — записей: {dayFact && typeof dayFact === 'object' ? Object.keys(dayFact).length : 0}
+                                                        </summary>
+                                                        <div className="p-3 bg-white border-t border-slate-100">
+                                                            {dayFact && typeof dayFact === 'object' ? (
+                                                                <ul className="space-y-2 text-xs font-mono">
+                                                                    {Object.entries(dayFact).slice(0, 20).map(([key, value]) => (
+                                                                        <li key={key} className="border-b border-slate-50 pb-2 last:border-0">
+                                                                            <span className="text-slate-500">Ключ:</span> {String(key)}
+                                                                            {value && typeof value === 'object' && (
+                                                                                <div className="mt-1 text-slate-600 grid grid-cols-2 gap-x-4 gap-y-0.5">
+                                                                                    {['rawName', 'entryTime', 'exitTime', 'cleanTime', 'time', 'hasOvernightShift', 'nextDayExit'].map(f => (
+                                                                                        <span key={f}><span className="text-slate-400">{f}:</span> {value[f] != null ? String(value[f]) : '—'}</span>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+                                                                        </li>
+                                                                    ))}
+                                                                    {Object.keys(dayFact).length > 20 && (
+                                                                        <li className="text-slate-400">… и ещё {Object.keys(dayFact).length - 20} записей</li>
+                                                                    )}
+                                                                </ul>
+                                                            ) : (
+                                                                <span className="text-slate-500">Не объект: {typeof dayFact}</span>
+                                                            )}
+                                                        </div>
+                                                    </details>
+                                                ))
+                                            )}
+                                            {Object.keys(factData).length > 5 && (
+                                                <p className="text-slate-400 text-xs">… и ещё {Object.keys(factData).length - 5} дат</p>
+                                            )}
+                                        </div>
+                                    )}
+                                    <div className="mt-2 text-slate-400 text-xs">
+                                        Ожидаемая структура: factData[дата] = объект, ключи — идентификатор/ФИО, значение: rawName, entryTime, exitTime, cleanTime, time, hasOvernightShift, nextDayExit.
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="border border-indigo-200 rounded-xl bg-indigo-50/30 overflow-hidden">
+                                <div className="px-4 py-2 bg-indigo-100 border-b border-indigo-200 font-semibold text-indigo-800 text-sm">
+                                    Как читается в отчёте «Анализ по сотрудникам»
+                                </div>
+                                <div className="p-4 text-sm text-slate-700 space-y-2">
+                                    <p>1. Для каждой даты из factData строится индекс (factMap): по нормализованному ФИО (byNormKey, byNormRawName) и по фамилии (bySurname).</p>
+                                    <p>2. Для сотрудника из плана ищем запись СКУД: сначала точное совпадение нормализованного имени, иначе — по фамилии и matchNames(имя из плана, rawName из СКУД).</p>
+                                    <p>3. Статус: если найдена запись и есть cleanTime — «Выход», иначе при найденной записи — «Невыход», если запись не найдена — «—».</p>
+                                    <p>4. Переработки: по entryTime/exitTime (или nextDayExit для ночной) считается длительность смены; если больше 12 ч — разница считается переработкой.</p>
+                                    <p className="text-amber-700 font-medium mt-2">Если данные не подтягиваются — проверьте, что на вкладке «Верификация» загружен файл СКУД и factDates/factData заполняются в состоянии приложения.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Поиск и фильтры */}
             {!showFallback && hasPlansForDiff && (
@@ -502,6 +1405,16 @@ export default function ReportsView() {
                             </button>
                         )}
                     </div>
+                    {reportType === 'lineDetail' && (
+                        <button
+                            type="button"
+                            onClick={() => setShowDiagnosticsModal(true)}
+                            className="px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors"
+                            title="Состав основного и оперативного планов для сравнения"
+                        >
+                            Состав планов
+                        </button>
+                    )}
                     {reportType === 'employeeAnalysis' && (
                         <div className="flex flex-wrap items-center gap-2 border-l border-slate-200 pl-3 sm:pl-4">
                             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Тип смен:</span>
@@ -517,6 +1430,16 @@ export default function ReportsView() {
                                 <input type="checkbox" checked={filterRv} onChange={(e) => setFilterRv(e.target.checked)} className="rounded border-orange-300" />
                                 <span className="text-xs font-medium text-orange-800">РВ</span>
                             </label>
+                            <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-200 ${factData ? 'bg-amber-50/50 cursor-pointer hover:bg-amber-50' : 'bg-slate-50 text-slate-400 cursor-not-allowed'} transition-colors`}>
+                                <input
+                                    type="checkbox"
+                                    checked={filterOvertime}
+                                    onChange={(e) => setFilterOvertime(e.target.checked)}
+                                    disabled={!factData}
+                                    className="rounded border-amber-300"
+                                />
+                                <span className="text-xs font-medium">Переработки</span>
+                            </label>
                         </div>
                     )}
                 </div>
@@ -530,6 +1453,18 @@ export default function ReportsView() {
                         <p className="text-sm font-medium">
                             Задайте основной и оперативный планы на вкладке «Планы», чтобы сравнение работало.
                         </p>
+                    </div>
+                )}
+                {reportType === 'employeeAnalysis' && factData && employeeAnalysisWorkerStatus.status === 'calculating' && (
+                    <div className="m-4 p-3 bg-indigo-50 border border-indigo-200 rounded-xl flex items-center gap-3 text-indigo-700 text-sm">
+                        <Clock size={18} className="animate-pulse" />
+                        <span>Идёт расчёт с учётом СКУД…</span>
+                    </div>
+                )}
+                {reportType === 'employeeAnalysis' && factData && employeeAnalysisWorkerStatus.status === 'error' && (
+                    <div className="m-4 p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-3 text-rose-700 text-sm">
+                        <AlertCircle size={18} />
+                        <span>Ошибка расчёта СКУД: {employeeAnalysisWorkerStatus.error}</span>
                     </div>
                 )}
 
@@ -627,9 +1562,20 @@ export default function ReportsView() {
                                                         const hasMetrics = shiftMetrics.headcount > 0;
                                                         const changeSummary = showOnlyDiffs ? buildSummaryFromRows(displayedShiftRows) : shift.summary;
                                                         return (
-                                                            <div key={`${line.displayName}-${dateNode.date}-${shift.shiftId}`} className="border border-slate-100 rounded-lg overflow-hidden shadow-sm bg-white">
+                                                            <div key={`${line.displayName}-${dateNode.date}-${shift.shiftId}`}                                                                     className="border border-slate-100 rounded-lg overflow-hidden shadow-sm bg-white">
                                                                 <div className="bg-slate-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100">
                                                                     <div className="flex items-center gap-3">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                setSelectedLineDebug({ line, date: dateNode, shift });
+                                                                                setShowLineDebugModal(true);
+                                                                            }}
+                                                                            className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                                                                            title="Отладка: посмотреть источники"
+                                                                        >
+                                                                            <Bug size={14} />
+                                                                        </button>
                                                                         <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shadow-sm shadow-indigo-200">
                                                                             {shift.shiftId}
                                                                         </div>
@@ -729,7 +1675,7 @@ export default function ReportsView() {
                                 Ничего не найдено. Измените поиск или фильтры.
                             </div>
                         )}
-                        {reportType === 'employeeAnalysis' && searchFilteredEmployeeHierarchy.map(worker => {
+                        {reportType === 'employeeAnalysis' && employeeDisplayList.map(worker => {
                             const counts = getEmployeeReportCounts(worker);
                             return (
                             <details key={worker.name} className="group rounded-2xl border border-slate-200 bg-white overflow-hidden open:ring-2 open:ring-indigo-100 transition-all shadow-sm">
@@ -756,6 +1702,24 @@ export default function ReportsView() {
                                                 <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200" title="Всего смен">
                                                     Всего: {counts.total}
                                                 </span>
+                                                {factData && (() => {
+                                                    const skud = getEmployeeSkudCounts(worker);
+                                                    return (
+                                                        <>
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100" title="Выходов по СКУД">
+                                                                СКУД выход: {skud.exits}
+                                                            </span>
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-100" title="Невыходов по СКУД">
+                                                                Невыход: {skud.noShow}
+                                                            </span>
+                                                            {(skud.overtimeDays > 0 || skud.totalOvertimeHours > 0) && (
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100" title="Переработки по СКУД">
+                                                                    Переработки: {skud.overtimeDays} дн. / {skud.totalOvertimeHours.toFixed(1)} ч
+                                                                </span>
+                                                            )}
+                                                        </>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
                                     </div>
@@ -775,13 +1739,14 @@ export default function ReportsView() {
                                                     </th>
                                                     <th className="px-4 py-3 border-b border-slate-100">Факт</th>
                                                     <th className="px-4 py-3 border-b border-slate-100">Изменение</th>
+                                                    {factData && <th className="px-4 py-3 border-b border-slate-100">СКУД</th>}
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-50">
                                                 {worker.dates.flatMap(dateNode =>
                                                     dateNode.shifts.flatMap(shift =>
                                                         shift.rows.map((row, idx) => (
-                                                            <tr key={`${shift.shiftId}-${idx}`} className="hover:bg-slate-50 transition-colors">
+                                                            <tr key={`${row.date}-${shift.shiftId}-${idx}`} className="hover:bg-slate-50 transition-colors">
                                                                 <td className="px-4 py-3">
                                                                     <div className="flex items-center gap-2 font-bold text-slate-700">
                                                                         <Calendar size={12} className="text-slate-400" />
@@ -820,6 +1785,24 @@ export default function ReportsView() {
                                                                         {row.note && <div className="text-[10px] text-slate-400 font-medium leading-tight">{row.note}</div>}
                                                                     </div>
                                                                 </td>
+                                                                {factData && (() => {
+                                                                    const skud = getSkudForWorkerDate(worker.name, row.date);
+                                                                    const statusLabel = skud.status === 'ok' ? 'Выход' : skud.status === 'missing' ? 'Невыход' : '—';
+                                                                    const statusClass = skud.status === 'ok' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : skud.status === 'missing' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-slate-50 text-slate-500 border-slate-100';
+                                                                    return (
+                                                                        <td className="px-4 py-3">
+                                                                            <div className="flex flex-col gap-0.5">
+                                                                                <span className={`inline-flex items-center w-fit px-2 py-0.5 rounded-md text-[9px] font-bold border ${statusClass}`}>
+                                                                                    {statusLabel}
+                                                                                </span>
+                                                                                <span className="text-[10px] text-slate-600 font-medium">{skud.timeDisplay}</span>
+                                                                                {skud.overtimeHours > 0 && (
+                                                                                    <span className="text-[10px] text-amber-600 font-semibold">+{skud.overtimeHours.toFixed(1)} ч</span>
+                                                                                )}
+                                                                            </div>
+                                                                        </td>
+                                                                    );
+                                                                })()}
                                                             </tr>
                                                         ))
                                                     )
@@ -831,6 +1814,17 @@ export default function ReportsView() {
                             </details>
                             );
                         })}
+                        {reportType === 'employeeAnalysis' && searchFilteredEmployeeHierarchy.length > employeeDisplayLimit && (
+                            <div className="flex justify-center py-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setEmployeeDisplayLimit(prev => prev + 20)}
+                                    className="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors"
+                                >
+                                    Показать ещё 20 (осталось {searchFilteredEmployeeHierarchy.length - employeeDisplayLimit})
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

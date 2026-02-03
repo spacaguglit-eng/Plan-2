@@ -1,8 +1,34 @@
-import { readFirestoreDoc, writeFirestoreDoc, isFirebaseConfigured, subscribeToFirestoreDoc } from './firebaseService';
+import {
+    readFirestoreDoc,
+    readFirestoreCollection,
+    writeFirestoreDoc,
+    isFirebaseConfigured,
+    subscribeToFirestoreDoc,
+    subscribeToFirestoreCollection
+} from './firebaseService';
 
 const FIRESTORE_COLLECTION = import.meta.env.VITE_FIREBASE_STATE_COLLECTION || 'plan_state';
 const FIRESTORE_DOCUMENT = import.meta.env.VITE_FIREBASE_STATE_DOC_ID || 'shared';
+const DOC_PREFIX = `${FIRESTORE_DOCUMENT}_`;
 const CLIENT_ID_KEY = 'plan_sync_client_id';
+
+/** Собирает из массива документов коллекции один объект { key: rawEnvelope }. Поддерживает старый один документ "shared" и новый формат shared_key. */
+const mergeDocsToState = (docs) => {
+    const state = {};
+    if (!Array.isArray(docs)) return state;
+    docs.forEach(({ id, data }) => {
+        if (id.startsWith(DOC_PREFIX)) {
+            const key = id.slice(DOC_PREFIX.length);
+            if (data && typeof data.value !== 'undefined') state[key] = data.value;
+        } else if (id === FIRESTORE_DOCUMENT && data && typeof data === 'object') {
+            Object.keys(data).forEach((k) => {
+                if (k === 'updatedAt') return;
+                state[k] = data[k];
+            });
+        }
+    });
+    return state;
+};
 
 let cachedClientId = null;
 const ensureClientId = () => {
@@ -95,11 +121,10 @@ const flushQueue = async () => {
     updateQueue = {}; // Clear queue
 
     try {
-        // Сначала читаем облако — чтобы не перезаписать данные, которые новее наших (другой клиент удалил/изменил).
-        const freshData = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
-        if (freshData && typeof freshData === 'object') {
+        const docs = await readFirestoreCollection(FIRESTORE_COLLECTION);
+        const freshData = mergeDocsToState(docs);
+        if (Object.keys(freshData).length > 0) {
             Object.keys(freshData).forEach((key) => {
-                if (key === 'updatedAt') return;
                 lastKnownState[key] = freshData[key];
                 try {
                     const raw = freshData[key];
@@ -117,10 +142,7 @@ const flushQueue = async () => {
             const remoteRaw = lastKnownState[key];
             const ourRev = getRevFromRaw(ourRaw);
             const remoteRev = getRevFromRaw(remoteRaw);
-            if (remoteRev > ourRev) {
-                // В облаке новее — не перезаписываем (защита от "удалил в вебе, локаль вернула").
-                return;
-            }
+            if (remoteRev > ourRev) return;
             if (ourRaw !== lastKnownState[key]) {
                 trulyChangedData[key] = ourRaw;
                 lastKnownState[key] = ourRaw;
@@ -138,7 +160,9 @@ const flushQueue = async () => {
             } catch (_) {}
         });
         addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
-        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, trulyChangedData);
+        for (const key of Object.keys(trulyChangedData)) {
+            await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: trulyChangedData[key] });
+        }
         addLog('success', 'Облако успешно обновлено');
         flushSuccessCallback?.(Object.keys(trulyChangedData));
     } catch (err) {
@@ -187,11 +211,10 @@ export const loadRemoteState = async () => {
     if (!isRemoteStorageEnabled()) return null;
     try {
         addLog('syncing', 'Загрузка данных из облака...');
-        const data = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
-        
-        if (data) {
+        const docs = await readFirestoreCollection(FIRESTORE_COLLECTION);
+        const data = mergeDocsToState(docs);
+        if (Object.keys(data).length > 0) {
             Object.keys(data).forEach(key => {
-                if (key === 'updatedAt') return;
                 lastKnownState[key] = data[key];
                 try {
                     const raw = data[key];
@@ -202,7 +225,6 @@ export const loadRemoteState = async () => {
                 } catch (_) {}
             });
         }
-        
         return parseRemoteData(data);
     } catch (err) {
         console.error('Failed to load remote state:', err);
@@ -232,15 +254,11 @@ const parseRemoteData = (data) => {
 
 export const subscribeToRemoteState = (callback) => {
     if (!isRemoteStorageEnabled()) return () => {};
-    
-    return subscribeToFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, (data, metadata = {}) => {
-        if (!data) return;
+    return subscribeToFirestoreCollection(FIRESTORE_COLLECTION, (docs, metadata = {}) => {
         const { fromCache = false, hasPendingWrites = false } = metadata;
-        // Применяем только серверные данные: не из кэша и без незакоммиченных локальных записей.
-        // Иначе кэш/pending перезаписывают только что сделанные изменения (например автоподстановку).
         if (fromCache || hasPendingWrites) return;
+        const data = mergeDocsToState(docs);
         Object.keys(data).forEach(key => {
-            if (key === 'updatedAt') return;
             lastKnownState[key] = data[key];
             try {
                 const raw = data[key];
@@ -271,29 +289,25 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
     if (!isRemoteStorageEnabled()) return 0;
     if (!stateObj || typeof stateObj !== 'object') return 0;
 
-    const remoteData = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
-    if (remoteData && typeof remoteData === 'object') {
-        Object.keys(remoteData).forEach((key) => {
-            if (key === 'updatedAt') return;
-            lastKnownState[key] = remoteData[key];
-            try {
-                const raw = remoteData[key];
-                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                if (parsed && typeof parsed.value !== 'undefined') {
-                    lastKnownValueContent[key] = JSON.stringify(parsed.value);
-                }
-            } catch (_) {}
-        });
-    }
+    const docs = await readFirestoreCollection(FIRESTORE_COLLECTION);
+    const remoteData = mergeDocsToState(docs);
+    Object.keys(remoteData).forEach((key) => {
+        lastKnownState[key] = remoteData[key];
+        try {
+            const raw = remoteData[key];
+            const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (parsed && typeof parsed.value !== 'undefined') {
+                lastKnownValueContent[key] = JSON.stringify(parsed.value);
+            }
+        } catch (_) {}
+    });
 
     const serialized = {};
     Object.keys(stateObj).forEach((key) => {
         if (key === 'updatedAt') return;
         const ourRev = Number(revsPerKey[key] ?? 0);
         const remoteRev = getRevFromRaw(remoteData?.[key]);
-        if (remoteRev > ourRev) {
-            return;
-        }
+        if (remoteRev > ourRev) return;
         const val = stateObj[key];
         const envelope = buildEnvelope(key, val);
         serialized[key] = JSON.stringify(envelope ?? null);
@@ -304,7 +318,9 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
     }
     addLog('syncing', 'Загрузка локальных данных в облако...');
     try {
-        await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, serialized);
+        for (const key of Object.keys(serialized)) {
+            await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: serialized[key] });
+        }
         Object.keys(serialized).forEach((k) => {
             lastKnownState[k] = serialized[k];
             try {

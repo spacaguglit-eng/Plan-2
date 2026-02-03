@@ -1,10 +1,177 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase } from 'lucide-react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, Bug, ExternalLink } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
 import { normalizeName } from '../../utils';
+
+const parseTimeToMinutes = (value) => {
+    if (!value || !String(value).includes(':')) return null;
+    const [h, m] = String(value).split(':').map(v => parseInt(v, 10));
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+    return Math.max(0, Math.min(1439, h * 60 + m));
+};
+
+const parseDateToDayIndex = (value) => {
+    if (!value || !String(value).includes('.')) return null;
+    const parts = String(value).split('.');
+    const day = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10);
+    const year = parseInt(parts[2], 10);
+    if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) return null;
+    const utc = Date.UTC(year, month - 1, day);
+    return Number.isFinite(utc) ? Math.floor(utc / 86400000) : null;
+};
+
+const formatDayIndexToDate = (dayIndex) => {
+    if (!Number.isFinite(dayIndex)) return '01.01.1970';
+    const date = new Date(dayIndex * 86400000);
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const year = date.getUTCFullYear();
+    return `${day}.${month}.${year}`;
+};
+
+const dateToInputValue = (dateStr) => {
+    if (!dateStr || !String(dateStr).includes('.')) return '';
+    const parts = String(dateStr).split('.');
+    const [d, m, y] = parts;
+    if (!d || !m || !y) return '';
+    return `${y}-${m}-${d}`;
+};
+
+const normalizeInputDate = (value) => {
+    if (!value || !String(value).includes('-')) return value;
+    const [y, m, d] = String(value).split('-');
+    if (!y || !m || !d) return value;
+    return `${d}.${m}.${y}`;
+};
+
+const buildAbsMinutes = (dateStr, timeStr) => {
+    const dayIdx = parseDateToDayIndex(dateStr);
+    if (dayIdx == null) return null;
+    const minutes = parseTimeToMinutes(timeStr);
+    return minutes == null ? null : dayIdx * 1440 + minutes;
+};
+
+const addDaysToDate = (dateStr, days) => {
+    const dayIdx = parseDateToDayIndex(dateStr);
+    if (dayIdx == null || !Number.isFinite(days)) return dateStr;
+    return formatDayIndexToDate(dayIdx + days);
+};
+
+const getCompetenciesList = (competencies) => {
+    if (!competencies) return [];
+    return Array.isArray(competencies) ? competencies : Array.from(competencies);
+};
+
+const hasCompetencyForRole = (worker, roleTitle) => {
+    if (!worker?.competencies || !roleTitle) return false;
+    const comps = worker.competencies;
+    return (comps instanceof Set && comps.has(roleTitle)) || (Array.isArray(comps) && comps.includes(roleTitle));
+};
+
+const hasAnyCompetencies = (competencies) => {
+    if (!competencies) return false;
+    return Array.isArray(competencies) ? competencies.length > 0 : competencies.size > 0;
+};
+
+const FilledSlotCard = React.memo(({
+    slot,
+    shift,
+    statusConfig,
+    selectedDate,
+    draggedWorker,
+    setRvModalData,
+    handleDragStart,
+    handleDragEnd,
+    handleDragOver,
+    handleDrop,
+    handleMarkOutsource,
+    cloneAssignedWorker,
+    handleRemoveAssignment,
+    findWorkerInRegistry
+}) => {
+    const { statusColor, borderColor, iconBg, iconColor, isManual = false } = statusConfig;
+    const assignedWorker = slot.assigned;
+    const workerName = assignedWorker?.name;
+    const registryWorker = workerName ? findWorkerInRegistry(workerName) : null;
+    const displayRole = registryWorker?.role || assignedWorker?.role || 'Не указано';
+    const competenciesList = getCompetenciesList(registryWorker?.competencies);
+    const hasCompetencies = competenciesList.length > 0;
+    const isCompFill = hasCompetencyForRole(registryWorker, slot.roleTitle);
+
+    return (
+        <div
+            draggable
+            onDragStart={(e) => {
+                const workerForDrag = { ...assignedWorker, sourceSlotId: slot.slotId };
+                handleDragStart(e, workerForDrag);
+            }}
+            onDragEnd={handleDragEnd}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDrop(e, slot.slotId, slot.currentWorkerName)}
+            className={`flex items-center gap-3 p-2 pr-16 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
+        >
+            <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
+            <div className="absolute bottom-1 right-1 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                <button
+                    onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
+                    className="w-6 h-6 bg-orange-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-orange-600 active:translate-y-[1px] flex items-center justify-center"
+                    title="Назначить РВ"
+                >
+                    <UserPlus size={12} />
+                </button>
+                {slot.status !== 'outsourced' && (
+                    <button
+                        onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
+                        className="w-6 h-6 bg-amber-100 text-amber-800 rounded-md shadow-sm cursor-pointer hover:bg-amber-200 border border-amber-200 active:translate-y-[1px] flex items-center justify-center"
+                        title="Закрыть аутсорсом"
+                    >
+                        <Briefcase size={12} />
+                    </button>
+                )}
+                <button
+                    onClick={() => cloneAssignedWorker({ date: selectedDate, shiftId: shift.id, slotId: slot.slotId, worker: assignedWorker, roleTitle: slot.roleTitle })}
+                    className="w-6 h-6 bg-slate-100 text-slate-700 rounded-md shadow-sm cursor-pointer hover:bg-slate-200 border border-slate-200 active:translate-y-[1px] flex items-center justify-center"
+                    title="Создать дубликат сотрудника"
+                >
+                    <Copy size={12} />
+                </button>
+                {(slot.status === 'filled' || isManual || slot.status === 'reassigned' || slot.status === 'outsourced') && (
+                    <button onClick={() => handleRemoveAssignment(slot.slotId)} className="w-6 h-6 bg-red-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-red-600 active:translate-y-[1px] flex items-center justify-center">
+                        <X size={12} />
+                    </button>
+                )}
+            </div>
+            <div className={`w-8 h-8 rounded-full ${iconBg} ${iconColor} flex items-center justify-center text-xs font-bold flex-shrink-0`}>
+                {typeof assignedWorker.name === 'string' ? assignedWorker.name.substring(0, 1) : '?'}
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-slate-700 truncate">{typeof assignedWorker.name === 'string' ? assignedWorker.name : 'Error'}</div>
+                <div className="text-[10px] text-slate-500 truncate flex items-center gap-1">
+                    {displayRole} {isManual && <span className="text-blue-600 font-bold ml-1">★</span>}
+                    {isCompFill && <span title="По компетенции"><GraduationCap size={10} className="text-blue-500 ml-1 inline" /></span>}
+                </div>
+                {hasCompetencies && (
+                    <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={competenciesList.join(', ')}>
+                        {competenciesList.join(', ')}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+});
+
+FilledSlotCard.displayName = 'FilledSlotCard';
+
+const FILLED_SLOT_CONFIGS = {
+    filled: { statusColor: 'bg-green-50', borderColor: 'border-green-100', iconBg: 'bg-green-200', iconColor: 'text-green-700', isManual: false },
+    reassigned: { statusColor: 'bg-blue-50', borderColor: 'border-blue-100', iconBg: 'bg-blue-200', iconColor: 'text-blue-700', isManual: false },
+    manual: { statusColor: 'bg-indigo-50', borderColor: 'border-indigo-200', iconBg: 'bg-indigo-200', iconColor: 'text-indigo-700', isManual: true },
+    outsourced: { statusColor: 'bg-amber-50', borderColor: 'border-amber-200', iconBg: 'bg-amber-200', iconColor: 'text-amber-800', isManual: false }
+};
 
 const DashboardView = () => {
     const {
@@ -39,14 +206,29 @@ const DashboardView = () => {
         manualAssignments,
         manualLines,
         addManualLine,
-        removeManualLine
+        removeManualLine,
+        file,
+        savedPlans,
+        currentPlanId,
+        setViewMode
     } = useData();
 
     useRenderTime('dashboard', logPerformanceMetric, viewMode === 'dashboard');
 
     const [contextMenu, setContextMenu] = useState(null);
     const [contextMenuSearch, setContextMenuSearch] = useState('');
-    const [manualLineForm, setManualLineForm] = useState({ shiftId: null, templateName: '', displayName: '', templateOptions: [] });
+    const [manualLineForm, setManualLineForm] = useState({
+        shiftId: null,
+        templateName: '',
+        displayName: '',
+        templateOptions: [],
+        startDate: '',
+        startTime: '',
+        endDate: '',
+        endTime: ''
+    });
+    const [showLineSourceModal, setShowLineSourceModal] = useState(false);
+    const [showSlotSourceModal, setShowSlotSourceModal] = useState(false);
 
     // Create normalized registry map for robust lookup
     const normalizedRegistry = useMemo(() => {
@@ -80,24 +262,79 @@ const DashboardView = () => {
             if (found) {
                 return found.worker;
             }
-            
-            // Fallback: iterate through registry to find match
-            for (const [key, value] of Object.entries(workerRegistry)) {
-                if (normalizeName(key) === normalizedName) {
-                    return value;
-                }
-            }
-            
+
             return null;
         };
     }, [workerRegistry, normalizedRegistry]);
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
-    
-    if (!shiftsData || shiftsData.length === 0) {
-        return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
-    }
+
+    const openArrangementInNewTab = useCallback(() => {
+        if (!shiftsData || shiftsData.length === 0) return;
+        const escapeHtml = (s) => {
+            if (s == null) return '';
+            const str = String(s);
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        };
+        const rows = [];
+        shiftsData.forEach((shift) => {
+            (shift.lineTasks || []).forEach((task) => {
+                (task.slots || []).forEach((slot) => {
+                    const name = slot.assigned?.name ?? slot.currentWorkerName ?? (slot.status === 'outsourced' ? 'Аутсорс' : '—');
+                    const role = slot.roleTitle || '—';
+                    const status = slot.status === 'outsourced' ? ' (аутсорс)' : slot.status === 'manual' ? ' (руч.)' : slot.status === 'reassigned' ? ' (авто)' : '';
+                    rows.push({
+                        shift: `${shift.name || shift.id} · ${shift.type || ''}`,
+                        line: task.displayName || '—',
+                        role: role,
+                        name: name,
+                        status
+                    });
+                });
+            });
+        });
+        const tableRows = rows
+            .map(
+                (r) =>
+                    `<tr><td>${escapeHtml(r.shift)}</td><td>${escapeHtml(r.line)}</td><td>${escapeHtml(r.role)}</td><td>${escapeHtml(r.name)}</td><td class="muted">${escapeHtml(r.status)}</td></tr>`
+            )
+            .join('');
+        const html = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Расстановка ${escapeHtml(selectedDate)}</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; margin: 1rem; color: #1e293b; }
+h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+.muted { color: #64748b; font-size: 0.875rem; }
+table { border-collapse: collapse; width: 100%; max-width: 900px; }
+th, td { border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; text-align: left; }
+th { background: #f1f5f9; font-weight: 600; font-size: 0.875rem; }
+tr:nth-child(even) { background: #f8fafc; }
+</style>
+</head>
+<body>
+<h1>Расстановка на ${escapeHtml(selectedDate)}</h1>
+<table>
+<thead><tr><th>Смена</th><th>Линия</th><th>Роль</th><th>Сотрудник</th><th>Примечание</th></tr></thead>
+<tbody>${tableRows}</tbody>
+</table>
+</body>
+</html>`;
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const w = window.open(url, '_blank', 'noopener');
+        if (w) w.focus();
+        else location.href = url;
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }, [selectedDate, shiftsData]);
 
     const handleAssignFromContextMenu = (worker, slotId) => {
         const assignmentEntry = {
@@ -123,13 +360,17 @@ const DashboardView = () => {
         setContextMenu(null);
     }, [manualAssignments, updateAssignments]);
 
-    const filteredContextMenuEmployees = contextMenu?.availableEmployees?.filter(emp => {
-        if (!contextMenuSearch) return true;
+    const filteredContextMenuEmployees = useMemo(() => {
+        const employees = contextMenu?.availableEmployees;
+        if (!employees) return [];
+        if (!contextMenuSearch) return employees;
         const searchLower = contextMenuSearch.toLowerCase();
-        return emp.name.toLowerCase().includes(searchLower) || 
-               (emp.role && emp.role.toLowerCase().includes(searchLower)) ||
-               (emp.homeLine && emp.homeLine.toLowerCase().includes(searchLower));
-    }) || [];
+        return employees.filter(emp =>
+            emp.name.toLowerCase().includes(searchLower) ||
+            (emp.role && emp.role.toLowerCase().includes(searchLower)) ||
+            (emp.homeLine && emp.homeLine.toLowerCase().includes(searchLower))
+        );
+    }, [contextMenu?.availableEmployees, contextMenuSearch]);
 
     // Close context menu on click outside
     useEffect(() => {
@@ -155,20 +396,42 @@ const DashboardView = () => {
         return templates.filter(template => !used.has(template));
     }, [lineTemplates, manualLines, selectedDate]);
 
-    const openManualLineForm = (shiftId) => {
-        const options = getManualTemplateOptionsForShift(shiftId);
+    if (!shiftsData || shiftsData.length === 0) {
+        return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
+    }
+
+    const openManualLineForm = (shift) => {
+        const options = getManualTemplateOptionsForShift(shift.id);
         if (options.length === 0) return;
         const defaultTemplate = options[0];
+        const isNight = String(shift.type || '').toLowerCase().includes('ночь');
+        const startDate = selectedDate;
+        const startTime = isNight ? '20:00' : '08:00';
+        const endTime = isNight ? '08:00' : '20:00';
+        const endDate = isNight ? addDaysToDate(startDate, 1) : startDate;
         setManualLineForm({
-            shiftId,
+            shiftId: shift.id,
             templateName: defaultTemplate,
             displayName: defaultTemplate,
-            templateOptions: options
+            templateOptions: options,
+            startDate,
+            startTime,
+            endDate,
+            endTime
         });
     };
 
     const closeManualLineForm = () => {
-        setManualLineForm({ shiftId: null, templateName: '', displayName: '', templateOptions: [] });
+        setManualLineForm({
+            shiftId: null,
+            templateName: '',
+            displayName: '',
+            templateOptions: [],
+            startDate: '',
+            startTime: '',
+            endDate: '',
+            endTime: ''
+        });
     };
 
     const handleManualLineTemplateChange = (e) => {
@@ -188,7 +451,7 @@ const DashboardView = () => {
         setManualLineForm(prev => ({ ...prev, displayName: nextName }));
     };
 
-    const handleManualLineSubmit = (event, shiftId) => {
+    const handleManualLineSubmit = (event, shift) => {
         event.preventDefault();
         if (!manualLineForm.templateName) return;
         const displayName = manualLineForm.displayName.trim() || manualLineForm.templateName;
@@ -199,12 +462,59 @@ const DashboardView = () => {
                 count: Math.max(1, parseInt(pos?.count, 10) || 1)
             }))
             : [{ roleTitle: displayName, count: 1 }];
-        addManualLine({
-            date: selectedDate,
-            shiftId,
-            displayName,
-            templateName: manualLineForm.templateName,
-            positions
+        const shiftTypeLower = String(shift?.type || '').toLowerCase();
+        const fallbackStart = shiftTypeLower.includes('ночь') ? '20:00' : '08:00';
+        const fallbackEnd = shiftTypeLower.includes('ночь') ? '08:00' : '20:00';
+        const startDate = manualLineForm.startDate || selectedDate;
+        const endDate = manualLineForm.endDate || manualLineForm.startDate || selectedDate;
+        const startTime = manualLineForm.startTime || fallbackStart;
+        const endTime = manualLineForm.endTime || fallbackEnd;
+        let startAbs = buildAbsMinutes(startDate, startTime);
+        let endAbs = buildAbsMinutes(endDate, endTime);
+        if (startAbs == null || endAbs == null) {
+            addManualLine({
+                date: selectedDate,
+                shiftId: shift.id,
+                displayName,
+                templateName: manualLineForm.templateName,
+                positions
+            });
+            closeManualLineForm();
+            return;
+        }
+        if (endAbs <= startAbs) endAbs += 1440;
+        const candidateDates = scheduleDates && scheduleDates.length > 0
+            ? scheduleDates
+            : (() => {
+                const startDay = Math.floor(startAbs / 1440);
+                const endDay = Math.floor((endAbs - 1) / 1440);
+                const dates = [];
+                for (let day = startDay; day <= endDay; day += 1) {
+                    dates.push(formatDayIndexToDate(day));
+                }
+                return dates;
+            })();
+        candidateDates.forEach(dateStr => {
+            const shiftsForDate = getShiftsForDate(dateStr);
+            const dayIdx = parseDateToDayIndex(dateStr);
+            if (dayIdx == null) return;
+            shiftsForDate.forEach(targetShift => {
+                const isNight = String(targetShift.type || '').toLowerCase().includes('ночь');
+                const shiftStart = dayIdx * 1440 + (isNight ? 20 * 60 : 8 * 60);
+                const shiftEnd = (dayIdx + (isNight ? 1 : 0)) * 1440 + (isNight ? 8 * 60 : 20 * 60);
+                const overlap = Math.min(endAbs, shiftEnd) - Math.max(startAbs, shiftStart);
+                if (overlap <= 0) return;
+                const key = `${dateStr}_${targetShift.id}`;
+                const existing = manualLines[key] || [];
+                if (existing.some(line => line.templateName === manualLineForm.templateName)) return;
+                addManualLine({
+                    date: dateStr,
+                    shiftId: targetShift.id,
+                    displayName,
+                    templateName: manualLineForm.templateName,
+                    positions
+                });
+            });
         });
         closeManualLineForm();
     };
@@ -222,6 +532,42 @@ const DashboardView = () => {
                 onRestore={restoreAssignments}
                 onExportLines={exportScheduleByLinesToExcel}
             />
+            <div className="flex justify-end gap-2 mb-2">
+                <button
+                    type="button"
+                    onClick={openArrangementInNewTab}
+                    disabled={!shiftsData || shiftsData.length === 0}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Открыть текущую расстановку по выбранной дате в новой вкладке"
+                >
+                    <ExternalLink size={16} /> Расстановка в новой вкладке
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setViewMode?.('reports')}
+                    disabled={!shiftsData || shiftsData.length === 0}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Перейти к сравнению основного и оперативного плана (текущая расстановка участвует, если этот план — основной или оперативный)"
+                >
+                    <ArrowRightLeft size={16} /> Отправить в сравнение
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setShowLineSourceModal(true)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium text-sm transition-colors"
+                    title="Источник каждой линии (дебаг)"
+                >
+                    <Bug size={16} /> Источники линий
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setShowSlotSourceModal(true)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-medium text-sm transition-colors"
+                    title="Источник каждого слота (дебаг)"
+                >
+                    <Bug size={16} /> Источники слотов
+                </button>
+            </div>
             {rvModalData && (
                 <RvPickerModal
                     isOpen={!!rvModalData}
@@ -231,16 +577,125 @@ const DashboardView = () => {
                     workerRegistry={workerRegistry}
                     globalSchedule={globalWorkSchedule}
                     scheduleDates={scheduleDates}
-                    currentShiftId={rvModalData.currentShiftId}
                     onAssign={handleAssignRv}
                 />
             )}
+            {showLineSourceModal && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowLineSourceModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                                <Bug size={20} className="text-slate-500" />
+                                Источник каждой линии (дебаг)
+                            </h3>
+                            <button type="button" onClick={() => setShowLineSourceModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-auto flex-1 text-sm">
+                            <div className="text-slate-500 mb-4">Дата: <strong className="text-slate-700">{selectedDate}</strong></div>
+                            {shiftsData.map((shift) => (
+                                <div key={shift.id} className="mb-6 last:mb-0">
+                                    <div className="font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                                        <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded">Смена {shift.id}</span>
+                                        {shift.name} · {shift.type}
+                                    </div>
+                                    <ul className="space-y-1.5 border border-slate-100 rounded-lg bg-slate-50/50 p-3">
+                                        {(shift.lineTasks || []).map((task, idx) => {
+                                            const isManual = task.isManualLine || task.lineSource === 'manual';
+                                            const sourceLabel = isManual
+                                                ? `Ручная линия${task.manualLineId ? ` (id: ${task.manualLineId})` : ''}${task.templateName ? `, шаблон: ${task.templateName}` : ''}`
+                                                : `Матрица (лист Люд)${task.templateName ? `, шаблон: ${task.templateName}` : ''}${task.activeLineName ? `, активная линия: ${task.activeLineName}` : ''}`;
+                                            return (
+                                                <li key={idx} className="flex flex-wrap items-baseline gap-2">
+                                                    <span className="font-medium text-slate-800">{task.displayName || '—'}</span>
+                                                    <span className="text-slate-400">·</span>
+                                                    <span className={isManual ? 'text-indigo-600' : 'text-slate-600'}>{sourceLabel}</span>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+            {showSlotSourceModal && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSlotSourceModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-indigo-50 rounded-t-2xl">
+                            <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2">
+                                <Bug size={20} className="text-indigo-600" />
+                                Источник каждого слота
+                            </h3>
+                            <button type="button" onClick={() => setShowSlotSourceModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-auto flex-1 text-sm">
+                            <div className="text-slate-500 mb-4">
+                                Дата: <strong className="text-slate-700">{selectedDate}</strong> · Автоподстановка: <strong>{autoReassignEnabled ? 'вкл' : 'выкл'}</strong>
+                                <span className="ml-4">Файл: <strong className="text-slate-700">{file?.name || '—'}</strong></span>
+                                <span className="ml-4">План: <strong className="text-slate-700">{savedPlans?.find(p => p.id === currentPlanId)?.name || currentPlanId || '—'}</strong></span>
+                            </div>
+                            <div className="mb-4 text-xs text-slate-500 bg-slate-50 p-3 rounded-lg">
+                                Источник: roster = rawTables.roster+demand, manual = manualAssignments, автоподстановка = из резерва, outsourced = аутсорс, vacancy = вакансия. Ручные линии = manualLines.
+                            </div>
+                            {shiftsData.map((shift) => (
+                                <div key={shift.id} className="mb-6 border border-slate-200 rounded-xl overflow-hidden">
+                                    <div className="px-4 py-2 bg-blue-50 font-semibold text-slate-700 flex items-center gap-2">
+                                        <span className="bg-blue-200 text-blue-800 px-2 py-0.5 rounded">Смена {shift.id}</span>
+                                        {shift.name} · {shift.type}
+                                    </div>
+                                    <div className="p-4 space-y-4">
+                                        {(shift.lineTasks || []).map((task, taskIdx) => (
+                                            <div key={taskIdx} className="border-l-2 border-slate-200 pl-3">
+                                                <div className="font-bold text-slate-700 mb-2">{task.displayName || '—'}</div>
+                                                <div className="space-y-1 flex flex-wrap gap-2">
+                                                    {                                                    task.slots.map((slot, sIdx) => {
+                                                        const sourceLabel = slot.status === 'filled' ? 'roster' :
+                                                            slot.status === 'reassigned' ? 'автоподстановка' :
+                                                            slot.status === 'manual' ? 'manual' :
+                                                            slot.status === 'outsourced' ? 'outsourced' :
+                                                            slot.isManualVacancy ? 'vacancy (закрыто)' : 'vacancy';
+                                                        const hasManual = slot.slotId && manualAssignments?.[slot.slotId];
+                                                        const dataModule = hasManual ? 'manualAssignments' : (task.isManualLine ? 'manualLines' : 'rawTables');
+                                                        const sourceColor = sourceLabel === 'roster' ? 'bg-emerald-100 text-emerald-700' :
+                                                            sourceLabel === 'автоподстановка' ? 'bg-blue-100 text-blue-700' :
+                                                            sourceLabel === 'manual' ? 'bg-indigo-100 text-indigo-700' :
+                                                            sourceLabel === 'outsourced' ? 'bg-amber-100 text-amber-700' :
+                                                            'bg-slate-100 text-slate-600';
+                                                        const name = slot.assigned?.name || slot.currentWorkerName || '(вакансия)';
+                                                        return (
+                                                            <div key={sIdx} className="inline-flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-xs">
+                                                                <span className="font-medium text-slate-700 min-w-[100px] truncate" title={slot.slotId}>{slot.roleTitle}</span>
+                                                                <span className={`font-semibold min-w-[100px] truncate ${slot.assigned || slot.currentWorkerName ? 'text-slate-800' : 'text-slate-400 italic'}`}>{name}</span>
+                                                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sourceColor}`}>{sourceLabel}</span>
+                                                                <span className="text-[10px] text-slate-500" title="файл/копия/модуль">
+                                                                    {file?.name || '—'} · {savedPlans?.find(p => p.id === currentPlanId)?.name || '—'} · {dataModule}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="space-y-12">
                 {shiftsData.map((shift) => {
-                    const vacancies = Math.max(0, shift.totalRequired - shift.filledSlots);
-                    const floatersCount = shift.floaters.length;
-                    const freeWorkers = shift.unassignedPeople.length;
                     const isDayShift = shift.type?.toLowerCase().includes('день');
+                    const hasFloaters = shift.floaters.length > 0;
+                    const hasVacanciesHere = shift.filledSlots < shift.totalRequired;
+                    const isActive = hasFloaters && (isGlobalFill || hasVacanciesHere);
+                    const availableTemplates = getManualTemplateOptionsForShift(shift.id);
+                    const isDisabled = availableTemplates.length === 0;
                     return (
                         <div id={`brigade-${shift.id}`} key={shift.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="px-6 py-4 border-b flex items-center justify-between bg-slate-50">
@@ -255,41 +710,28 @@ const DashboardView = () => {
                                 <label className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors select-none">
                                     {isGlobalFill ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />} <span>Заполнить глобально</span> <input type="checkbox" className="hidden" checked={isGlobalFill} onChange={(e) => setIsGlobalFill(e.target.checked)} />
                                 </label>
-                                {(() => {
-                                    const hasFloaters = shift.floaters.length > 0;
-                                    const hasVacanciesHere = shift.filledSlots < shift.totalRequired;
-                                    const isActive = hasFloaters && (isGlobalFill || hasVacanciesHere);
-                                    return (
-                                        <button
-                                            onClick={() => handleAutoFillFloaters(shift, isGlobalFill)}
-                                            disabled={!isActive}
-                                            title={!hasFloaters ? 'Нет подсобников в резерве' : isGlobalFill ? 'Заполнить вакансии подсобниками по всем сменам' : 'Заполнить вакансии подсобниками на этой смене'}
-                                            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-colors shadow-sm active:transform active:scale-95 ${isActive ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
-                                        >
-                                            <Wand2 size={18} /> Заполнить подсобниками
-                                        </button>
-                                    );
-                                })()}
-                                {(() => {
-                                    const availableTemplates = getManualTemplateOptionsForShift(shift.id);
-                                    const isDisabled = availableTemplates.length === 0;
-                                    return (
-                                        <button
-                                            type="button"
-                                            disabled={isDisabled}
-                                            onClick={() => openManualLineForm(shift.id)}
-                                            title={isDisabled ? 'Нет доступных шаблонов для этой смены' : 'Добавить ручную линию'}
-                                            className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-semibold text-sm transition-colors ${isDisabled ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
-                                        >
-                                            <Plus size={16} /> Добавить линию
-                                        </button>
-                                    );
-                                })()}
+                                <button
+                                    onClick={() => handleAutoFillFloaters(shift, isGlobalFill)}
+                                    disabled={!isActive}
+                                    title={!hasFloaters ? 'Нет подсобников в резерве' : isGlobalFill ? 'Заполнить вакансии подсобниками по всем сменам' : 'Заполнить вакансии подсобниками на этой смене'}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-colors shadow-sm active:transform active:scale-95 ${isActive ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                                >
+                                    <Wand2 size={18} /> Заполнить подсобниками
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={isDisabled}
+                                    onClick={() => openManualLineForm(shift)}
+                                    title={isDisabled ? 'Нет доступных шаблонов для этой смены' : 'Добавить ручную линию'}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-semibold text-sm transition-colors ${isDisabled ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
+                                >
+                                    <Plus size={16} /> Добавить линию
+                                </button>
                             </div>
                         </div>
                         {manualLineForm.shiftId === shift.id && (
                             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
-                                <form onSubmit={(e) => handleManualLineSubmit(e, shift.id)} className="grid gap-3 md:grid-cols-[220px_1fr_auto] md:items-end">
+                                <form onSubmit={(e) => handleManualLineSubmit(e, shift)} className="grid gap-3 md:grid-cols-[220px_1fr_1fr_1fr_auto] md:items-end">
                                     <div className="flex flex-col gap-1">
                                         <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Шаблон</label>
                                         <select
@@ -310,6 +752,40 @@ const DashboardView = () => {
                                             className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                                             placeholder="Например, «Линия 3»"
                                         />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Старт</label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="date"
+                                                value={dateToInputValue(manualLineForm.startDate)}
+                                                onChange={(e) => setManualLineForm(prev => ({ ...prev, startDate: normalizeInputDate(e.target.value) }))}
+                                                className="border border-slate-200 rounded-lg px-2 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                            />
+                                            <input
+                                                type="time"
+                                                value={manualLineForm.startTime}
+                                                onChange={(e) => setManualLineForm(prev => ({ ...prev, startTime: e.target.value }))}
+                                                className="border border-slate-200 rounded-lg px-2 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Конец</label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="date"
+                                                value={dateToInputValue(manualLineForm.endDate)}
+                                                onChange={(e) => setManualLineForm(prev => ({ ...prev, endDate: normalizeInputDate(e.target.value) }))}
+                                                className="border border-slate-200 rounded-lg px-2 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                            />
+                                            <input
+                                                type="time"
+                                                value={manualLineForm.endTime}
+                                                onChange={(e) => setManualLineForm(prev => ({ ...prev, endTime: e.target.value }))}
+                                                className="border border-slate-200 rounded-lg px-2 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                            />
+                                        </div>
                                     </div>
                                     <div className="flex gap-2">
                                         <button
@@ -357,21 +833,11 @@ const DashboardView = () => {
                                         </div>
                                         <div className="p-3 space-y-2 flex-1">
                                             {task.slots.map((slot, sIdx) => {
-                                                const wName = slot.assigned?.name;
-                                                const reg = wName ? findWorkerInRegistry(wName) : null;
-                                                const isCompFill = reg && reg.competencies && (
-                                                    (reg.competencies instanceof Set && reg.competencies.has(slot.roleTitle)) ||
-                                                    (Array.isArray(reg.competencies) && reg.competencies.includes(slot.roleTitle))
-                                                );
-
                                                 if (slot.assigned?.type === 'external') {
                                                     // For external workers, also look up competencies from registry
                                                     const extWorkerName = slot.assigned?.name;
                                                     const extRegistryWorker = extWorkerName ? findWorkerInRegistry(extWorkerName) : null;
-                                                    const extCompetencies = extRegistryWorker?.competencies;
-                                                    const extCompetenciesList = extCompetencies 
-                                                        ? (Array.isArray(extCompetencies) ? extCompetencies : Array.from(extCompetencies || []))
-                                                        : [];
+                                                    const extCompetenciesList = getCompetenciesList(extRegistryWorker?.competencies);
                                                     const extHasCompetencies = extCompetenciesList.length > 0;
                                                     
                                                     return (
@@ -411,122 +877,58 @@ const DashboardView = () => {
                                                     );
                                                 }
 
-                                                const renderFilled = (statusColor, borderColor, iconBg, iconColor, assignedWorker, isManual = false) => {
-                                                    // Get worker data from registry using robust lookup
-                                                    const workerName = assignedWorker?.name;
-                                                    const registryWorker = workerName ? findWorkerInRegistry(workerName) : null;
-                                                    
-                                                    // Use role from registry if available, otherwise fall back to assignedWorker.role
-                                                    // This ensures roster workers (which only have { name }) get their role from registry
-                                                    const displayRole = registryWorker?.role || assignedWorker?.role || 'Не указано';
-                                                    
-                                                    // Safe competency handling (works with both Set and Array)
-                                                    const competencies = registryWorker?.competencies;
-                                                    const competenciesList = competencies 
-                                                        ? (Array.isArray(competencies) ? competencies : Array.from(competencies || []))
-                                                        : [];
-                                                    const hasCompetencies = competenciesList.length > 0;
-                                                    
-                                                    // Check if worker has competency for this role
-                                                    const isCompFill = registryWorker && competencies && (
-                                                        (competencies instanceof Set && competencies.has(slot.roleTitle)) ||
-                                                        (Array.isArray(competencies) && competencies.includes(slot.roleTitle))
-                                                    );
-                                                    
-                                                    return (
-                                                        <div 
-                                                            draggable 
-                                                            onDragStart={(e) => {
-                                                                // Создаем worker объект из слота для перетаскивания
-                                                                const workerForDrag = {
-                                                                    ...assignedWorker,
-                                                                    sourceSlotId: slot.slotId // Запоминаем откуда тащим
-                                                                };
-                                                                handleDragStart(e, workerForDrag);
-                                                            }}
-                                                            onDragEnd={handleDragEnd}
-                                                            onDragOver={handleDragOver}
-                                                            onDrop={(e) => {
-                                                                // Если тащат на занятый слот - меняем местами
-                                                                handleDrop(e, slot.slotId, slot.currentWorkerName);
-                                                            }}
-                                                            className={`flex items-center gap-3 p-2 pr-16 rounded-lg ${statusColor} border ${borderColor} relative group cursor-grab active:cursor-grabbing hover:shadow-md transition-all ${draggedWorker ? 'ring-2 ring-blue-400' : ''}`}
-                                                        >
-                                                            <GripVertical size={14} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity absolute left-1" />
-                                                            <div className="absolute bottom-1 right-1 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                                                                <button
-                                                                    onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
-                                                                    className="w-6 h-6 bg-orange-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-orange-600 active:translate-y-[1px] flex items-center justify-center"
-                                                                    title="Назначить РВ"
-                                                                >
-                                                                    <UserPlus size={12} />
-                                                                </button>
-                                                                {slot.status !== 'outsourced' && (
-                                                                    <button
-                                                                        onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
-                                                                        className="w-6 h-6 bg-amber-100 text-amber-800 rounded-md shadow-sm cursor-pointer hover:bg-amber-200 border border-amber-200 active:translate-y-[1px] flex items-center justify-center"
-                                                                        title="Закрыть аутсорсом"
-                                                                    >
-                                                                        <Briefcase size={12} />
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    onClick={() => cloneAssignedWorker({ date: selectedDate, shiftId: shift.id, slotId: slot.slotId, worker: assignedWorker, roleTitle: slot.roleTitle })}
-                                                                    className="w-6 h-6 bg-slate-100 text-slate-700 rounded-md shadow-sm cursor-pointer hover:bg-slate-200 border border-slate-200 active:translate-y-[1px] flex items-center justify-center"
-                                                                    title="Создать дубликат сотрудника"
-                                                                >
-                                                                    <Copy size={12} />
-                                                                </button>
-                                                                {(slot.status === 'filled' || isManual || slot.status === 'reassigned' || slot.status === 'outsourced') && (
-                                                                    <button onClick={() => handleRemoveAssignment(slot.slotId)} className="w-6 h-6 bg-red-500 text-white rounded-md shadow-sm cursor-pointer hover:bg-red-600 active:translate-y-[1px] flex items-center justify-center">
-                                                                        <X size={12} />
-                                                                    </button>
-                                                                )}
-                                                            </div>
-                                                            <div className={`w-8 h-8 rounded-full ${iconBg} ${iconColor} flex items-center justify-center text-xs font-bold flex-shrink-0`}>
-                                                                {typeof assignedWorker.name === 'string' ? assignedWorker.name.substring(0, 1) : '?'}
-                                                            </div>
-                                                            <div className="min-w-0 flex-1">
-                                                                <div className="text-sm font-semibold text-slate-700 truncate">{typeof assignedWorker.name === 'string' ? assignedWorker.name : 'Error'}</div>
-                                                                <div className="text-[10px] text-slate-500 truncate flex items-center gap-1">
-                                                                    {displayRole} {isManual && <span className="text-blue-600 font-bold ml-1">★</span>}
-                                                                    {isCompFill && <span title="По компетенции"><GraduationCap size={10} className="text-blue-500 ml-1 inline" /></span>}
-                                                                </div>
-                                                                {hasCompetencies && (
-                                                                    <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={competenciesList.join(', ')}>
-                                                                        {competenciesList.join(', ')}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    );
+                                                const filledCardProps = {
+                                                    slot,
+                                                    shift,
+                                                    selectedDate,
+                                                    draggedWorker,
+                                                    setRvModalData,
+                                                    handleDragStart,
+                                                    handleDragEnd,
+                                                    handleDragOver,
+                                                    handleDrop,
+                                                    handleMarkOutsource,
+                                                    cloneAssignedWorker,
+                                                    handleRemoveAssignment,
+                                                    findWorkerInRegistry
                                                 };
 
                                                 if (slot.status === 'filled') {
-                                                    return <div key={sIdx}>{renderFilled('bg-green-50', 'border-green-100', 'bg-green-200', 'text-green-700', slot.assigned)}</div>;
-                                                } else if (slot.status === 'reassigned') {
+                                                    return (
+                                                        <div key={sIdx}>
+                                                            <FilledSlotCard {...filledCardProps} statusConfig={FILLED_SLOT_CONFIGS.filled} />
+                                                        </div>
+                                                    );
+                                                }
+                                                if (slot.status === 'reassigned') {
                                                     return (
                                                         <div key={sIdx} className="relative">
-                                                            {renderFilled('bg-blue-50', 'border-blue-100', 'bg-blue-200', 'text-blue-700', slot.assigned)}
+                                                            <FilledSlotCard {...filledCardProps} statusConfig={FILLED_SLOT_CONFIGS.reassigned} />
                                                             <div className="absolute top-0 right-0 bg-blue-200 text-blue-700 px-1.5 py-0.5 rounded-bl text-[9px] font-bold pointer-events-none">
                                                                 <ArrowRightLeft size={8} className="inline mr-0.5" />
                                                                 {slot.assigned.homeLine}
                                                             </div>
                                                         </div>
                                                     );
-                                                } else if (slot.status === 'manual') {
-                                                    return <div key={sIdx}>{renderFilled('bg-indigo-50', 'border-indigo-200', 'bg-indigo-200', 'text-indigo-700', slot.assigned, true)}</div>;
-                                                } else if (slot.status === 'outsourced') {
+                                                }
+                                                if (slot.status === 'manual') {
+                                                    return (
+                                                        <div key={sIdx}>
+                                                            <FilledSlotCard {...filledCardProps} statusConfig={FILLED_SLOT_CONFIGS.manual} />
+                                                        </div>
+                                                    );
+                                                }
+                                                if (slot.status === 'outsourced') {
                                                     return (
                                                         <div key={sIdx} className="relative">
-                                                            {renderFilled('bg-amber-50', 'border-amber-200', 'bg-amber-200', 'text-amber-800', slot.assigned)}
+                                                            <FilledSlotCard {...filledCardProps} statusConfig={FILLED_SLOT_CONFIGS.outsourced} />
                                                             <div className="absolute top-0 right-0 bg-amber-300 text-amber-900 px-1.5 py-0.5 rounded-bl text-[9px] font-bold pointer-events-none">
                                                                 Аутсорс
                                                             </div>
                                                         </div>
                                                     );
-                                                } else {
-                                                    return (
+                                                }
+                                                return (
                                                         <div 
                                                             key={sIdx} 
                                                             onDragOver={handleDragOver} 
@@ -534,10 +936,9 @@ const DashboardView = () => {
                                                             onContextMenu={(e) => {
                                                                 e.preventDefault();
                                                                 if (slot.status === 'vacancy' && !slot.isManualVacancy) {
-                                                                    const currentShift = shiftsData.find(s => s.id === shift.id);
                                                                     const availableEmployees = [
-                                                                        ...(currentShift?.unassignedPeople || []).filter(p => p.isAvailable),
-                                                                        ...(currentShift?.floaters || [])
+                                                                        ...(shift?.unassignedPeople || []).filter(p => p.isAvailable),
+                                                                        ...(shift?.floaters || [])
                                                                     ];
                                                                     setContextMenu({
                                                                         x: e.clientX,
@@ -567,25 +968,24 @@ const DashboardView = () => {
                                                             </div>
                                                             {!draggedWorker && !slot.isManualVacancy && (
                                                                 <div className="flex items-center gap-2">
-                                                                        <button
-                                                                            onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
-                                                                            className="w-6 h-6 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md border border-amber-200 transition-colors flex items-center justify-center shadow-sm"
-                                                                            title="Закрыть аутсорсом"
-                                                                        >
-                                                                            <Briefcase size={12} />
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
-                                                                            className="w-6 h-6 bg-orange-100 hover:bg-orange-200 text-orange-600 rounded-md transition-colors flex items-center justify-center shadow-sm"
-                                                                            title="Назначить РВ"
-                                                                        >
-                                                                            <UserPlus size={12} />
-                                                                        </button>
+                                                                    <button
+                                                                        onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
+                                                                        className="w-6 h-6 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md border border-amber-200 transition-colors flex items-center justify-center shadow-sm"
+                                                                        title="Закрыть аутсорсом"
+                                                                    >
+                                                                        <Briefcase size={12} />
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => setRvModalData({ date: selectedDate, roleTitle: slot.roleTitle, slotId: slot.slotId, currentShiftId: shift.id, currentShiftType: shift.type })}
+                                                                        className="w-6 h-6 bg-orange-100 hover:bg-orange-200 text-orange-600 rounded-md transition-colors flex items-center justify-center shadow-sm"
+                                                                        title="Назначить РВ"
+                                                                    >
+                                                                        <UserPlus size={12} />
+                                                                    </button>
                                                                 </div>
                                                             )}
                                                         </div>
-                                                    );
-                                                }
+                                                );
                                             })}
                                         </div>
                                     </div>
@@ -595,7 +995,7 @@ const DashboardView = () => {
                                 <div className="bg-white rounded-xl border border-yellow-200 shadow-sm p-4 relative overflow-hidden">
                                     <div className="absolute top-0 left-0 w-1 h-full bg-yellow-400"></div>
                                     <h4 className="font-bold text-slate-700 mb-3 flex items-center gap-2">
-                                        {shift.type.toLowerCase().includes('день') ? <Sun size={18} className="text-yellow-500" /> : <Moon size={18} className="text-slate-600" />}
+                                        {isDayShift ? <Sun size={18} className="text-yellow-500" /> : <Moon size={18} className="text-slate-600" />}
                                         Резерв ({shift.floaters.length})
                                     </h4>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -627,10 +1027,8 @@ const DashboardView = () => {
                                                 className={`flex items-center gap-2 p-2 rounded border transition-shadow ${p.isAvailable ? 'bg-slate-50 border-slate-100 cursor-grab active:cursor-grabbing hover:shadow-md' : 'bg-slate-100 border-slate-200 opacity-60 cursor-not-allowed'} ${p.isClone ? 'border-blue-200 bg-blue-50 text-blue-700' : ''}`}
                                                 title={p.isClone ? 'Совмещение сотрудника, уже занятое на линии' : (!p.isAvailable ? p.statusReason : (() => {
                                                     const regWorker = findWorkerInRegistry(p.name);
-                                                    const comps = regWorker?.competencies;
-                                                    return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) 
-                                                        ? `Компетенции: ${Array.isArray(comps) ? comps.join(', ') : Array.from(comps).join(', ')}` 
-                                                        : '';
+                                                    const compsList = getCompetenciesList(regWorker?.competencies);
+                                                    return hasAnyCompetencies(regWorker?.competencies) ? `Компетенции: ${compsList.join(', ')}` : '';
                                                 })())}
                                             >
                                                 {p.isAvailable ? <GripVertical size={14} className="text-slate-300" /> : <Ban size={14} className="text-red-400" />}
@@ -655,11 +1053,7 @@ const DashboardView = () => {
                                                                 </button>
                                                             </>
                                                         )}
-                                                        {(() => {
-                                                            const regWorker = findWorkerInRegistry(p.name);
-                                                            const comps = regWorker?.competencies;
-                                                            return comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0) && <GraduationCap size={10} className="text-blue-400" />;
-                                                        })()}
+                                                        {hasAnyCompetencies(findWorkerInRegistry(p.name)?.competencies) && <GraduationCap size={10} className="text-blue-400" />}
                                                     </div>
                                                     <div className="text-[9px] text-slate-400 truncate">
                                                         {!p.isAvailable ? <span className="text-red-500 font-bold">{p.statusReason}</span> : `${p.role} (${p.homeLine})`}
@@ -699,38 +1093,36 @@ const DashboardView = () => {
                             />
                         </div>
                     </div>
-                                    <div className="max-h-[300px] overflow-y-auto">
-                                        {filteredContextMenuEmployees.length === 0 ? (
-                                            <div className="p-4 text-center text-sm text-slate-400">
-                                                {contextMenuSearch ? 'Ничего не найдено' : 'Нет доступных сотрудников'}
+                    <div className="max-h-[300px] overflow-y-auto">
+                        {filteredContextMenuEmployees.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-slate-400">
+                                {contextMenuSearch ? 'Ничего не найдено' : 'Нет доступных сотрудников'}
+                            </div>
+                        ) : (
+                            filteredContextMenuEmployees.map(emp => {
+                                const hasComps = hasAnyCompetencies(findWorkerInRegistry(emp.name)?.competencies);
+                                return (
+                                    <button
+                                        key={emp.id || emp.name}
+                                        onClick={() => handleAssignFromContextMenu(emp, contextMenu.slotId)}
+                                        className="w-full px-4 py-2 text-left hover:bg-blue-50 transition-colors border-b border-slate-100 last:border-b-0"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-sm font-semibold text-slate-700 truncate flex items-center gap-1">
+                                                    {emp.name}
+                                                    {hasComps && <GraduationCap size={12} className="text-blue-400" />}
+                                                </div>
+                                                <div className="text-xs text-slate-500 truncate">
+                                                    {emp.role} {emp.homeLine && `(${emp.homeLine})`}
+                                                </div>
                                             </div>
-                                        ) : (
-                                            filteredContextMenuEmployees.map(emp => {
-                                                const regWorker = findWorkerInRegistry(emp.name);
-                                                const comps = regWorker?.competencies;
-                                                const hasComps = comps && (Array.isArray(comps) ? comps.length > 0 : comps.size > 0);
-                                                return (
-                                                    <button
-                                                        key={emp.id || emp.name}
-                                                        onClick={() => handleAssignFromContextMenu(emp, contextMenu.slotId)}
-                                                        className="w-full px-4 py-2 text-left hover:bg-blue-50 transition-colors border-b border-slate-100 last:border-b-0"
-                                                    >
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="text-sm font-semibold text-slate-700 truncate flex items-center gap-1">
-                                                                    {emp.name}
-                                                                    {hasComps && <GraduationCap size={12} className="text-blue-400" />}
-                                                                </div>
-                                                                <div className="text-xs text-slate-500 truncate">
-                                                                    {emp.role} {emp.homeLine && `(${emp.homeLine})`}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </button>
-                                                );
-                                            })
-                                        )}
-                                    </div>
+                                        </div>
+                                    </button>
+                                );
+                            })
+                        )}
+                    </div>
                 </div>
             )}
         </div>

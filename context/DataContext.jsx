@@ -215,8 +215,9 @@ export const DataProvider = ({ children }) => {
         workerRegistry: serializeWorkerRegistry(workerRegistry),
         manualAssignments,
         manualLines,
-        assignmentClones
-    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments, manualLines, assignmentClones]);
+        assignmentClones,
+        autoReassignEnabled
+    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments, manualLines, assignmentClones, autoReassignEnabled]);
 
     const normalizeManualRoleForId = (roleTitle) => {
         return String(roleTitle || 'role').replace(/\s+/g, '_');
@@ -273,6 +274,7 @@ export const DataProvider = ({ children }) => {
         setManualLines(savedManualLines);
         const savedClones = planData.assignmentClones || loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
         setAssignmentClones(savedClones);
+        setAutoReassignEnabled(planData.autoReassignEnabled ?? true);
         if (planData.scheduleDates?.length > 0) {
             setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
         }
@@ -652,7 +654,7 @@ export const DataProvider = ({ children }) => {
         });
     }, [isLocked]);
 
-    const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status }) => {
+    const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status, fiveDay }) => {
         if (isReadOnly) {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
             return;
@@ -662,7 +664,7 @@ export const DataProvider = ({ children }) => {
             if (oldName && oldName !== newName) {
                 const data = next[oldName];
                 delete next[oldName];
-                next[newName] = { ...data, name: newName, competencies, status };
+                next[newName] = { ...data, name: newName, competencies, status, fiveDay: fiveDay ?? data?.fiveDay };
                 setLineTemplates(lt => {
                     const newLt = { ...lt };
                     Object.keys(newLt).forEach(k => {
@@ -679,12 +681,14 @@ export const DataProvider = ({ children }) => {
                     return newLt;
                 });
             } else {
+                const existing = next[newName];
                 next[newName] = {
                     name: newName,
-                    role: next[newName]?.role || 'Сотрудник',
-                    homeLine: next[newName]?.homeLine || '',
+                    role: existing?.role || 'Сотрудник',
+                    homeLine: existing?.homeLine || '',
                     competencies,
-                    status
+                    status,
+                    fiveDay: fiveDay ?? existing?.fiveDay
                 };
             }
             const registryForStorage = {};
@@ -853,11 +857,13 @@ export const DataProvider = ({ children }) => {
                         names.forEach(name => {
                             const parsedStatus = parseWorkerStatus(rawStat);
                             const comps = rawComp ? rawComp.split(/[,;]+/).map(s => s.trim()) : [];
+                            const hasFiveDay = rawStat && String(rawStat).toLowerCase().includes('пятидневк');
                             if (!registry[name]) {
-                                registry[name] = { name, role, homeLine, competencies: new Set(comps), status: parsedStatus };
+                                registry[name] = { name, role, homeLine, competencies: new Set(comps), status: parsedStatus, fiveDay: hasFiveDay };
                             } else {
                                 comps.forEach(c => registry[name].competencies.add(c));
                                 if (!registry[name].status && parsedStatus) registry[name].status = parsedStatus;
+                                if (hasFiveDay) registry[name].fiveDay = true;
                             }
                         });
                     }
@@ -1046,7 +1052,8 @@ export const DataProvider = ({ children }) => {
         workerRegistry: planData.workerRegistry || {},
         manualAssignments: planData.manualAssignments || {},
         manualLines: planData.manualLines || {},
-        planningState: planData.planningState || null
+        planningState: planData.planningState || null,
+        autoReassignEnabled: planData.autoReassignEnabled
     }), []);
 
     const createPlanFromSchedule = useCallback(({ demand, roster, name, planningState } = {}) => {
@@ -1118,6 +1125,9 @@ export const DataProvider = ({ children }) => {
         const demandData = normalized.rawTables?.demand;
         const templates = normalized.lineTemplates || {};
         const assignments = normalized.manualAssignments || {};
+        const manualLines = normalized.manualLines || {};
+        const workerRegistry = normalized.workerRegistry || {};
+        const autoReassignEnabled = normalized.autoReassignEnabled ?? true;
 
         if (!Array.isArray(demandData) || demandData.length === 0) {
             return { slots: [], slotMap: new Map() };
@@ -1125,6 +1135,22 @@ export const DataProvider = ({ children }) => {
 
         const headers = Array.isArray(demandData[0]) ? demandData[0] : [];
         const slots = [];
+        const availabilityCache = new Map();
+
+        const getAvailability = (name, dateStr) => {
+            const k = `${name}|${dateStr}`;
+            if (availabilityCache.has(k)) return availabilityCache.get(k);
+            const v = checkWorkerAvailability(name, dateStr, workerRegistry);
+            availabilityCache.set(k, v);
+            return v;
+        };
+
+        const rowAt = (row, idx) => {
+            if (row == null) return undefined;
+            if (Array.isArray(row)) return row[idx];
+            if (typeof row === 'object') return row[idx] ?? row[String(idx)];
+            return undefined;
+        };
 
         const splitNames = (val) => {
             if (!val) return [];
@@ -1134,88 +1160,208 @@ export const DataProvider = ({ children }) => {
                 .filter(s => s.length > 1);
         };
 
+        const getRosterNames = (pos, shiftNum) => {
+            const roster = pos?.roster;
+            if (!roster) return [];
+            const val = roster[shiftNum] ?? roster[String(shiftNum)] ?? roster[Number(shiftNum)];
+            return splitNames(val);
+        };
+
         demandData.slice(1).forEach(row => {
             if (!row) return;
-            const normalizedDate = normalizeExcelDate(row[11]);
+            const dateVal = rowAt(row, 11);
+            const normalizedDate = normalizeExcelDate(dateVal);
             if (!normalizedDate) return;
             const dateStr = formatDateLocal(normalizedDate);
             if (!dateStr || dateStr.length < 5) return;
 
-            const shiftNum = extractShiftNumber(cleanVal(row[14]));
+            const shiftRaw = cleanVal(rowAt(row, 14));
+            const shiftNum = extractShiftNumber(shiftRaw);
             if (!shiftNum) return;
 
+            const isNight = shiftRaw.toLowerCase().includes('ночь');
+
+            // 1. Collect Active Lines
             const activeLines = [];
             for (let i = 15; i <= 26; i++) {
-                if ((parseInt(row[i]) || 0) > 0) {
-                    const headerName = cleanVal(headers[i]);
+                if ((parseInt(rowAt(row, i), 10) || 0) > 0) {
+                    const headerName = cleanVal(rowAt(headers, i));
                     if (headerName) activeLines.push(headerName);
                 }
             }
 
+            // 2. Collect all potential workers (roster)
+            const allShiftWorkers = [];
+            
+            Object.keys(templates).forEach(lKey => {
+                templates[lKey].forEach(pos => {
+                    const names = getRosterNames(pos, shiftNum);
+                    names.forEach(name => {
+                        const regEntry = workerRegistry[name];
+                        const isFiveDay = regEntry?.fiveDay === true;
+                        if (isNight && isFiveDay) return;
+
+                        const avail = getAvailability(name, dateStr);
+                        const worker = {
+                            name,
+                            role: pos.role,
+                            homeLine: lKey,
+                            isBusy: false,
+                            isAvailable: avail.available,
+                            statusReason: avail.reason
+                        };
+                        allShiftWorkers.push(worker);
+                    });
+                });
+            });
+
+            // 3. Process assignments
+            const lineTasks = [];
+
             activeLines.forEach(activeLineName => {
                 const templateName = Object.keys(templates).find(t => isLineMatch(activeLineName, t));
                 const positions = templateName ? templates[templateName] : [];
+
                 positions.forEach(pos => {
-                    const assignedNamesList = splitNames(pos?.roster?.[shiftNum]);
-                    const totalSlots = Math.max(parseInt(pos?.count) || 1, assignedNamesList.length);
+                    const names = getRosterNames(pos, shiftNum);
+                    const count = Math.max(parseInt(pos.count) || 1, names.length);
 
-                    for (let i = 0; i < totalSlots; i++) {
+                    for (let i = 0; i < count; i++) {
                         const slotId = `${dateStr}_${shiftNum}_${activeLineName}_${pos.role}_${i}`;
-                        const baseName = assignedNamesList[i] || null;
-                        const manual = assignments[slotId];
-                        let name = baseName;
-                        let assignmentType = null;
-                        let source = baseName ? 'roster' : 'vacancy';
+                        const currentWorkerName = names[i] || null;
+                        let status = 'vacancy';
 
-                        if (manual) {
-                            if (manual.type === 'vacancy') {
-                                name = null;
-                                source = 'manualVacancy';
-                            } else {
-                                name = manual.name || baseName;
-                                assignmentType = manual.type || null;
-                                source = 'manual';
-                            }
+                        if (currentWorkerName) {
+                            const wAvail = getAvailability(currentWorkerName, dateStr);
+                            const regEntry = workerRegistry[currentWorkerName];
+                            const isFiveDay = regEntry?.fiveDay === true;
+                            if (isNight && isFiveDay) status = 'vacancy';
+                            else status = wAvail.available ? 'filled' : 'vacancy';
                         }
 
-                        slots.push({
+                        const manual = assignments[slotId];
+                        if (manual) {
+                            if (manual.type === 'vacancy') status = 'vacancy';
+                            else if (manual.type === 'outsourced') status = 'outsourced';
+                            else status = 'manual';
+                        }
+
+                        if (status === 'filled' && currentWorkerName) {
+                             const wAvail = getAvailability(currentWorkerName, dateStr);
+                             const regEntry = workerRegistry[currentWorkerName];
+                             const isFiveDay = regEntry?.fiveDay === true;
+                             if (!wAvail.available || (isNight && isFiveDay)) status = 'vacancy';
+                        }
+
+                        const assigned = (status === 'filled' && currentWorkerName) ? { name: currentWorkerName } : null;
+
+                        lineTasks.push({
                             slotId,
-                            date: dateStr,
-                            shiftId: String(shiftNum),
+                            status,
+                            roleTitle: pos.role,
+                            currentWorkerName,
+                            assigned: manual || assigned,
                             lineName: templateName || activeLineName,
-                            role: pos.role,
                             index: i,
-                            assignedName: name,
-                            assignedNorm: name ? normalizeName(name) : '',
-                            assignmentType,
-                            source
+                            isManualVacancy: manual?.type === 'vacancy'
                         });
                     }
                 });
             });
 
-            // Слоты ручных линий (РВ и др. попадают в сравнение)
-            const manualLineDefs = normalized.manualLines?.[`${dateStr}_${shiftNum}`] || [];
+            // Manual Lines
+            const manualLineDefs = manualLines[`${dateStr}_${shiftNum}`] || [];
             manualLineDefs.forEach(manualLine => {
                 (manualLine.positions || []).forEach(pos => {
                     const count = Math.max(1, parseInt(pos.count, 10) || 1);
-                    for (let idx = 0; idx < count; idx++) {
-                        const slotId = createManualSlotId(dateStr, shiftNum, manualLine.id, pos.roleTitle || pos.role, idx);
+                    for (let i = 0; i < count; i++) {
+                        const slotId = createManualSlotId(dateStr, shiftNum, manualLine.id, pos.roleTitle, i);
                         const manual = assignments[slotId];
-                        const name = manual?.type === 'vacancy' ? null : (manual?.name || null);
-                        slots.push({
+                        let status = 'vacancy';
+                        if (manual) {
+                             if (manual.type === 'vacancy') status = 'vacancy';
+                             else if (manual.type === 'outsourced') status = 'outsourced';
+                             else status = 'manual';
+                        }
+                        lineTasks.push({
                             slotId,
-                            date: dateStr,
-                            shiftId: String(shiftNum),
+                            status,
+                            roleTitle: pos.roleTitle,
+                            currentWorkerName: null,
+                            assigned: manual || null,
                             lineName: manualLine.displayName || manualLine.id,
-                            role: pos.roleTitle || pos.role || 'Роль',
-                            index: idx,
-                            assignedName: name,
-                            assignedNorm: name ? normalizeName(name) : '',
-                            assignmentType: manual?.type || null,
-                            source: manual ? 'manual' : 'vacancy'
+                            index: i,
+                            isManualVacancy: manual?.type === 'vacancy'
                         });
                     }
+                });
+            });
+
+            // Mark busy
+            const busyNames = new Set();
+            lineTasks.forEach(task => {
+                if (task.status !== 'vacancy' && task.assigned?.name) {
+                    busyNames.add(normalizeName(task.assigned.name));
+                }
+            });
+
+            // Auto-reassignment
+            if (autoReassignEnabled) {
+                const freeAgents = allShiftWorkers.filter(w => !w.isBusy && !busyNames.has(normalizeName(w.name)) && w.isAvailable);
+                
+                lineTasks.forEach(task => {
+                    if (task.status === 'vacancy' && !task.isManualVacancy && freeAgents.length > 0) {
+                        let idx = freeAgents.findIndex(a => a.role === task.roleTitle);
+                        if (idx === -1) {
+                            idx = freeAgents.findIndex(a => {
+                                const regEntry = workerRegistry[a.name];
+                                return regEntry && regEntry.competencies?.has && regEntry.competencies.has(task.roleTitle);
+                            });
+                        }
+                        if (idx >= 0) {
+                            task.status = 'reassigned';
+                            task.assigned = freeAgents[idx];
+                            task.assignmentType = 'auto';
+                            freeAgents.splice(idx, 1);
+                        }
+                    }
+                });
+            }
+
+            // Convert to output slots
+            lineTasks.forEach(task => {
+                let source = 'vacancy';
+                let assignmentType = task.assignmentType || null;
+                let assignedName = null;
+
+                if (task.status === 'filled') {
+                    source = 'roster';
+                    assignedName = task.assigned?.name;
+                } else if (task.status === 'manual') {
+                    source = 'manual';
+                    assignedName = task.assigned?.name;
+                    assignmentType = task.assigned?.type;
+                } else if (task.status === 'reassigned') {
+                    source = 'auto';
+                    assignedName = task.assigned?.name;
+                } else if (task.status === 'outsourced') {
+                    source = 'outsourced';
+                    assignedName = task.assigned?.name;
+                } else if (task.isManualVacancy) {
+                    source = 'manualVacancy';
+                }
+
+                slots.push({
+                    slotId: task.slotId,
+                    date: dateStr,
+                    shiftId: String(shiftNum),
+                    lineName: task.lineName,
+                    role: task.roleTitle,
+                    index: task.index,
+                    assignedName,
+                    assignedNorm: assignedName ? normalizeName(assignedName) : '',
+                    assignmentType,
+                    source
                 });
             });
         });
@@ -1251,20 +1397,28 @@ export const DataProvider = ({ children }) => {
         slotIds.forEach(slotId => {
             const slotA = masterSlots.slotMap.get(slotId);
             const slotB = operationalSlots.slotMap.get(slotId);
-            
-            // Если слота нет в одном из планов - пропускаем (структурное изменение)
+
+            if (!slotA && !slotB) return;
+
+            // Слот есть только в основном плане — в оперативном его нет (потеря)
+            if (slotA && !slotB) {
+                if (slotA.assignedName && slotA.assignedNorm) {
+                    tempLost.push({ ...slotA, name: slotA.assignedName });
+                }
+                return;
+            }
+
+            // Слот есть только в оперативном — обработано выше в tempAdded
             if (!slotA || !slotB) return;
 
             const nameA = slotA.assignedNorm;
             const nameB = slotB.assignedNorm;
-            
-            // Если ничего не изменилось
+
             if (nameA === nameB) {
                 unchangedSlotIds.add(slotId);
                 return;
             }
 
-            // Замена (оба не пустые, но разные люди)
             if (nameA && nameB) {
                 replaced.push({
                     ...slotB,
@@ -1276,13 +1430,11 @@ export const DataProvider = ({ children }) => {
                 return;
             }
 
-            // Потеря (был человек, стал пусто)
             if (nameA && !nameB) {
                 tempLost.push({ ...slotA, name: slotA.assignedName });
                 return;
             }
 
-            // Добавление (было пусто, стал человек)
             if (!nameA && nameB) {
                 tempAdded.push({ ...slotB, name: slotB.assignedName });
                 return;
@@ -1946,6 +2098,9 @@ export const DataProvider = ({ children }) => {
                         .map(s => s.trim())
                         .filter(s => s.length > 1)
                         .forEach(name => {
+                            const regEntry = workerRegistry[name];
+                            const isFiveDay = regEntry?.fiveDay === true;
+                            if (shiftTypeLower.includes('ночь') && isFiveDay) return;
                             const avail = getAvailabilityCached(name);
                             const worker = {
                                 name,
@@ -1991,7 +2146,9 @@ export const DataProvider = ({ children }) => {
 
                             if (currentWorkerName) {
                                 const wAvail = getAvailabilityCached(currentWorkerName);
-                                status = wAvail.available ? 'filled' : 'vacancy';
+                                const isFiveDay = workerRegistry[currentWorkerName]?.fiveDay === true;
+                                if (shiftTypeLower.includes('ночь') && isFiveDay) status = 'vacancy';
+                                else status = wAvail.available ? 'filled' : 'vacancy';
                             }
 
                             const manual = manualAssignments[slotId];
@@ -2003,16 +2160,18 @@ export const DataProvider = ({ children }) => {
 
                             if (status === 'filled' && currentWorkerName) {
                                 const wAvail = getAvailabilityCached(currentWorkerName);
-                                if (!wAvail.available) status = 'vacancy';
+                                const isFiveDay = workerRegistry[currentWorkerName]?.fiveDay === true;
+                                if (!wAvail.available || (shiftTypeLower.includes('ночь') && isFiveDay)) status = 'vacancy';
                             }
 
+                            const assigned = (status === 'filled' && currentWorkerName) ? { name: currentWorkerName } : null;
                             tasksForLine.push({
                                 status,
                                 roleTitle: pos.role,
                                 slotId,
                                 isManualVacancy: manualAssignments[slotId]?.type === 'vacancy',
                                 currentWorkerName,
-                                assigned: manual || (status === 'filled' ? { name: currentWorkerName } : null)
+                                assigned: manual || assigned
                             });
 
                             // Mark worker as busy without O(n) scan
@@ -2027,7 +2186,13 @@ export const DataProvider = ({ children }) => {
                     });
                 }
 
-                lineTasks.push({ slots: tasksForLine, displayName: templateName || activeLineName });
+                lineTasks.push({
+                    slots: tasksForLine,
+                    displayName: templateName || activeLineName,
+                    lineSource: 'roster',
+                    templateName: templateName || null,
+                    activeLineName: activeLineName || null
+                });
             });
 
             const manualLineKey = `${targetDate}_${brigade.id}`;
@@ -2059,7 +2224,9 @@ export const DataProvider = ({ children }) => {
                     slots: tasksForLine,
                     displayName: manualLine.displayName,
                     manualLineId: manualLine.id,
-                    isManualLine: true
+                    isManualLine: true,
+                    lineSource: 'manual',
+                    templateName: manualLine.templateName || null
                 });
             });
 
@@ -2088,7 +2255,9 @@ export const DataProvider = ({ children }) => {
                 });
             }
 
-            const baseFloaters = shiftTypeLower.includes('день') ? [...floaters.day] : [...floaters.night];
+            const baseFloaters = shiftTypeLower.includes('день')
+                ? [...floaters.day]
+                : floaters.night.filter(f => workerRegistry[f.name]?.fiveDay !== true);
             const freeFloaters = baseFloaters.filter(f => !usedFloaterIds.has(f.id));
             const totalRequired = lineTasks.reduce((sum, lt) => sum + lt.slots.length, 0);
             const filledSlots = lineTasks.reduce((sum, lt) => sum + lt.slots.filter(s => s.status !== 'vacancy' && s.status !== 'unknown').length, 0);
@@ -3002,13 +3171,13 @@ export const DataProvider = ({ children }) => {
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
-        createPlanFromSchedule, comparePlanSnapshots
+        createPlanFromSchedule, comparePlanSnapshots, buildPlanSlots
     }), [
         display.savedPlans, display.currentPlanId, isLocked,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
-        createPlanFromSchedule, comparePlanSnapshots
+        createPlanFromSchedule, comparePlanSnapshots, buildPlanSlots
     ]);
 
     const planningValue = useMemo(() => ({
@@ -3068,6 +3237,7 @@ export const DataProvider = ({ children }) => {
         removeManualLine,
         createPlanFromSchedule,
         comparePlanSnapshots,
+        buildPlanSlots,
         handleMatrixAssignment,
         handleWorkerEditSave, 
         handleWorkerDelete,

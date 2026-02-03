@@ -151,13 +151,16 @@ export const isLineMatch = (planLine, rosterLine) => {
     const pClean = p.replace(/[^a-zа-я0-9]/g, '');
     const rClean = r.replace(/[^a-zа-я0-9]/g, '');
     if (pClean === rClean) return true;
-    if (pClean.length > 3 && rClean.length > 3) {
-        if (pClean.includes(rClean) || rClean.includes(pClean)) return true;
-    }
     const pNums = p.match(/\d+/g);
     const rNums = r.match(/\d+/g);
     if (pNums && rNums) {
-        return pNums.some(pn => rNums.includes(pn));
+        const sameNumbers = pNums.length === rNums.length && pNums.every((pn, i) => pn === rNums[i]);
+        if (sameNumbers) return true;
+        if (pNums.some(pn => rNums.includes(pn))) return true;
+        return false;
+    }
+    if (pClean.length > 3 && rClean.length > 3) {
+        if (pClean.includes(rClean) || rClean.includes(pClean)) return true;
     }
     return false;
 };
@@ -197,7 +200,6 @@ export const parseWorkerStatus = (statusStr) => {
     if (lower.includes('отпуск')) type = 'vacation';
     else if (lower.includes('больничный')) type = 'sick';
     else if (lower.includes('увольнение') || lower.includes('уволен')) type = 'fired';
-
     if (!type) return null;
 
     const dateMatch = statusStr.match(/(\d{1,2})[\.\/](\d{1,2})\s*[-–—]\s*(\d{1,2})[\.\/](\d{1,2})/);
