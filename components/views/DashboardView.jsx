@@ -255,11 +255,21 @@ const DashboardView = () => {
                                 <label className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors select-none">
                                     {isGlobalFill ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />} <span>Заполнить глобально</span> <input type="checkbox" className="hidden" checked={isGlobalFill} onChange={(e) => setIsGlobalFill(e.target.checked)} />
                                 </label>
-                                {shift.floaters.length > 0 && shift.filledSlots < shift.totalRequired && (
-                                    <button onClick={() => handleAutoFillFloaters(shift, isGlobalFill)} className="flex items-center gap-2 bg-yellow-100 text-yellow-700 px-4 py-2 rounded-lg font-bold hover:bg-yellow-200 transition-colors shadow-sm active:transform active:scale-95">
-                                        <Wand2 size={18} /> Заполнить подсобниками
-                                    </button>
-                                )}
+                                {(() => {
+                                    const hasFloaters = shift.floaters.length > 0;
+                                    const hasVacanciesHere = shift.filledSlots < shift.totalRequired;
+                                    const isActive = hasFloaters && (isGlobalFill || hasVacanciesHere);
+                                    return (
+                                        <button
+                                            onClick={() => handleAutoFillFloaters(shift, isGlobalFill)}
+                                            disabled={!isActive}
+                                            title={!hasFloaters ? 'Нет подсобников в резерве' : isGlobalFill ? 'Заполнить вакансии подсобниками по всем сменам' : 'Заполнить вакансии подсобниками на этой смене'}
+                                            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-colors shadow-sm active:transform active:scale-95 ${isActive ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                                        >
+                                            <Wand2 size={18} /> Заполнить подсобниками
+                                        </button>
+                                    );
+                                })()}
                                 {(() => {
                                     const availableTemplates = getManualTemplateOptionsForShift(shift.id);
                                     const isDisabled = availableTemplates.length === 0;

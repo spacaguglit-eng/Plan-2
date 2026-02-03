@@ -77,7 +77,10 @@ export function applyRemoteSnapshot(snapshot, ctx) {
             const remoteRev = Number(remoteMeta?.rev ?? 0);
             const localRev = Number(localMeta.rev ?? 0);
             if (remoteRev <= localRev) {
-                skippedKeys.push(`${key}(rev ${remoteRev}<=${localRev})`);
+                // В лог пользователя только если облако реально старее (rev <), иначе это наш же пуш — не спамим
+                if (remoteRev < localRev) {
+                    skippedKeys.push(`${key}(rev ${remoteRev}<${localRev})`);
+                }
                 debugLog('sync', 'shouldSkip: пропуск по rev', key, 'remoteRev', remoteRev, '<= localRev', localRev);
                 return true;
             }

@@ -45,6 +45,18 @@ const normalizeEnvelope = (raw) => {
     return { value: raw, _meta: null };
 };
 
+/** Из сырой строки или объекта конверта получить ревизию (для сравнения "облако новее?"). */
+const getRevFromRaw = (raw) => {
+    if (raw == null) return 0;
+    try {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const rev = Number(parsed?._meta?.rev ?? parsed?.rev ?? 0);
+        return rev;
+    } catch {
+        return 0;
+    }
+};
+
 let isUserRemoteEnabled = true;
 export const setRemoteEnabledByUser = (enabled) => { isUserRemoteEnabled = enabled; };
 
@@ -74,25 +86,57 @@ const addLog = (type, message) => {
 let updateQueue = {};
 let syncTimeout = null;
 let lastKnownState = {}; // Cache to prevent sync loops (serialized envelopes)
+let lastKnownValueContent = {}; // По содержимому value — не пушить, если не изменилось
 
 const flushQueue = async () => {
     if (Object.keys(updateQueue).length === 0) return;
-    
+
     const dataToSave = { ...updateQueue };
     updateQueue = {}; // Clear queue
-    
+
     try {
-        // Final check: filter out items that match lastKnownState
+        // Сначала читаем облако — чтобы не перезаписать данные, которые новее наших (другой клиент удалил/изменил).
+        const freshData = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
+        if (freshData && typeof freshData === 'object') {
+            Object.keys(freshData).forEach((key) => {
+                if (key === 'updatedAt') return;
+                lastKnownState[key] = freshData[key];
+                try {
+                    const raw = freshData[key];
+                    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    if (parsed && typeof parsed.value !== 'undefined') {
+                        lastKnownValueContent[key] = JSON.stringify(parsed.value);
+                    }
+                } catch (_) {}
+            });
+        }
+
         const trulyChangedData = {};
-        Object.keys(dataToSave).forEach(key => {
-            if (dataToSave[key] !== lastKnownState[key]) {
-                trulyChangedData[key] = dataToSave[key];
-                lastKnownState[key] = dataToSave[key]; // Update cache
+        Object.keys(dataToSave).forEach((key) => {
+            const ourRaw = dataToSave[key];
+            const remoteRaw = lastKnownState[key];
+            const ourRev = getRevFromRaw(ourRaw);
+            const remoteRev = getRevFromRaw(remoteRaw);
+            if (remoteRev > ourRev) {
+                // В облаке новее — не перезаписываем (защита от "удалил в вебе, локаль вернула").
+                return;
+            }
+            if (ourRaw !== lastKnownState[key]) {
+                trulyChangedData[key] = ourRaw;
+                lastKnownState[key] = ourRaw;
             }
         });
 
         if (Object.keys(trulyChangedData).length === 0) return;
 
+        Object.keys(trulyChangedData).forEach((key) => {
+            try {
+                const envelope = JSON.parse(trulyChangedData[key]);
+                if (envelope && typeof envelope.value !== 'undefined') {
+                    lastKnownValueContent[key] = JSON.stringify(envelope.value);
+                }
+            } catch (_) {}
+        });
         addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
         await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, trulyChangedData);
         addLog('success', 'Облако успешно обновлено');
@@ -100,18 +144,29 @@ const flushQueue = async () => {
     } catch (err) {
         console.error('Batch sync failed:', err);
         addLog('error', `Ошибка синхронизации: ${err.message}`);
-        flushErrorCallback?.(err, Object.keys(trulyChangedData || dataToSave));
+        flushErrorCallback?.(err, Object.keys(dataToSave));
     }
 };
 
 export const saveRemoteStateKey = async (key, value, meta) => {
     if (!isRemoteStorageEnabled()) return;
     
+    const valueContentStr = JSON.stringify(value);
+    if (lastKnownValueContent[key] === valueContentStr) {
+        if (updateQueue[key]) {
+            delete updateQueue[key];
+            if (Object.keys(updateQueue).length === 0 && syncTimeout) {
+                clearTimeout(syncTimeout);
+                syncTimeout = null;
+            }
+        }
+        return;
+    }
+    
     const envelope = buildEnvelope(key, value, meta);
     const serializedValue = JSON.stringify(envelope);
     const queuedValue = updateQueue[key];
 
-    // Если текущее значение совпадает с облаком, сбрасываем устаревшие очереди по этому ключу
     if (lastKnownState[key] === serializedValue) {
         if (queuedValue) delete updateQueue[key];
         if (Object.keys(updateQueue).length === 0 && syncTimeout) {
@@ -121,7 +176,6 @@ export const saveRemoteStateKey = async (key, value, meta) => {
         return;
     }
     
-    // Всегда записываем последнее изменение в очередь, чтобы не отправлять старые значения
     updateQueue[key] = serializedValue;
     
     // Reset debounce timer — короткая задержка для бесшовной синхронизации
@@ -135,10 +189,17 @@ export const loadRemoteState = async () => {
         addLog('syncing', 'Загрузка данных из облака...');
         const data = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
         
-        // Update cache with raw serialized strings from server
         if (data) {
             Object.keys(data).forEach(key => {
-                if (key !== 'updatedAt') lastKnownState[key] = data[key];
+                if (key === 'updatedAt') return;
+                lastKnownState[key] = data[key];
+                try {
+                    const raw = data[key];
+                    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    if (parsed && typeof parsed.value !== 'undefined') {
+                        lastKnownValueContent[key] = JSON.stringify(parsed.value);
+                    }
+                } catch (_) {}
             });
         }
         
@@ -179,7 +240,15 @@ export const subscribeToRemoteState = (callback) => {
         // Иначе кэш/pending перезаписывают только что сделанные изменения (например автоподстановку).
         if (fromCache || hasPendingWrites) return;
         Object.keys(data).forEach(key => {
-            if (key !== 'updatedAt') lastKnownState[key] = data[key];
+            if (key === 'updatedAt') return;
+            lastKnownState[key] = data[key];
+            try {
+                const raw = data[key];
+                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                if (parsed && typeof parsed.value !== 'undefined') {
+                    lastKnownValueContent[key] = JSON.stringify(parsed.value);
+                }
+            } catch (_) {}
         });
         const parsed = parseRemoteData(data);
         callback(parsed);
@@ -194,24 +263,59 @@ export const loadRemoteStateKey = async (key, defaultValue = null) => {
 
 /**
  * Записать полный снимок состояния в облако (merge). Для кнопки «Загрузить локальные данные в облако».
- * @param {Object} stateObj — объект { [key]: value, ... }, значения сериализуются в JSON
+ * Не перезаписывает ключи, у которых в облаке ревизия новее, чем revsPerKey[key] (защита при нескольких клиентах).
+ * @param {Object} stateObj — объект { [key]: value, ... }
+ * @param {Object} [revsPerKey] — опционально { [key]: number } — ревизия, которую мы считаем «нашей»; если в облаке rev больше — ключ не перезаписываем
  */
-export const writeFullRemoteState = async (stateObj) => {
-    if (!isRemoteStorageEnabled()) return;
-    if (!stateObj || typeof stateObj !== 'object') return;
+export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
+    if (!isRemoteStorageEnabled()) return 0;
+    if (!stateObj || typeof stateObj !== 'object') return 0;
+
+    const remoteData = await readFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT);
+    if (remoteData && typeof remoteData === 'object') {
+        Object.keys(remoteData).forEach((key) => {
+            if (key === 'updatedAt') return;
+            lastKnownState[key] = remoteData[key];
+            try {
+                const raw = remoteData[key];
+                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                if (parsed && typeof parsed.value !== 'undefined') {
+                    lastKnownValueContent[key] = JSON.stringify(parsed.value);
+                }
+            } catch (_) {}
+        });
+    }
+
     const serialized = {};
     Object.keys(stateObj).forEach((key) => {
         if (key === 'updatedAt') return;
+        const ourRev = Number(revsPerKey[key] ?? 0);
+        const remoteRev = getRevFromRaw(remoteData?.[key]);
+        if (remoteRev > ourRev) {
+            return;
+        }
         const val = stateObj[key];
         const envelope = buildEnvelope(key, val);
         serialized[key] = JSON.stringify(envelope ?? null);
     });
-    if (Object.keys(serialized).length === 0) return;
+    if (Object.keys(serialized).length === 0) {
+        addLog('info', 'Загрузка в облако: все ключи новее в облаке, ничего не перезаписываем');
+        return 0;
+    }
     addLog('syncing', 'Загрузка локальных данных в облако...');
     try {
         await writeFirestoreDoc(FIRESTORE_COLLECTION, FIRESTORE_DOCUMENT, serialized);
-        Object.keys(serialized).forEach((k) => { lastKnownState[k] = serialized[k]; });
+        Object.keys(serialized).forEach((k) => {
+            lastKnownState[k] = serialized[k];
+            try {
+                const envelope = JSON.parse(serialized[k]);
+                if (envelope && typeof envelope.value !== 'undefined') {
+                    lastKnownValueContent[k] = JSON.stringify(envelope.value);
+                }
+            } catch (_) {}
+        });
         addLog('success', 'Данные загружены в облако');
+        return Object.keys(serialized).length;
     } catch (err) {
         console.error('writeFullRemoteState failed:', err);
         addLog('error', `Ошибка: ${err.message}`);

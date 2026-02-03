@@ -21,8 +21,9 @@ import {
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
-import { subscribeToRemoteState, isRemoteStorageEnabled, setRemoteLogCallback, setRemoteEnabledByUser, setRemoteFlushErrorCallback, setRemoteFlushSuccessCallback, saveRemoteStateKey, writeFullRemoteState, getClientId } from '../services/remoteStorage';
+import { setRemoteFlushErrorCallback } from '../services/remoteStorage';
 import { applyRemoteSnapshot as applyRemoteSnapshotFromService } from '../services/syncStateApplier';
+import { useSync } from './SyncContext';
 import { WorkersProvider, useWorkers } from './WorkersContext';
 import { AssignmentsProvider, useAssignments } from './AssignmentsContext';
 import { PlansProvider, usePlans } from './PlansContext';
@@ -42,14 +43,35 @@ const debugPlans = (op, plans, extra = '') => {
 };
 
 export const DataProvider = ({ children }) => {
+    const sync = useSync();
+    const {
+        useRemoteStorage,
+        setUseRemoteStorage,
+        syncStatus,
+        setSyncStatus,
+        syncLog,
+        showSyncLog,
+        setShowSyncLog,
+        addSyncLogMessage,
+        remoteSnapshot,
+        pendingUpdates,
+        setPendingUpdates,
+        setPendingMeta,
+        pendingUpdatesRef,
+        pendingMetaRef,
+        clientIdRef,
+        unwrapSnapshotValue,
+        persistStateKey,
+        pushLocalToCloud: syncPushLocalToCloud,
+        cloudStatus,
+        isRemoteStorageEnabled
+    } = sync;
+
     // --- STATE ---
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
     const [restoring, setRestoring] = useState(true);
     const [error, setError] = useState('');
-    const [syncStatus, setSyncStatus] = useState('idle'); // 'idle', 'syncing', 'saved', 'error'
-    const [syncLog, setSyncLog] = useState([]); // Array of { id, type, message, timestamp }
-    const [useRemoteStorage, setUseRemoteStorage] = useState(() => loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true));
     const [userRole, setUserRole] = useState(() => loadFromLocalStorage('plan_user_role', 'guest')); // 'admin' | 'guest'
 
     const [rawTables, setRawTables] = useState({});
@@ -102,38 +124,7 @@ export const DataProvider = ({ children }) => {
 
     const { notify } = useNotification();
 
-    const [remoteSnapshot, setRemoteSnapshot] = useState(null);
-    const [pendingUpdates, setPendingUpdates] = useState({});
-    const [pendingMeta, setPendingMeta] = useState({});
-    const pendingUpdatesRef = useRef({});
-    const pendingMetaRef = useRef({});
-    const clientIdRef = useRef(getClientId());
-    const unwrapSnapshotValue = useCallback((entry) => {
-        if (entry && typeof entry === 'object' && 'value' in entry) {
-            return { value: entry.value, meta: entry._meta || null };
-        }
-        return { value: entry, meta: null };
-    }, []);
-
-    useEffect(() => {
-        if (!isRemoteStorageEnabled() || !useRemoteStorage) {
-            setRemoteSnapshot(null);
-            return () => {};
-        }
-        const unsubscribe = subscribeToRemoteState((parsed) => {
-            setRemoteSnapshot(parsed);
-        });
-        return () => {
-            unsubscribe();
-        };
-    }, [useRemoteStorage]);
-
-    useEffect(() => {
-        setRemoteLogCallback((log) => {
-            setSyncLog(prev => [log, ...prev].slice(0, 50));
-        });
-    }, []);
-
+    // Ошибка синхронизации: откат к кэшу из remote (вызывается из remoteStorage)
     useEffect(() => {
         setRemoteFlushErrorCallback((err, failedKeys) => {
             if (!failedKeys?.length) return;
@@ -150,36 +141,7 @@ export const DataProvider = ({ children }) => {
             }
         });
         return () => setRemoteFlushErrorCallback(null);
-    }, [remoteSnapshot, notify, unwrapSnapshotValue]);
-
-    useEffect(() => {
-        setRemoteFlushSuccessCallback((keys) => {
-            setSyncStatus('idle');
-            if (Array.isArray(keys) && keys.length > 0) {
-                debugLog('sync', 'Успешная запись в облако:', keys, '(pending не снимаем — снимем только когда снапшот из облака совпадёт с нашими данными)');
-            }
-        });
-        return () => setRemoteFlushSuccessCallback(null);
-    }, []);
-
-    useEffect(() => {
-        setRemoteEnabledByUser(useRemoteStorage);
-        saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
-    }, [useRemoteStorage]);
-
-    const persistStateKey = useCallback((key, value) => {
-        if (useRemoteStorage) {
-            const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
-            pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
-            pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
-            debugLog('sync', 'persistStateKey: добавлен в pending', key, 'rev:', meta.rev);
-            setPendingUpdates(prev => ({ ...prev, [key]: value }));
-            setPendingMeta(prev => ({ ...prev, [key]: meta }));
-            saveRemoteStateKey(key, value, meta).catch(err => console.error(`Error saving ${key} to remote:`, err));
-        } else {
-            saveToLocalStorage(key, value);
-        }
-    }, [useRemoteStorage]);
+    }, [remoteSnapshot, notify, unwrapSnapshotValue, setSyncStatus]);
 
     useEffect(() => {
         if (userRole) {
@@ -193,6 +155,7 @@ export const DataProvider = ({ children }) => {
     const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
     const hasAutoLoadedLastPlanRef = useRef(false);
+    const lastSavedPlansSerializedRef = useRef(null);
     const draftPlanIdRef = useRef(null);
 
     const TARGET_CONFIG = useMemo(() => ([
@@ -416,6 +379,9 @@ export const DataProvider = ({ children }) => {
 
     useEffect(() => {
         if (restoring) return;
+        const serialized = JSON.stringify(savedPlans);
+        if (lastSavedPlansSerializedRef.current === serialized) return;
+        lastSavedPlansSerializedRef.current = serialized;
         const src = savedPlansSourceRef.current || 'useEffect(смена savedPlans)';
         debugPlans('СОХРАНЕНИЕ', savedPlans, `| источник: ${src}`);
         savedPlansSourceRef.current = null;
@@ -448,6 +414,7 @@ export const DataProvider = ({ children }) => {
     }, [currentPlanId, savedPlans]);
 
     const hasAppliedRemoteRef = useRef(false);
+    const lastAppliedRemoteRevRef = useRef({});
     useEffect(() => {
         if (!remoteSnapshot) return;
         const pending = pendingUpdatesRef.current;
@@ -489,7 +456,7 @@ export const DataProvider = ({ children }) => {
             pendingMeta: pendingMetaMap,
             currentClientId: clientIdRef.current,
             currentPlanId,
-            addSyncLogMessage: (log) => setSyncLog(prev => [log, ...prev].slice(0, 50))
+            addSyncLogMessage
         });
         const nextPending = {};
         for (const k of Object.keys(pendingUpdatesRef.current)) {
@@ -516,6 +483,12 @@ export const DataProvider = ({ children }) => {
         });
         pendingMetaRef.current = nextMeta;
         setPendingMeta(() => nextMeta);
+        Object.keys(remoteSnapshot || {}).forEach((k) => {
+            if (k === 'updatedAt') return;
+            const entry = unwrapSnapshotValue(remoteSnapshot[k]);
+            const rev = Number(entry.meta?.rev ?? 0);
+            lastAppliedRemoteRevRef.current[k] = rev;
+        });
         if (restoring) {
             hasAppliedRemoteRef.current = true;
             setRestoring(false);
@@ -538,8 +511,7 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Синхронизация недоступна (нет конфига Firebase).' });
             return;
         }
-        setSyncStatus('syncing');
-        try {
+        const result = await syncPushLocalToCloud(() => {
             const reg = pendingUpdates[STORAGE_KEYS.WORKER_REGISTRY] ?? workerRegistry;
             const stateObj = {
                 [STORAGE_KEYS.SAVED_PLANS]: pendingUpdates[STORAGE_KEYS.SAVED_PLANS] ?? savedPlans,
@@ -563,15 +535,18 @@ export const DataProvider = ({ children }) => {
                 [STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES]: loadFromLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, null),
                 [STORAGE_KEYS.ASSIGNMENTS_BACKUP]: loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENTS_BACKUP, null)
             };
-            await writeFullRemoteState(stateObj);
-            setSyncStatus('saved');
-            notify({ type: 'success', message: 'Локальные данные загружены в облако.' });
-            setTimeout(() => setSyncStatus('idle'), 1200);
-        } catch (err) {
-            setSyncStatus('error');
-            notify({ type: 'error', message: `Ошибка загрузки в облако: ${err.message}` });
+            return { stateObj, revsPerKey: { ...lastAppliedRemoteRevRef.current } };
+        });
+        if (result?.ok) {
+            if (result.keysWritten === 0) {
+                notify({ type: 'info', message: 'В облаке более свежие данные. Обновите страницу.', duration: 5000 });
+            } else {
+                notify({ type: 'success', message: 'Локальные данные загружены в облако.' });
+            }
+        } else if (result?.error && result.error !== 'no_config') {
+            notify({ type: 'error', message: `Ошибка загрузки в облако: ${result.error}` });
         }
-    }, [pendingUpdates, savedPlans, currentPlanId, manualAssignments, manualLines, assignmentClones, autoReassignEnabled, rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, factData, factDates, notify]);
+    }, [syncPushLocalToCloud, isRemoteStorageEnabled, pendingUpdates, savedPlans, currentPlanId, manualAssignments, manualLines, assignmentClones, autoReassignEnabled, rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, factData, factDates, notify]);
 
     const saveSourceDataToLocal = (tables, hashes) => {
         try {
@@ -1432,7 +1407,6 @@ export const DataProvider = ({ children }) => {
         if (!plan?.data?.planningState) return;
         const n = (plan?.data?.planningState?.products?.length ?? 0) + (plan?.data?.planningState?.cipBetween?.length ?? 0);
         debugLog('plans', `LOAD_QUEUE план "${plan?.name}" | ${n} событий загружено в форму`);
-        persistStateKey(STORAGE_KEYS.PLANNING_STATE, plan.data.planningState);
         setPlanningStateToLoad(plan.data.planningState);
         setPlanningStateVersion(v => v + 1);
     }, [savedPlans]);
@@ -1457,6 +1431,19 @@ export const DataProvider = ({ children }) => {
             const idx = prev.findIndex(p => p.id === currentPlanId);
             if (idx === -1) return prev;
             const nextData = { ...prev[idx].data, operationalFacts: updater(prev[idx].data?.operationalFacts ?? null) };
+            const next = [...prev];
+            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
+            return next;
+        });
+    }, [currentPlanId]);
+
+    const updatePlanPlanningState = useCallback((planningState) => {
+        if (!currentPlanId || planningState == null) return;
+        savedPlansSourceRef.current = 'updatePlanPlanningState';
+        setSavedPlans(prev => {
+            const idx = prev.findIndex(p => p.id === currentPlanId);
+            if (idx === -1) return prev;
+            const nextData = { ...prev[idx].data, planningState };
             const next = [...prev];
             next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
             return next;
@@ -2963,18 +2950,6 @@ export const DataProvider = ({ children }) => {
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
     }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify]);
 
-    const [showSyncLog, setShowSyncLog] = useState(false);
-
-    const cloudStatus = useMemo(() => {
-        if (!useRemoteStorage || !isRemoteStorageEnabled()) return { status: 'off' };
-        if (remoteSnapshot === null) return { status: 'loading' };
-        const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
-        if (Array.isArray(plans) && plans.length > 0) return { status: 'has_data', planCount: plans.length };
-        const keys = Object.keys(remoteSnapshot || {}).filter(k => k !== 'updatedAt');
-        if (keys.length > 0) return { status: 'has_data' };
-        return { status: 'empty' };
-    }, [useRemoteStorage, remoteSnapshot, unwrapSnapshotValue]);
-
     const display = useMemo(() => ({
         manualAssignments: pendingUpdates[STORAGE_KEYS.MANUAL_ASSIGNMENTS] ?? manualAssignments,
         manualLines: pendingUpdates[STORAGE_KEYS.MANUAL_LINES] ?? manualLines,
@@ -3025,13 +3000,13 @@ export const DataProvider = ({ children }) => {
         savedPlans: display.savedPlans, currentPlanId: display.currentPlanId, isLocked,
         setCurrentPlanId,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
-        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, setPlanType, deletePlan,
+        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
         createPlanFromSchedule, comparePlanSnapshots
     }), [
         display.savedPlans, display.currentPlanId, isLocked,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
-        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, setPlanType, deletePlan,
+        loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
         createPlanFromSchedule, comparePlanSnapshots
     ]);
@@ -3083,6 +3058,7 @@ export const DataProvider = ({ children }) => {
         loadPlanQueue,
         updateOperationalTimeline,
         updateOperationalFacts,
+        updatePlanPlanningState,
         setPlanType,
         deletePlan,
         importPlanFromJson,
@@ -3132,6 +3108,7 @@ export const DataProvider = ({ children }) => {
         loadPlanQueue,
         updateOperationalTimeline,
         updateOperationalFacts,
+        updatePlanPlanningState,
         setPlanType,
         deletePlan,
         importPlanFromJson,
@@ -3159,7 +3136,7 @@ export const DataProvider = ({ children }) => {
     ]);
 
     return (
-        <DataContext.Provider value={value}>
+        <DataContext.Provider value={value ?? {}}>
             <WorkersProvider value={workersValue}>
                 <AssignmentsProvider value={assignmentsValue}>
                     <PlansProvider value={plansValue}>
@@ -3175,7 +3152,7 @@ export const DataProvider = ({ children }) => {
 
 export const useData = () => {
     const context = useContext(DataContext);
-    if (!context) {
+    if (context == null || typeof context !== 'object') {
         throw new Error('useData must be used within a DataProvider');
     }
     return context;

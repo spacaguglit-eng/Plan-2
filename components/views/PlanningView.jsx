@@ -162,7 +162,7 @@ const DEFAULT_PRODUCTS = [
 
 const TRANSITION_RULES_VERSION = 'rules_sets_2026_01_27';
 
-const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*[«"](?<brand>[^"»]+)[»"])?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)\s*(?:шт|шт\.|штук))?/iu;
+const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]?|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*(?:[«"](?<brand>[^"»]+)[»"]|(?<brand>[^\s\t]+)))?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)(?:\s*(?:шт|шт\.|штук))?)?/iu;
 
 const extractTypeFlavor = (value) => {
     if (!value) return { type: '', flavor: '' };
@@ -435,7 +435,7 @@ const PlanningView = () => {
         () => loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}),
         []
     );
-    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, persistStateKey } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, persistStateKey, updatePlanPlanningState } = useData();
     const getTemplateKeyForLine = useCallback((line) => {
         if (!line || !lineTemplates) return line;
         const key = Object.keys(lineTemplates).find((k) => isLineMatch(line, k));
@@ -465,6 +465,7 @@ const PlanningView = () => {
     const lineMatchesSelected = useCallback((line, selected) => {
         return line === selected || (!!line && !!selected && isLineMatch(line, selected));
     }, []);
+
     const activePlan = useMemo(
         () => savedPlans?.find(p => p.id === currentPlanId) ?? null,
         [savedPlans, currentPlanId]
@@ -525,9 +526,13 @@ const PlanningView = () => {
     const [planImportError, setPlanImportError] = useState('');
     const [planCreateError, setPlanCreateError] = useState('');
     const [planCreateStatus, setPlanCreateStatus] = useState('idle');
+    const [lineWorkError, setLineWorkError] = useState('');
     const [pasteText, setPasteText] = useState('');
     const [isProductImportOpen, setIsProductImportOpen] = useState(false);
     const [isPlanImportOpen, setIsPlanImportOpen] = useState(false);
+    const [planImportPreview, setPlanImportPreview] = useState(null);
+    const [isLineWorkPlanOpen, setIsLineWorkPlanOpen] = useState(false);
+    const [lineWorkDraft, setLineWorkDraft] = useState({});
     const [selectedPlanLine, setSelectedPlanLine] = useState(
         () => resolveLineOption(storedPlanning.selectedPlanLine)
     );
@@ -540,6 +545,20 @@ const PlanningView = () => {
     const [cipBetween, setCipBetween] = useState(
         () => storedPlanning.cipBetween || DEFAULT_CIP_BETWEEN
     );
+    const [lineWorkDates, setLineWorkDates] = useState(
+        () => storedPlanning.lineWorkDates || {}
+    );
+
+    const eventCountByLine = useMemo(() => {
+        const map = {};
+        lineOptions.forEach((line) => {
+            const nProducts = products.filter((p) => lineMatchesSelected(p?.line, line)).length;
+            const nCips = cipBetween.filter((c) => lineMatchesSelected(c?.line, line)).length;
+            map[line] = nProducts + nCips;
+        });
+        return map;
+    }, [lineOptions, products, cipBetween, lineMatchesSelected]);
+
     const [dragIndex, setDragIndex] = useState(null);
     const useStoredTransitionRules = storedPlanning.transitionRulesVersion === TRANSITION_RULES_VERSION;
     const [transitionRules, setTransitionRules] = useState(
@@ -582,6 +601,9 @@ const PlanningView = () => {
     const transitionSaveTimeoutRef = useRef(null);
     const normalizedLinesRef = useRef(false);
     const skipNextLocalStorageApplyRef = useRef(false);
+    const skipNextSaveRef = useRef(false);
+    const loadPlanQueueRef = useRef(loadPlanQueue);
+    loadPlanQueueRef.current = loadPlanQueue;
     const baseProductByName = useMemo(
         () => new Map(baseProducts.map((product) => [product.name, product])),
         [baseProducts]
@@ -871,11 +893,10 @@ const PlanningView = () => {
             if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
             if (loaded.exportType) setExportType(loaded.exportType);
             if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
-            if (loaded.activeTab) {
-                debugLog('planning', 'setActiveTab from loaded', loaded.activeTab);
-                setActiveTab(loaded.activeTab);
-            }
+            if (loaded.lineWorkDates && typeof loaded.lineWorkDates === 'object') setLineWorkDates(loaded.lineWorkDates);
             skipNextLocalStorageApplyRef.current = true;
+            skipNextSaveRef.current = true;
+            normalizedLinesRef.current = false;
             if (setPlanningStateToLoad) setPlanningStateToLoad(null);
             return;
         }
@@ -900,19 +921,16 @@ const PlanningView = () => {
             if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
             if (loaded.exportType) setExportType(loaded.exportType);
             if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
-            if (loaded.activeTab) {
-                debugLog('planning', 'setActiveTab from loaded', loaded.activeTab);
-                setActiveTab(loaded.activeTab);
-            }
+            if (loaded.lineWorkDates && typeof loaded.lineWorkDates === 'object') setLineWorkDates(loaded.lineWorkDates);
         }
     }, [planningStateVersion, planningStateToLoad, setPlanningStateToLoad]);
 
     useEffect(() => {
-        if (activeTab === 'schedule' && currentPlanId && activePlanHasQueue && loadPlanQueue) {
+        if (activeTab === 'schedule' && currentPlanId && activePlanHasQueue) {
             debugLog('planning', 'schedule tab: auto loadPlanQueue', { currentPlanId, activePlanHasQueue });
-            loadPlanQueue(currentPlanId);
+            loadPlanQueueRef.current?.(currentPlanId);
         }
-    }, [activeTab, currentPlanId, activePlanHasQueue, loadPlanQueue]);
+    }, [activeTab, currentPlanId, activePlanHasQueue]);
 
     useEffect(() => {
         if (!useStoredTransitionRules) {
@@ -922,9 +940,16 @@ const PlanningView = () => {
 
     const savePlanningState = useMemo(() => debounce((nextState) => {
         persistStateKey(STORAGE_KEYS.PLANNING_STATE, nextState);
-    }, 400), [persistStateKey]);
+        if (updatePlanPlanningState && nextState) {
+            updatePlanPlanningState(nextState);
+        }
+    }, 400), [persistStateKey, updatePlanPlanningState]);
 
     useEffect(() => {
+        if (skipNextSaveRef.current) {
+            skipNextSaveRef.current = false;
+            return;
+        }
         savePlanningState({
             activeTab,
             cipDurations,
@@ -938,10 +963,10 @@ const PlanningView = () => {
             lineEvents,
             exportLines,
             exportType,
-            displacementRules
+            displacementRules,
+            lineWorkDates
         });
     }, [
-        activeTab,
         cipDurations,
         baseProducts,
         speedLines,
@@ -953,6 +978,7 @@ const PlanningView = () => {
         exportLines,
         exportType,
         displacementRules,
+        lineWorkDates,
         savePlanningState
     ]);
 
@@ -1041,6 +1067,63 @@ const PlanningView = () => {
         return `${day}.${month}.${year}`;
     };
 
+    const parseLineDatesInput = (value) => {
+        const input = String(value || '').trim();
+        if (!input) return { dates: [], errors: [] };
+        const tokens = input.split(',').map((t) => t.trim()).filter(Boolean);
+        const dates = new Set();
+        const errors = [];
+        tokens.forEach((token) => {
+            const parts = token.split(/\s*[-–—]\s*/).map((p) => p.trim()).filter(Boolean);
+            if (parts.length === 1) {
+                const idx = parseDateToDayIndex(parts[0]);
+                if (idx == null) {
+                    errors.push(`Некорректная дата: ${token}`);
+                } else {
+                    dates.add(formatDayIndexToDate(idx));
+                }
+                return;
+            }
+            if (parts.length === 2) {
+                const startIdx = parseDateToDayIndex(parts[0]);
+                const endIdx = parseDateToDayIndex(parts[1]);
+                if (startIdx == null || endIdx == null) {
+                    errors.push(`Некорректный диапазон: ${token}`);
+                    return;
+                }
+                const from = Math.min(startIdx, endIdx);
+                const to = Math.max(startIdx, endIdx);
+                for (let d = from; d <= to; d += 1) {
+                    dates.add(formatDayIndexToDate(d));
+                }
+                return;
+            }
+            errors.push(`Некорректный диапазон: ${token}`);
+        });
+        const sorted = Array.from(dates).sort((a, b) => (parseDateToDayIndex(a) ?? 0) - (parseDateToDayIndex(b) ?? 0));
+        return { dates: sorted, errors };
+    };
+
+    const buildLineWorkRows = (lineDatesMap) => {
+        const rows = [];
+        Object.entries(lineDatesMap || {}).forEach(([line, dates]) => {
+            (dates || []).forEach((date) => {
+                rows.push({
+                    line,
+                    date,
+                    start: '08:00',
+                    end: '08:00',
+                    manualStart: true,
+                    manualEnd: true,
+                    kind: 'line',
+                    name: `Работа ${line}`,
+                    durationMinutes: 1440
+                });
+            });
+        });
+        return rows;
+    };
+
     const parseProductPaste = (text, includeQty) => {
         const trimmed = String(text || '').trim();
         if (!trimmed) return [];
@@ -1078,6 +1161,53 @@ const PlanningView = () => {
         });
 
         return parsed;
+    };
+
+    const parseProductPastePreview = (text, includeQty) => {
+        const trimmed = String(text || '').trim();
+        const pattern = PRODUCT_PARSE_PATTERN;
+        const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+        const ok = [];
+        const okNoQty = [];
+        const partial = [];
+
+        lines.forEach((line, idx) => {
+            const match = line.match(pattern);
+            if (match?.groups?.type && match.groups?.flavor) {
+                const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
+                const brand = match.groups.brand ? match.groups.brand.trim() : '';
+                const type = match.groups.type.trim();
+                const flavor = match.groups.flavor.trim();
+                const rawQty = includeQty && match.groups.qty ? match.groups.qty : '';
+                const qty = rawQty ? rawQty.replace(/\s+/g, ' ').trim() : '';
+                const name = [
+                    type,
+                    flavor,
+                    volume ? volume : '',
+                    brand ? `ТМ «${brand}»` : ''
+                ].filter(Boolean).join(' ');
+                const item = {
+                    id: `p_${Date.now()}_${idx}`,
+                    name,
+                    type,
+                    flavor,
+                    volume,
+                    brand,
+                    speed: '',
+                    qty,
+                    unit: ''
+                };
+                if (includeQty && !qty) {
+                    okNoQty.push(item);
+                } else {
+                    ok.push(item);
+                }
+            } else {
+                partial.push({ rawLine: line, lineIndex: idx + 1 });
+            }
+        });
+
+        return { ok, okNoQty, partial };
     };
 
     const addSpeedLine = () => {
@@ -1432,11 +1562,11 @@ const PlanningView = () => {
         }, 2000);
     };
 
-    const handlePasteImport = (target) => {
+    const handlePasteImport = (target, options = {}) => {
         if (target === 'plan') setPlanImportError('');
         if (target === 'reference') setProductImportError('');
         try {
-            const items = parseProductPaste(pasteText, target === 'plan');
+            const items = options.previewItems ?? parseProductPaste(pasteText, target === 'plan');
             if (items.length === 0) {
                 if (target === 'plan') setPlanImportError('Данные не распознаны. Проверьте формат.');
                 if (target === 'reference') setProductImportError('Данные не распознаны. Проверьте формат.');
@@ -1515,6 +1645,7 @@ const PlanningView = () => {
             }
             setIsProductImportOpen(false);
             setIsPlanImportOpen(false);
+            setPlanImportPreview(null);
             setPasteText('');
         } catch (err) {
             const message = err?.message || 'Ошибка импорта данных.';
@@ -1920,10 +2051,73 @@ const PlanningView = () => {
                     lineEvents,
                     exportLines,
                     exportType,
-                    displacementRules
+                displacementRules,
+                lineWorkDates
                 }
             });
             setPlanCreateStatus('success');
+        } catch (err) {
+            setPlanCreateError(err?.message || 'Ошибка создания плана');
+            setPlanCreateStatus('error');
+        }
+    };
+
+    const handleCreatePlanFromLineDates = () => {
+        setLineWorkError('');
+        setPlanCreateError('');
+        setPlanCreateStatus('idle');
+        try {
+            if (!createPlanFromSchedule) {
+                throw new Error('Функция сохранения плана недоступна.');
+            }
+            const parsed = {};
+            const errors = [];
+            lineOptions.forEach((line) => {
+                const { dates, errors: errs } = parseLineDatesInput(lineWorkDraft[line]);
+                if (errs.length > 0) {
+                    errors.push(`${line}: ${errs.join(', ')}`);
+                }
+                if (dates.length > 0) {
+                    parsed[line] = dates;
+                }
+            });
+            if (errors.length > 0) {
+                setLineWorkError(errors.join(' | '));
+                return;
+            }
+            if (Object.keys(parsed).length === 0) {
+                setLineWorkError('Укажите даты работы хотя бы для одной линии.');
+                return;
+            }
+            const rows = buildLineWorkRows(parsed);
+            const autoShifts = buildShiftsFromRows(rows);
+            const demand = buildDemandFromSchedule(rows, autoShifts);
+            const roster = buildRosterFromDistribution();
+            const planName = (planSaveName || activePlanName || `План ${new Date().toLocaleDateString('ru-RU')}`).trim();
+            createPlanFromSchedule({
+                demand,
+                roster,
+                name: planName,
+                planningState: {
+                    activeTab: 'schedule',
+                    cipDurations,
+                    baseProducts,
+                    speedLines,
+                    products: [],
+                    cipBetween: [],
+                    selectedPlanLine,
+                    transitionRules,
+                    transitionRulesVersion: TRANSITION_RULES_VERSION,
+                    lineEvents,
+                    exportLines,
+                    exportType,
+                    displacementRules,
+                    lineWorkDates: parsed
+                }
+            });
+            setLineWorkDates(parsed);
+            setPlanCreateStatus('success');
+            setIsLineWorkPlanOpen(false);
         } catch (err) {
             setPlanCreateError(err?.message || 'Ошибка создания плана');
             setPlanCreateStatus('error');
@@ -1986,8 +2180,28 @@ const PlanningView = () => {
             .filter(Boolean);
     }, [exportLines, products, cipBetween, buildMissingTransitionMap, eventLabelByKey]);
 
+    const linesFromGraph = useMemo(() => {
+        const set = new Set();
+        products.forEach((p) => { if (p?.line) set.add(p.line); });
+        cipBetween.forEach((c) => { if (c?.line) set.add(c.line); });
+        const list = Array.from(set);
+        const extractNum = (s) => {
+            const m = String(s).match(/Линия\s*(\d+)/i);
+            return m ? parseInt(m[1], 10) : null;
+        };
+        const sorted = list.sort((a, b) => {
+            const na = extractNum(a);
+            const nb = extractNum(b);
+            if (na != null && nb != null) return na - nb;
+            if (na != null) return -1;
+            if (nb != null) return 1;
+            return String(a).localeCompare(b, undefined, { numeric: true });
+        });
+        return sorted.length > 0 ? sorted : lineOptions;
+    }, [products, cipBetween, lineOptions]);
+
     const ganttSections = useMemo(() => {
-        return lineOptions.map((line) => {
+        return linesFromGraph.map((line) => {
             const missing = buildMissingTransitionMap(line);
             const rows = buildRows(products, cipBetween, line, missing);
             const anchorIndex = rows.findIndex((r) => r.manualStart || r.manualEnd);
@@ -2014,7 +2228,7 @@ const PlanningView = () => {
                 })
             };
         });
-    }, [products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap, eventLabelByKey]);
+    }, [linesFromGraph, products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap, eventLabelByKey]);
 
     useEffect(() => {
         const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
@@ -2194,7 +2408,9 @@ const PlanningView = () => {
                                     className="bg-transparent text-sm font-medium text-slate-700 focus:outline-none cursor-pointer pr-1"
                                 >
                                     {lineOptions.map(option => (
-                                        <option key={option} value={option}>{option}</option>
+                                        <option key={option} value={option}>
+                                            {option} ({eventCountByLine[option] ?? 0})
+                                        </option>
                                     ))}
                                 </select>
                             </div>
@@ -2913,7 +3129,22 @@ const PlanningView = () => {
                                         Сформировать план
                                     </button>
                                     <button
-                                        onClick={() => { setPlanImportError(''); setPasteText(''); setIsPlanImportOpen(true); }}
+                                        onClick={() => {
+                                            setLineWorkError('');
+                                            const draft = {};
+                                            lineOptions.forEach((line) => {
+                                                const dates = lineWorkDates?.[line];
+                                                draft[line] = Array.isArray(dates) ? dates.join(', ') : (dates || '');
+                                            });
+                                            setLineWorkDraft(draft);
+                                            setIsLineWorkPlanOpen(true);
+                                        }}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                                    >
+                                        План по датам линий
+                                    </button>
+                                    <button
+                                        onClick={() => { setPlanImportError(''); setPasteText(''); setPlanImportPreview(null); setIsPlanImportOpen(true); }}
                                         className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                                     >
                                         Импорт в план
@@ -3217,18 +3448,18 @@ const PlanningView = () => {
             )}
             {isPlanImportOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
-                    <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
-                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4">
+                    <div className="w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4 shrink-0">
                             <h3 className="text-base font-semibold text-slate-800">Импорт в план</h3>
                             <button
-                                onClick={() => setIsPlanImportOpen(false)}
+                                onClick={() => { setIsPlanImportOpen(false); setPlanImportPreview(null); }}
                                 className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                             >
                                 Закрыть
                             </button>
                         </div>
-                        <div className="p-6 space-y-4">
-                            <p className="text-sm text-slate-600">Вставьте данные из буфера (Ctrl+V). Кол-во будет учтено.</p>
+                        <div className="p-6 space-y-4 overflow-y-auto min-h-0">
+                            <p className="text-sm text-slate-600">Вставьте данные из буфера (Ctrl+V). Нажмите «Разобрать», проверьте результат, затем «Импортировать».</p>
                             <div className="flex flex-col gap-1.5">
                                 <label className="text-xs font-medium text-slate-500">Линия</label>
                                 <select
@@ -3237,33 +3468,166 @@ const PlanningView = () => {
                                     className="h-9 rounded-lg border border-slate-200 bg-slate-50/50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                                 >
                                     {lineOptions.map(option => (
-                                        <option key={option} value={option}>{option}</option>
+                                        <option key={option} value={option}>
+                                            {option} ({eventCountByLine[option] ?? 0})
+                                        </option>
                                     ))}
                                 </select>
                             </div>
                             <textarea
                                 value={pasteText}
-                                onChange={(e) => setPasteText(e.target.value)}
-                                rows={8}
+                                onChange={(e) => { setPasteText(e.target.value); setPlanImportPreview(null); }}
+                                rows={6}
                                 className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
                                 placeholder="Вставьте данные сюда..."
                             />
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setPlanImportError('');
+                                    if (!pasteText.trim()) {
+                                        setPlanImportError('Вставьте данные для разбора.');
+                                        return;
+                                    }
+                                    const { ok, okNoQty, partial } = parseProductPastePreview(pasteText, true);
+                                    setPlanImportPreview({ ok, okNoQty, partial });
+                                    if (ok.length === 0 && okNoQty.length === 0 && partial.length === 0) {
+                                        setPlanImportError('Нет строк для разбора.');
+                                    } else if (ok.length === 0 && okNoQty.length === 0) {
+                                        setPlanImportError('Ни одна строка не распознана полностью. Проверьте формат.');
+                                    }
+                                }}
+                                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                            >
+                                Разобрать
+                            </button>
                             {planImportError && (
                                 <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{planImportError}</div>
                             )}
+                            {planImportPreview && (
+                                <div className="space-y-4 rounded-xl border border-slate-200/80 bg-slate-50/30 p-4">
+                                    {planImportPreview.ok.length > 0 && (
+                                        <div>
+                                            <h4 className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">
+                                                Распознано полностью — будет импортировано ({planImportPreview.ok.length})
+                                            </h4>
+                                            <ul className="max-h-40 overflow-y-auto space-y-1 text-sm text-slate-700 rounded-lg bg-white/80 p-2 border border-slate-200/60">
+                                                {planImportPreview.ok.map((item, i) => (
+                                                    <li key={item.id} className="flex items-baseline gap-2">
+                                                        <span className="text-slate-400 shrink-0">{i + 1}.</span>
+                                                        <span>{item.name}</span>
+                                                        {item.qty && <span className="text-slate-500 text-xs">({item.qty} шт)</span>}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {planImportPreview.okNoQty?.length > 0 && (
+                                        <div>
+                                            <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                                                Распознано, но не указано количество ({planImportPreview.okNoQty.length}) — будет импортировано без кол-ва
+                                            </h4>
+                                            <ul className="max-h-32 overflow-y-auto space-y-1 text-sm text-slate-600 rounded-lg bg-amber-50/50 p-2 border border-amber-200/60">
+                                                {planImportPreview.okNoQty.map((item, i) => (
+                                                    <li key={item.id} className="flex items-baseline gap-2">
+                                                        <span className="text-amber-600 shrink-0">{i + 1}.</span>
+                                                        <span>{item.name}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {planImportPreview.partial.length > 0 && (
+                                        <div>
+                                            <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                                                Найдено, но не распознано полностью ({planImportPreview.partial.length})
+                                            </h4>
+                                            <ul className="max-h-32 overflow-y-auto space-y-1 text-sm text-slate-600 rounded-lg bg-amber-50/50 p-2 border border-amber-200/60">
+                                                {planImportPreview.partial.map(({ rawLine, lineIndex }, i) => (
+                                                    <li key={i} className="flex items-baseline gap-2">
+                                                        <span className="text-amber-600 shrink-0">{lineIndex}.</span>
+                                                        <span className="break-all">{rawLine || '(пустая строка)'}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
-                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30">
+                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30 shrink-0">
                             <button
-                                onClick={() => setIsPlanImportOpen(false)}
+                                onClick={() => { setIsPlanImportOpen(false); setPlanImportPreview(null); }}
                                 className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                             >
                                 Отмена
                             </button>
                             <button
-                                onClick={() => handlePasteImport('plan')}
-                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                                onClick={() => {
+                                    const all = [...(planImportPreview?.ok ?? []), ...(planImportPreview?.okNoQty ?? [])];
+                                    if (all.length > 0) handlePasteImport('plan', { previewItems: all });
+                                }}
+                                disabled={!planImportPreview || (planImportPreview.ok.length + (planImportPreview.okNoQty?.length ?? 0)) === 0}
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
                             >
                                 Импортировать
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {isLineWorkPlanOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                    <div className="w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200/80">
+                        <div className="flex items-center justify-between border-b border-slate-200/80 bg-slate-50/50 px-6 py-4 shrink-0">
+                            <h3 className="text-base font-semibold text-slate-800">План по датам линий</h3>
+                            <button
+                                onClick={() => setIsLineWorkPlanOpen(false)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+                            >
+                                Закрыть
+                            </button>
+                        </div>
+                        <div className="p-6 space-y-4 overflow-y-auto min-h-0">
+                            <div className="space-y-1">
+                                <p className="text-sm text-slate-600">
+                                    Укажите даты работы линий. Формат: <span className="font-medium">дд.мм.гггг</span>.
+                                    Диапазоны — через дефис, несколько дат — через запятую.
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    Пример: 01.02.2026-03.02.2026, 05.02.2026
+                                </p>
+                            </div>
+                            {lineWorkError && (
+                                <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{lineWorkError}</div>
+                            )}
+                            <div className="space-y-3">
+                                {lineOptions.map((line) => (
+                                    <div key={line} className="grid grid-cols-[180px_1fr] gap-3 items-start">
+                                        <div className="text-xs font-medium text-slate-600 pt-2">{line}</div>
+                                        <input
+                                            type="text"
+                                            value={lineWorkDraft[line] || ''}
+                                            onChange={(e) => setLineWorkDraft((prev) => ({ ...prev, [line]: e.target.value }))}
+                                            className="h-9 rounded-lg border border-slate-200 bg-slate-50/50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                                            placeholder="01.02.2026-03.02.2026, 05.02.2026"
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="flex justify-end gap-2 border-t border-slate-200/80 px-6 py-4 bg-slate-50/30 shrink-0">
+                            <button
+                                onClick={() => setIsLineWorkPlanOpen(false)}
+                                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={handleCreatePlanFromLineDates}
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors"
+                            >
+                                Сформировать план
                             </button>
                         </div>
                     </div>
