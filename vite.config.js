@@ -6,11 +6,12 @@ export default defineConfig({
   base: './', // Важно для Electron - относительные пути
   server: {
     port: 3000,
-    host: '127.0.0.1', // Используем IP вместо localhost для лучшей совместимости с VPN
-    open: false, // Отключаем автоматическое открытие браузера
-    strictPort: false, // Позволяет использовать другой порт, если 3000 занят
+    host: true, // true = 0.0.0.0 — доступ по локальной сети для нескольких пользователей
+    open: false,
+    strictPort: false,
     hmr: {
-      clientPort: 3000 // Порт для Hot Module Replacement
+      clientPort: 3000,
+      host: 'localhost', // HMR с этой машины; при доступе по сети перезагрузка страницы обновит код
     }
   },
   build: {

@@ -559,10 +559,6 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
             return;
         }
-        if (isLocked) {
-            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
-            return;
-        }
         if (viewMode !== 'dashboard') {
             notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
             return;
@@ -574,15 +570,11 @@ export const DataProvider = ({ children }) => {
             if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
             syncTimeoutRef.current = setTimeout(() => setSyncStatus('idle'), 800);
         }
-    }, [persistStateKey, useRemoteStorage, isLocked, viewMode, isReadOnly, notify]);
+    }, [persistStateKey, useRemoteStorage, viewMode, isReadOnly, notify]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
         if (isReadOnly) {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
-            return;
-        }
-        if (isLocked) {
-            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
             return;
         }
         setLineTemplates(prev => {
@@ -638,7 +630,7 @@ export const DataProvider = ({ children }) => {
             persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, newTemplates);
             return newTemplates;
         });
-    }, [isLocked]);
+    }, []);
 
     const handleWorkerEditSave = useCallback(({ oldName, newName, competencies, status, fiveDay }) => {
         if (isReadOnly) {
@@ -1706,10 +1698,6 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
             return;
         }
-        if (isLocked) {
-            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
-            return;
-        }
         if (viewMode !== 'dashboard') {
             notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
             return;
@@ -1722,7 +1710,7 @@ export const DataProvider = ({ children }) => {
         }
         setDraggedWorker(worker);
         e.dataTransfer.effectAllowed = 'move';
-    }, [selectedDate, workerRegistry, isLocked, viewMode, isReadOnly]);
+    }, [selectedDate, workerRegistry, viewMode, isReadOnly]);
 
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
@@ -1780,10 +1768,6 @@ export const DataProvider = ({ children }) => {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
             return;
         }
-        if (isLocked) {
-            notify({ type: 'error', message: 'План защищен. Введите PIN для редактирования.' });
-            return;
-        }
         if (viewMode !== 'dashboard') {
             notify({ type: 'error', message: 'Совмещение доступно только в режиме "Смены".' });
             return;
@@ -1811,7 +1795,7 @@ export const DataProvider = ({ children }) => {
             next[date] = dateEntry;
             return next;
         });
-    }, [isLocked, notify, viewMode]);
+    }, [notify, viewMode]);
 
 
     const handleDrop = useCallback((e, targetSlotId, targetBaseWorkerName = null) => {
@@ -2937,6 +2921,7 @@ export const DataProvider = ({ children }) => {
 
         const dayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
         const nightFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
+        const vacancyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE0B2' } }; // светло-оранжевый
 
         [r1, r2].forEach((row) => {
             row.eachCell((cell, colNumber) => {
@@ -3017,11 +3002,13 @@ export const DataProvider = ({ children }) => {
             if (!lineTask) return '';
             const slotsForRole = lineTask.slots.filter(s => s.roleTitle === role);
             const slot = slotsForRole[slotIndex];
-            if (!slot || !slot.assigned) return '';
+            if (!slot) return '';
             if (slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') {
-                return slot.assigned.name || '';
+                const name = slot.assigned?.name?.trim();
+                if (name) return name;
             }
-            return '';
+            // Слот есть (вакансия), но человека нет — пишем "Вакансия"
+            return 'Вакансия';
         };
 
         sortedLines.forEach(([lineKey, lineData]) => {
@@ -3058,6 +3045,13 @@ export const DataProvider = ({ children }) => {
                         const nightCol = dayCol + 1;
                         row.getCell(dayCol).fill = dayFill;
                         row.getCell(nightCol).fill = nightFill;
+                    });
+                    // Выделить цветом ячейки с вакансиями
+                    rowData.forEach((val, i) => {
+                        if (i >= 2 && val === 'Вакансия') {
+                            const col = i + 1;
+                            row.getCell(col).fill = vacancyFill;
+                        }
                     });
 
                     isFirstLineRow = false;
