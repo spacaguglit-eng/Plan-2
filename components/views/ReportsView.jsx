@@ -16,8 +16,7 @@ import {
     LayoutGrid,
     UserCircle2,
     Search,
-    X,
-    Bug
+    X
 } from 'lucide-react';
 
 const reportOptions = [
@@ -297,14 +296,11 @@ export default function ReportsView() {
     const [reportType, setReportType] = useState('lineDetail');
     const [showOnlyDiffs, setShowOnlyDiffs] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
-    const [filterByPlan, setFilterByPlan] = useState(true);
-    const [filterOffPlan, setFilterOffPlan] = useState(true);
-    const [filterRv, setFilterRv] = useState(true);
+    const [filterByPlan, setFilterByPlan] = useState(false);
+    const [filterOffPlan, setFilterOffPlan] = useState(false);
+    const [filterRv, setFilterRv] = useState(false);
     const [filterOvertime, setFilterOvertime] = useState(false);
-    const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
     const [showSkudModal, setShowSkudModal] = useState(false);
-    const [showLineDebugModal, setShowLineDebugModal] = useState(false);
-    const [selectedLineDebug, setSelectedLineDebug] = useState(null);
     const [showMasterPlanModal, setShowMasterPlanModal] = useState(false);
     const [showAllPlansModal, setShowAllPlansModal] = useState(false);
     const [employeeDisplayLimit, setEmployeeDisplayLimit] = useState(20);
@@ -374,25 +370,7 @@ export default function ReportsView() {
                 factAssignmentType: factSlot?.assignmentType || null,
                 factSource: factSlot?.source || null,
                 planSlotMeta,
-                factSlotMeta,
-                debugInfo: {
-                    planSlot: planSlot ? {
-                        slotId: planSlot.slotId,
-                        assignedName: planSlot.assignedName,
-                        assignmentType: planSlot.assignmentType,
-                        source: planSlot.source,
-                        lineName: planSlot.lineName || planSlot.line,
-                        role: planSlot.role || planSlot.roleTitle
-                    } : null,
-                    factSlot: factSlot ? {
-                        slotId: factSlot.slotId,
-                        assignedName: factSlot.assignedName,
-                        assignmentType: factSlot.assignmentType,
-                        source: factSlot.source,
-                        lineName: factSlot.lineName || factSlot.line,
-                        role: factSlot.role || factSlot.roleTitle
-                    } : null
-                }
+                factSlotMeta
             });
         };
 
@@ -759,72 +737,6 @@ export default function ReportsView() {
         ? 'Нет данных по линиям — загрузите план.'
         : 'Нет данных для сравнения — назначьте основной и оперативный план.';
 
-    const getPlanDiagnostics = (plan, { includeLineDailyCounts = false } = {}) => {
-        if (!plan) return { label: '—', summary: {}, lineNames: [], dataKeys: [], autoReassignRaw: undefined };
-        const d = plan.data || {};
-        const demandRows = Array.isArray(d.rawTables?.demand) ? d.rawTables.demand.length : 0;
-        const assignmentCount = d.manualAssignments && typeof d.manualAssignments === 'object' ? Object.keys(d.manualAssignments).length : 0;
-        const lineNames = d.lineTemplates && typeof d.lineTemplates === 'object' ? Object.keys(d.lineTemplates) : [];
-        const manualLineKeys = d.manualLines && typeof d.manualLines === 'object' ? Object.keys(d.manualLines).length : 0;
-        const autoReassignRaw = d.autoReassignEnabled;
-        const autoReassignLabel = autoReassignRaw === true ? 'вкл' : autoReassignRaw === false ? 'выкл' : 'не сохранено в плане';
-        const lineDailyCounts = includeLineDailyCounts ? buildPlanLineDailyCounts(d) : null;
-        return {
-            label: `${plan.name || plan.id || 'План'} (${plan.type || '—'})`,
-            summary: {
-                'Даты в расписании': Array.isArray(d.scheduleDates) ? d.scheduleDates.length : 0,
-                'Строк в demand': demandRows,
-                'Ручных назначений (manualAssignments)': assignmentCount,
-                'Линий (lineTemplates)': lineNames.length,
-                'Ключей manualLines': manualLineKeys,
-                'Автоподстановка (в данных плана)': autoReassignLabel
-            },
-            lineNames,
-            dataKeys: d ? Object.keys(d) : [],
-            autoReassignRaw,
-            lineDailyCounts
-        };
-    };
-
-    const masterDiag = useMemo(() => getPlanDiagnostics(masterPlan, { includeLineDailyCounts: showDiagnosticsModal }), [masterPlan, showDiagnosticsModal]);
-    const operationalDiag = useMemo(() => getPlanDiagnostics(operationalPlan, { includeLineDailyCounts: showDiagnosticsModal }), [operationalPlan, showDiagnosticsModal]);
-
-    const renderLineDailyCounts = (diag) => {
-        const counts = diag?.lineDailyCounts;
-        if (!counts) return null;
-        const dates = Object.keys(counts).sort();
-        if (dates.length === 0) {
-            return <div className="mt-2 text-xs text-slate-400">Нет данных по линиям.</div>;
-        }
-        return (
-            <div className="mt-3 text-xs text-slate-600">
-                <div className="font-semibold text-slate-700 mb-2">Люди по дням и линиям</div>
-                <div className="space-y-2 max-h-64 overflow-auto pr-1 custom-scrollbar">
-                    {dates.map(date => {
-                        const lines = counts[date] || {};
-                        const lineNames = Object.keys(lines).sort();
-                        return (
-                            <details key={date} className="border border-slate-100 rounded-md overflow-hidden">
-                                <summary className="px-2.5 py-1.5 bg-slate-50 cursor-pointer font-medium text-slate-700">
-                                    {date} · линий: {lineNames.length}
-                                </summary>
-                                <div className="px-2.5 py-2 bg-white border-t border-slate-100 space-y-1">
-                                    {lineNames.length === 0 && <div className="text-slate-400">Нет данных по линиям.</div>}
-                                    {lineNames.map(lineName => (
-                                        <div key={lineName} className="flex items-center justify-between gap-2">
-                                            <span className="text-slate-600">{lineName}</span>
-                                            <span className="text-slate-500">заполнений: {lines[lineName].filled} · уникальных: {lines[lineName].unique}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </details>
-                        );
-                    })}
-                </div>
-            </div>
-        );
-    };
-
     return (
         <div className="h-full w-full flex flex-col gap-4">
             {/* Header Section */}
@@ -885,15 +797,6 @@ export default function ReportsView() {
 
                 <button
                     type="button"
-                    onClick={() => setShowDiagnosticsModal(true)}
-                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
-                    title="Состояние основного и оперативного планов для диагностики"
-                >
-                    <Bug size={16} className="text-slate-500" />
-                    Диагностика планов
-                </button>
-                    <button
-                    type="button"
                     onClick={() => setShowSkudModal(true)}
                     className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
                     title="Что загружено из СКУД и как это читается"
@@ -901,26 +804,6 @@ export default function ReportsView() {
                     <Clock size={16} className="text-slate-500" />
                     Данные СКУД
                 </button>
-                {reportType === 'lineDetail' && (
-                    <button
-                        type="button"
-                        onClick={() => {
-                            if (filteredLineHierarchy.length > 0 && filteredLineHierarchy[0].dates.length > 0 && filteredLineHierarchy[0].dates[0].shifts.length > 0) {
-                                setSelectedLineDebug({
-                                    line: filteredLineHierarchy[0],
-                                    date: filteredLineHierarchy[0].dates[0],
-                                    shift: filteredLineHierarchy[0].dates[0].shifts[0]
-                                });
-                                setShowLineDebugModal(true);
-                            }
-                        }}
-                        className="flex items-center gap-2 px-4 py-2 bg-slate-100 border border-slate-200 rounded-xl hover:bg-slate-200 transition-colors text-slate-700 text-sm font-medium"
-                        title="Источники данных по расстановке"
-                    >
-                        <Bug size={16} className="text-slate-500" />
-                        Отладка расстановки
-                    </button>
-                )}
                 {masterPlan?.data && buildPlanSlots && (
                     <button
                         type="button"
@@ -945,85 +828,6 @@ export default function ReportsView() {
                 )}
                 </div>
             </div>
-
-            {showDiagnosticsModal && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowDiagnosticsModal(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
-                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                                <Bug size={20} className="text-slate-500" />
-                                Состояние планов (диагностика)
-                            </h3>
-                            <button type="button" onClick={() => setShowDiagnosticsModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-auto flex-1 grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="border border-indigo-200 rounded-xl bg-indigo-50/30 overflow-hidden">
-                                <div className="px-4 py-2 bg-indigo-100 border-b border-indigo-200 font-semibold text-indigo-800 text-sm">
-                                    Основной (Master)
-                                </div>
-                                <div className="p-4 text-sm font-mono space-y-1">
-                                    <div className="font-semibold text-slate-700 mb-2">{masterDiag.label}</div>
-                                    {Object.entries(masterDiag.summary).map(([k, v]) => (
-                                        <div key={k} className="text-slate-600"><span className="text-slate-400">{k}:</span> {String(v)}</div>
-                                    ))}
-                                    {masterDiag.lineNames?.length > 0 && (
-                                        <div className="mt-2 text-slate-500 text-xs">Линии: {masterDiag.lineNames.join(', ')}</div>
-                                    )}
-                                    <div className="mt-2 text-slate-400 text-xs">Ключи в data: {masterDiag.dataKeys.join(', ')}</div>
-                                    {renderLineDailyCounts(masterDiag)}
-                                </div>
-                            </div>
-                            <div className="border border-emerald-200 rounded-xl bg-emerald-50/30 overflow-hidden">
-                                <div className="px-4 py-2 bg-emerald-100 border-b border-emerald-200 font-semibold text-emerald-800 text-sm">
-                                    Оперативный (Operational)
-                                </div>
-                                <div className="p-4 text-sm font-mono space-y-1">
-                                    <div className="font-semibold text-slate-700 mb-2">{operationalDiag.label}</div>
-                                    {Object.entries(operationalDiag.summary).map(([k, v]) => (
-                                        <div key={k} className="text-slate-600"><span className="text-slate-400">{k}:</span> {String(v)}</div>
-                                    ))}
-                                    {operationalDiag.lineNames?.length > 0 && (
-                                        <div className="mt-2 text-slate-500 text-xs">Линии: {operationalDiag.lineNames.join(', ')}</div>
-                                    )}
-                                    <div className="mt-2 text-slate-400 text-xs">Ключи в data: {operationalDiag.dataKeys.join(', ')}</div>
-                                    {renderLineDailyCounts(operationalDiag)}
-                                </div>
-                            </div>
-                        </div>
-                        <div className="px-6 py-3 border-t border-slate-200 bg-amber-50/80 rounded-b-2xl space-y-2">
-                            <div className="text-sm font-medium text-amber-800">
-                                Сейчас активен: {savedPlans.find(p => p.id === currentPlanId)?.name || currentPlanId || '—'} · Автоподстановка в редакторе смен: <strong>{autoReassignEnabled ? 'вкл' : 'выкл'}</strong>
-                            </div>
-                            {(masterDiag.autoReassignRaw === undefined || operationalDiag.autoReassignRaw === undefined) && (
-                                <div className="bg-red-50 border-l-4 border-red-400 p-3 rounded">
-                                    <p className="text-sm font-bold text-red-800 mb-1">⚠️ КРИТИЧЕСКАЯ ПРОБЛЕМА</p>
-                                    <p className="text-xs text-red-700 mb-2">
-                                        У одного или обоих планов автоподстановка = «не сохранено в плане». Это означает, что план был сохранён ДО добавления сохранения этой настройки.
-                                    </p>
-                                    <p className="text-xs text-red-700 mb-2">
-                                        <strong>По умолчанию</strong> при отсутствии значения используется <strong>вкл</strong> (roster заполняется). 
-                                        Поэтому если у одного плана галочка была выключена, а план не пересохранён — отчёты будут показывать одинаковые данные!
-                                    </p>
-                                    <p className="text-xs text-red-700 font-semibold">
-                                        ✅ РЕШЕНИЕ: Загрузите каждый план, переключите галочку автоподстановки туда-сюда, дождитесь автосохранения (2-3 сек). Тогда в данных плана будет сохранено явное значение вкл/выкл.
-                                    </p>
-                                </div>
-                            )}
-                            <p className="text-xs text-slate-600">
-                                Если у плана «Автоподстановка» = «не сохранено в плане», значение не было в сохранённых данных (старое сохранение или план ещё не пересохранён). Переключитесь на план, включите/выключите галочку и дождитесь автосохранения или сохраните план — тогда в диагностике будет вкл/выкл.
-                            </p>
-                            <p className="text-xs text-slate-500">
-                                Сравнение отчётов учитывает автоподстановку: при выкл. в плане слоты из матрицы считаются пустыми, при вкл. — заполненными из roster. «Ручных назначений» — только явные перетаскивания/РВ/аутсорс.
-                            </p>
-                            <p className="text-xs text-slate-500">
-                                Сравнение отчётов строится по слотам из demand и manualAssignments. Если «Даты в расписании» или «Строк в demand» отличаются — часть слотов может не совпадать.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {showMasterPlanModal && masterPlan?.data && buildPlanSlots && (() => {
                 const { slots } = buildPlanSlots(masterPlan.data);
@@ -1213,78 +1017,6 @@ export default function ReportsView() {
                 );
             })()}
 
-            {showLineDebugModal && selectedLineDebug && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowLineDebugModal(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
-                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                                <Bug size={20} className="text-slate-500" />
-                                Отладка расстановки: {selectedLineDebug.line?.displayName} / {selectedLineDebug.date?.date} / {selectedLineDebug.shift?.shiftName}
-                            </h3>
-                            <button type="button" onClick={() => setShowLineDebugModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-auto flex-1">
-                            <div className="space-y-4">
-                                <div className="text-sm text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                                    <strong>Источник данных:</strong> Отчет сравнивает слоты из <strong>основного (Master)</strong> и <strong>оперативного (Operational)</strong> планов. 
-                                    Каждая строка показывает, какой слот (роль+человек) был в основном плане и стал в оперативном.
-                                </div>
-                                <div className="border border-slate-200 rounded-xl overflow-hidden">
-                                    <table className="w-full text-xs border-collapse">
-                                        <thead>
-                                            <tr className="bg-slate-100 text-slate-600 uppercase text-[10px] font-bold">
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">Роль</th>
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">План (Master)</th>
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">Факт (Operational)</th>
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">Тип изм.</th>
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">SlotID Master</th>
-                                                <th className="px-3 py-2 text-left border-b border-slate-200">SlotID Operational</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100">
-                                            {selectedLineDebug.shift?.rows?.map((row, idx) => (
-                                                <tr key={idx} className="hover:bg-slate-50">
-                                                    <td className="px-3 py-2 text-slate-700 font-medium">{row.roleTitle}</td>
-                                                    <td className="px-3 py-2">
-                                                        <div className="font-semibold text-slate-800">{row.planName || '—'}</div>
-                                                        {row.debugInfo?.planSlot && (
-                                                            <div className="text-[10px] text-slate-500 mt-0.5">
-                                                                source: {row.debugInfo.planSlot.source || '—'}, type: {row.debugInfo.planSlot.assignmentType || '—'}
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-3 py-2">
-                                                        <div className="font-semibold text-slate-800">{row.factName || '—'}</div>
-                                                        {row.debugInfo?.factSlot && (
-                                                            <div className="text-[10px] text-slate-500 mt-0.5">
-                                                                source: {row.debugInfo.factSlot.source || '—'}, type: {row.debugInfo.factSlot.assignmentType || '—'}
-                                                            </div>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-3 py-2">
-                                                        <span className={`inline-flex px-2 py-0.5 rounded text-[9px] font-bold ${getChangeColor(row)}`}>
-                                                            {getChangeLabel(row)}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-3 py-2 font-mono text-[10px] text-slate-600">
-                                                        {row.debugInfo?.planSlot?.slotId || '—'}
-                                                    </td>
-                                                    <td className="px-3 py-2 font-mono text-[10px] text-slate-600">
-                                                        {row.debugInfo?.factSlot?.slotId || '—'}
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {showSkudModal && (
                 <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSkudModal(false)}>
                     <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
@@ -1383,68 +1115,6 @@ export default function ReportsView() {
                 </div>
             )}
 
-            {/* Поиск и фильтры */}
-            {!showFallback && hasPlansForDiff && (
-                <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-4 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3">
-                    <div className="relative flex-1 min-w-[200px] max-w-md">
-                        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                        <input
-                            type="text"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            placeholder={reportType === 'lineDetail' ? 'Поиск по названию линии...' : 'Поиск по ФИО...'}
-                            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 outline-none transition-all"
-                        />
-                        {searchQuery && (
-                            <button
-                                type="button"
-                                onClick={() => setSearchQuery('')}
-                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-200"
-                            >
-                                <X size={16} />
-                            </button>
-                        )}
-                    </div>
-                    {reportType === 'lineDetail' && (
-                        <button
-                            type="button"
-                            onClick={() => setShowDiagnosticsModal(true)}
-                            className="px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors"
-                            title="Состав основного и оперативного планов для сравнения"
-                        >
-                            Состав планов
-                        </button>
-                    )}
-                    {reportType === 'employeeAnalysis' && (
-                        <div className="flex flex-wrap items-center gap-2 border-l border-slate-200 pl-3 sm:pl-4">
-                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Тип смен:</span>
-                            <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
-                                <input type="checkbox" checked={filterByPlan} onChange={(e) => setFilterByPlan(e.target.checked)} className="rounded border-slate-300" />
-                                <span className="text-xs font-medium text-slate-700">По плану</span>
-                            </label>
-                            <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
-                                <input type="checkbox" checked={filterOffPlan} onChange={(e) => setFilterOffPlan(e.target.checked)} className="rounded border-slate-300" />
-                                <span className="text-xs font-medium text-slate-700">Вне плана</span>
-                            </label>
-                            <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-200 bg-orange-50/50 cursor-pointer hover:bg-orange-50 transition-colors">
-                                <input type="checkbox" checked={filterRv} onChange={(e) => setFilterRv(e.target.checked)} className="rounded border-orange-300" />
-                                <span className="text-xs font-medium text-orange-800">РВ</span>
-                            </label>
-                            <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-200 ${factData ? 'bg-amber-50/50 cursor-pointer hover:bg-amber-50' : 'bg-slate-50 text-slate-400 cursor-not-allowed'} transition-colors`}>
-                                <input
-                                    type="checkbox"
-                                    checked={filterOvertime}
-                                    onChange={(e) => setFilterOvertime(e.target.checked)}
-                                    disabled={!factData}
-                                    className="rounded border-amber-300"
-                                />
-                                <span className="text-xs font-medium">Переработки</span>
-                            </label>
-                        </div>
-                    )}
-                </div>
-            )}
-
             {/* Main Content */}
             <div className="flex-1 min-h-0 bg-white border border-slate-200 shadow-sm rounded-2xl overflow-hidden flex flex-col">
                 {reportType === 'employeeAnalysis' && !hasPlansForDiff && (
@@ -1477,7 +1147,68 @@ export default function ReportsView() {
                         <p className="text-sm mt-1 max-w-xs">Попробуйте загрузить данные или изменить параметры фильтрации.</p>
                     </div>
                 ) : (
-                    <div className="flex-1 overflow-auto p-5 space-y-4 custom-scrollbar">
+                    <div className="flex-1 overflow-auto custom-scrollbar">
+                        {!showFallback && hasPlansForDiff && (
+                            <div className="bg-white border-b border-slate-200 p-4 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3">
+                                <div className="relative flex-1 min-w-[200px] max-w-md">
+                                    <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                    <input
+                                        type="text"
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        placeholder={reportType === 'lineDetail' ? 'Поиск по названию линии...' : 'Поиск по ФИО...'}
+                                        className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 outline-none transition-all"
+                                    />
+                                    {searchQuery && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setSearchQuery('')}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-200"
+                                        >
+                                            <X size={16} />
+                                        </button>
+                                    )}
+                                </div>
+                                {reportType === 'lineDetail' && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowDiagnosticsModal(true)}
+                                        className="px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl hover:bg-indigo-100 transition-colors"
+                                        title="Состав основного и оперативного планов для сравнения"
+                                    >
+                                        Состав планов
+                                    </button>
+                                )}
+                                {reportType === 'employeeAnalysis' && (
+                                    <div className="flex flex-wrap items-center gap-2 border-l border-slate-200 pl-3 sm:pl-4">
+                                        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Тип смен:</span>
+                                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
+                                            <input type="checkbox" checked={filterByPlan} onChange={(e) => setFilterByPlan(e.target.checked)} className="rounded border-slate-300" />
+                                            <span className="text-xs font-medium text-slate-700">По плану</span>
+                                        </label>
+                                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors">
+                                            <input type="checkbox" checked={filterOffPlan} onChange={(e) => setFilterOffPlan(e.target.checked)} className="rounded border-slate-300" />
+                                            <span className="text-xs font-medium text-slate-700">Вне плана</span>
+                                        </label>
+                                        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-200 bg-orange-50/50 cursor-pointer hover:bg-orange-50 transition-colors">
+                                            <input type="checkbox" checked={filterRv} onChange={(e) => setFilterRv(e.target.checked)} className="rounded border-orange-300" />
+                                            <span className="text-xs font-medium text-orange-800">РВ</span>
+                                        </label>
+                                        <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-200 ${factData ? 'bg-amber-50/50 cursor-pointer hover:bg-amber-50' : 'bg-slate-50 text-slate-400 cursor-not-allowed'} transition-colors`}>
+                                            <input
+                                                type="checkbox"
+                                                checked={filterOvertime}
+                                                onChange={(e) => setFilterOvertime(e.target.checked)}
+                                                disabled={!factData}
+                                                className="rounded border-amber-300"
+                                            />
+                                            <span className="text-xs font-medium">Переработки</span>
+                                        </label>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        <div className="p-5 space-y-4">
                         {reportType === 'lineDetail' && searchFilteredLineHierarchy.length === 0 && filteredLineHierarchy.length > 0 && (
                             <div className="flex flex-col items-center justify-center py-12 text-slate-500 text-sm">
                                 <Search size={40} className="opacity-30 mb-3" />
@@ -1565,17 +1296,6 @@ export default function ReportsView() {
                                                             <div key={`${line.displayName}-${dateNode.date}-${shift.shiftId}`}                                                                     className="border border-slate-100 rounded-lg overflow-hidden shadow-sm bg-white">
                                                                 <div className="bg-slate-50 px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100">
                                                                     <div className="flex items-center gap-3">
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => {
-                                                                                setSelectedLineDebug({ line, date: dateNode, shift });
-                                                                                setShowLineDebugModal(true);
-                                                                            }}
-                                                                            className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
-                                                                            title="Отладка: посмотреть источники"
-                                                                        >
-                                                                            <Bug size={14} />
-                                                                        </button>
                                                                         <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shadow-sm shadow-indigo-200">
                                                                             {shift.shiftId}
                                                                         </div>
@@ -1825,6 +1545,7 @@ export default function ReportsView() {
                                 </button>
                             </div>
                         )}
+                        </div>
                     </div>
                 )}
             </div>

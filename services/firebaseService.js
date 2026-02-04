@@ -6,6 +6,7 @@ import {
     getDoc,
     getDocs,
     setDoc,
+    deleteDoc,
     onSnapshot,
     serverTimestamp
 } from 'firebase/firestore';
@@ -67,6 +68,12 @@ export const writeFirestoreDoc = async (collectionName, docId, data = {}) => {
         ...data,
         updatedAt: serverTimestamp()
     }, { merge: true });
+};
+
+export const deleteFirestoreDoc = async (collectionName, docId) => {
+    const docRef = getDocRef(collectionName, docId);
+    if (!docRef) return;
+    await deleteDoc(docRef);
 };
 
 export const subscribeToFirestoreDoc = (collectionName, docId, callback) => {

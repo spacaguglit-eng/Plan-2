@@ -4,7 +4,6 @@ import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce, isLin
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
-import { log as debugLog, getDebugFlagsForWorker } from '../../utils/debug';
 import CalendarTab from './CalendarTab';
 
 const DEFAULT_LINE_OPTIONS = [
@@ -459,7 +458,6 @@ const PlanningView = () => {
             if (nb != null) return 1;
             return String(a).localeCompare(b, undefined, { numeric: true });
         });
-        debugLog('planning', 'lineOptions для графика', { rawKeys: keys, expanded: unique, excluded: unique.filter((n) => /^Резерв\s/i.test(String(n))), result: sorted });
         return sorted.length ? sorted : DEFAULT_LINE_OPTIONS;
     }, [lineTemplates]);
     const lineMatchesSelected = useCallback((line, selected) => {
@@ -880,8 +878,6 @@ const PlanningView = () => {
     useEffect(() => {
         if (planningStateToLoad && typeof planningStateToLoad === 'object') {
             const loaded = planningStateToLoad;
-            const source = 'planningStateToLoad';
-            debugLog('planning', 'apply loaded state', { source, activeTab: loaded.activeTab, productsCount: loaded.products?.length, cipCount: loaded.cipBetween?.length });
             if (Array.isArray(loaded.products)) setProducts(loaded.products);
             if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
@@ -903,13 +899,10 @@ const PlanningView = () => {
         if (planningStateVersion > 0) {
             if (skipNextLocalStorageApplyRef.current) {
                 skipNextLocalStorageApplyRef.current = false;
-                debugLog('planning', 'skip localStorage apply (just applied plan queue)');
                 return;
             }
             const loaded = loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {});
             if (!loaded || typeof loaded !== 'object') return;
-            const source = 'localStorage';
-            debugLog('planning', 'apply loaded state', { source, activeTab: loaded.activeTab, productsCount: loaded.products?.length, cipCount: loaded.cipBetween?.length });
             if (Array.isArray(loaded.products)) setProducts(loaded.products);
             if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
@@ -927,7 +920,6 @@ const PlanningView = () => {
 
     useEffect(() => {
         if (activeTab === 'schedule' && currentPlanId && activePlanHasQueue) {
-            debugLog('planning', 'schedule tab: auto loadPlanQueue', { currentPlanId, activePlanHasQueue });
             loadPlanQueueRef.current?.(currentPlanId);
         }
     }, [activeTab, currentPlanId, activePlanHasQueue]);
@@ -1386,9 +1378,6 @@ const PlanningView = () => {
             smenaAssortimenta: dur(lineEvents.find(e => e.category && e.category.includes('Смена ассортимента'))) || 0,
             vytesnenie: dur(lineEvents.find(e => e.category && e.category.includes('Вытеснение'))) || 0
         };
-        debugLog('optimization', 'Line products:', lineProducts);
-        debugLog('optimization', 'Transition rules:', transitionRules.map(r => r.productName));
-        debugLog('optimization', 'CIP durations:', cipDurationsForOptimization);
         if (lineProducts.length === 0) {
             setTransitionError('Нет продуктов для выбранной линии.');
             return;
@@ -1406,8 +1395,7 @@ const PlanningView = () => {
                 cipDurations: cipDurationsForOptimization,
                 displacementRules,
                 timeBudgetMs
-            },
-            debug: getDebugFlagsForWorker()
+            }
         });
     };
 

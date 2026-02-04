@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye, Bug } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye, Trash2 } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -21,7 +21,6 @@ import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
 import ShiftReportsView from './components/views/ShiftReportsView';
-import DebugView from './components/views/DebugView';
 import PinModal from './components/common/PinModal';
 
 export default function App() {
@@ -69,7 +68,8 @@ export default function App() {
         pushLocalToCloud,
         userRole,
         setUserRole,
-        isReadOnly
+        isReadOnly,
+        wipeAllData
     } = useData();
 
     // Scroll to target brigade when targetScrollBrigadeId changes
@@ -453,7 +453,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsExtraMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data' || viewMode === 'debug')}`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data')}`}
                                         >
                                             <Activity size={16} /> Дополнительно
                                             <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
@@ -484,17 +484,6 @@ export default function App() {
                                                     }`}
                                                 >
                                                     <Database size={16} /> Исходные данные
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('debug');
-                                                        setIsExtraMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'debug' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <Bug size={16} /> Отладка
                                                 </button>
                                                 <button
                                                     onClick={() => {
@@ -553,6 +542,17 @@ export default function App() {
                                                     </div>
                                                     <span className="text-xs text-slate-400">{userRole === 'admin' ? 'выйти' : 'войти'}</span>
                                                 </button>
+                                                <div className="border-t border-slate-100 my-1"></div>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        wipeAllData();
+                                                    }}
+                                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                                                >
+                                                    <Trash2 size={16} />
+                                                    <span>Сброс (Wipe All)</span>
+                                                </button>
                                             </div>
                                         )}
                                     </div>
@@ -583,7 +583,6 @@ export default function App() {
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
                         {viewMode === 'raw_data' && <RawDataView />}
-                        {viewMode === 'debug' && <DebugView />}
                     </div>
                 </>
             )}

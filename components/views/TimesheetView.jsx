@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown, Copy, Bug } from 'lucide-react';
+import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { useRenderTime } from '../../PerformanceMonitor';
 import { logPerformanceMetric } from '../../performanceStore';
@@ -34,8 +34,6 @@ const TimesheetView = () => {
     const scrollRef = useRef(null);
     const [scrollTop, setScrollTop] = useState(0);
     const [viewportHeight, setViewportHeight] = useState(600);
-    const [showTimesheetDebugModal, setShowTimesheetDebugModal] = useState(false);
-
     useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -78,40 +76,6 @@ const TimesheetView = () => {
     const dates = chessTableData?.dates || [];
     const filteredWorkers = chessTableData?.filteredWorkers || [];
     const allWorkers = chessTableData?.workers || [];
-    const timesheetDiagnostics = useMemo(() => {
-        const factDates = factData ? Object.keys(factData) : [];
-        const factEntryCount = factData
-            ? Object.values(factData).reduce((acc, day) => acc + (day && typeof day === 'object' ? Object.keys(day).length : 0), 0)
-            : 0;
-        return {
-            datesCount: dates.length,
-            workersCount: allWorkers.length,
-            filteredCount: filteredWorkers.length,
-            factDatesCount: factDates.length,
-            factEntryCount,
-            registryCount: workerRegistry ? Object.keys(workerRegistry).length : 0,
-            cloneNameCount: cloneCountsByName ? Object.keys(cloneCountsByName).length : 0,
-            cloneDatesCount: cloneDatesByName ? Object.keys(cloneDatesByName).length : 0
-        };
-    }, [dates.length, allWorkers.length, filteredWorkers.length, factData, workerRegistry, cloneCountsByName, cloneDatesByName]);
-
-    const lineSlotCountsByDate = useMemo(() => {
-        if (!showTimesheetDebugModal) return {};
-        const result = {};
-        dates.forEach(date => {
-            const shifts = getShiftsForDate ? getShiftsForDate(date) : [];
-            const lineMap = new Map();
-            shifts.forEach(shift => {
-                shift.lineTasks.forEach(task => {
-                    const lineName = task.displayName || task.line || 'Линия';
-                    const prev = lineMap.get(lineName) || 0;
-                    lineMap.set(lineName, prev + (task.slots ? task.slots.length : 0));
-                });
-            });
-            result[date] = Array.from(lineMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-        });
-        return result;
-    }, [showTimesheetDebugModal, dates, getShiftsForDate]);
 
     // "True virtualization": always compute window even if data is empty
     const visibleWorkers = useMemo(() => filteredWorkers.slice(0, chessDisplayLimit), [filteredWorkers, chessDisplayLimit]);
@@ -300,15 +264,7 @@ const TimesheetView = () => {
                             <Download size={16} />
                             <span className="hidden sm:inline">JSON</span>
                         </button>
-                        <button
-                            onClick={() => setShowTimesheetDebugModal(true)}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors shadow-sm border border-slate-200"
-                            title="Диагностика источников данных табеля"
-                        >
-                            <Bug size={16} className="text-slate-500" />
-                            <span className="hidden sm:inline">Диагностика</span>
-                        </button>
-                    </div>
+                        </div>
                     <div className="relative">
                         <Filter size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                         <select value={chessFilterShift} onChange={(e) => setChessFilterShift(e.target.value)} className="appearance-none pl-9 pr-8 py-1.5 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer hover:border-blue-300 transition-colors">
@@ -352,77 +308,6 @@ const TimesheetView = () => {
                     )}
                 </div>
             </div>
-            {showTimesheetDebugModal && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowTimesheetDebugModal(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
-                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                                <Bug size={20} className="text-slate-500" />
-                                Диагностика табеля
-                            </h3>
-                            <button type="button" onClick={() => setShowTimesheetDebugModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-auto flex-1 space-y-4 text-sm">
-                            <div className="border border-slate-200 rounded-xl overflow-hidden">
-                                <div className="px-4 py-2 bg-slate-100 border-b border-slate-200 font-semibold text-slate-700 text-sm">
-                                    Источники данных
-                                </div>
-                                <div className="p-4 space-y-1 font-mono text-xs text-slate-600">
-                                    <div><span className="text-slate-400">Даты в табеле:</span> {timesheetDiagnostics.datesCount}</div>
-                                    <div><span className="text-slate-400">Всего работников:</span> {timesheetDiagnostics.workersCount}</div>
-                                    <div><span className="text-slate-400">После фильтров:</span> {timesheetDiagnostics.filteredCount}</div>
-                                    <div><span className="text-slate-400">СКУД дат:</span> {timesheetDiagnostics.factDatesCount}</div>
-                                    <div><span className="text-slate-400">СКУД записей:</span> {timesheetDiagnostics.factEntryCount}</div>
-                                    <div><span className="text-slate-400">Справочник работников:</span> {timesheetDiagnostics.registryCount}</div>
-                                    <div><span className="text-slate-400">Клонов по именам:</span> {timesheetDiagnostics.cloneNameCount}</div>
-                                    <div><span className="text-slate-400">Клонов по датам:</span> {timesheetDiagnostics.cloneDatesCount}</div>
-                                    <div><span className="text-slate-400">Статус воркера:</span> {chessTableWorkerStatus?.status || '—'}</div>
-                                    {chessTableWorkerStatus?.error && <div className="text-rose-600">Ошибка: {chessTableWorkerStatus.error}</div>}
-                                </div>
-                            </div>
-                            <div className="border border-indigo-200 rounded-xl bg-indigo-50/30 overflow-hidden">
-                                <div className="px-4 py-2 bg-indigo-100 border-b border-indigo-200 font-semibold text-indigo-800 text-sm">
-                                    Как формируется табель
-                                </div>
-                                <div className="p-4 text-sm text-slate-700 space-y-2">
-                                    <p>1. Берутся даты из расписания и строятся смены/слоты по матрице.</p>
-                                    <p>2. По слотам отмечаются работающие, РВ, простои, резерв.</p>
-                                    <p>3. Если есть СКУД, для каждой даты ищется факт выхода и выставляются статусы: «Вышел», «Прогул», «Без линии», «Вне плана».</p>
-                                </div>
-                            </div>
-                            <div className="border border-slate-200 rounded-xl overflow-hidden">
-                                <div className="px-4 py-2 bg-slate-100 border-b border-slate-200 font-semibold text-slate-700 text-sm">
-                                    Слоты по линиям (по датам)
-                                </div>
-                                <div className="p-4 text-sm space-y-2 max-h-64 overflow-auto custom-scrollbar">
-                                    {dates.length === 0 && <div className="text-slate-400">Нет дат для расчёта.</div>}
-                                    {dates.map(date => {
-                                        const lines = lineSlotCountsByDate[date] || [];
-                                        return (
-                                            <details key={date} className="border border-slate-100 rounded-md overflow-hidden">
-                                                <summary className="px-2.5 py-1.5 bg-slate-50 cursor-pointer font-medium text-slate-700">
-                                                    {date} · линий: {lines.length}
-                                                </summary>
-                                                <div className="px-2.5 py-2 bg-white border-t border-slate-100 space-y-1 text-xs text-slate-600">
-                                                    {lines.length === 0 && <div className="text-slate-400">Нет линий.</div>}
-                                                    {lines.map(([lineName, count]) => (
-                                                        <div key={lineName} className="flex items-center justify-between gap-2">
-                                                            <span>{lineName}</span>
-                                                            <span>слотов: {count}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </details>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
             <div
                 ref={scrollRef}
                 onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}

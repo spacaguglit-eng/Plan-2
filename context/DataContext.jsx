@@ -2,7 +2,6 @@ import React, { createContext, useState, useContext, useEffect, useCallback, use
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import { useNotification } from '../components/common/Toast.jsx';
-import { log as debugLog } from '../utils/debug';
 import {
     STORAGE_KEYS,
     saveToLocalStorage,
@@ -31,19 +30,9 @@ import { PlanningProvider, usePlanning } from './PlanningContext';
 
 const DataContext = createContext(null);
 
-const debugPlans = (op, plans, extra = '') => {
-    if (typeof plans === 'undefined') return;
-    const arr = Array.isArray(plans) ? plans : [];
-    const stats = arr.map(p => {
-        const ps = p?.data?.planningState;
-        const n = (ps?.products?.length ?? 0) + (ps?.cipBetween?.length ?? 0);
-        return `${p?.name || p?.id}: ${n} событий`;
-    });
-    debugLog('plans', `${op} | всего планов: ${arr.length} | ${stats.join('; ')} ${extra}`);
-};
-
 export const DataProvider = ({ children }) => {
     const sync = useSync();
+    const { notify } = useNotification();
     const {
         useRemoteStorage,
         setUseRemoteStorage,
@@ -64,8 +53,24 @@ export const DataProvider = ({ children }) => {
         persistStateKey,
         pushLocalToCloud: syncPushLocalToCloud,
         cloudStatus,
-        isRemoteStorageEnabled
+        isRemoteStorageEnabled,
+        wipeRemoteStorage
     } = sync;
+
+    const wipeAllData = useCallback(async () => {
+        if (window.confirm('ВНИМАНИЕ! Это действие удалит ВСЕ данные (планы, настройки, сотрудников) из локального хранилища и из облака (если подключено). Восстановить данные будет невозможно. Продолжить?')) {
+            try {
+                if (isRemoteStorageEnabled()) {
+                    await wipeRemoteStorage();
+                }
+                localStorage.clear();
+                window.location.reload();
+            } catch (e) {
+                console.error(e);
+                notify({ type: 'error', message: 'Ошибка при очистке данных' });
+            }
+        }
+    }, [wipeRemoteStorage, isRemoteStorageEnabled, notify]);
 
     // --- STATE ---
     const [file, setFile] = useState(null);
@@ -97,8 +102,21 @@ export const DataProvider = ({ children }) => {
     // UI State that needs to be global
     const [targetScrollBrigadeId, setTargetScrollBrigadeId] = useState(null);
     const [manualAssignments, setManualAssignments] = useState({});
-    const [manualLines, setManualLines] = useState({});
-    const [assignmentClones, setAssignmentClones] = useState({});
+    
+    const [manualLines, setManualLinesState] = useState({});
+    const setManualLines = useCallback((value) => {
+        const next = typeof value === 'function' ? value(manualLines) : value;
+        setManualLinesState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.MANUAL_LINES, next);
+    }, [manualLines, restoring, persistStateKey]);
+
+    const [assignmentClones, setAssignmentClonesState] = useState({});
+    const setAssignmentClones = useCallback((value) => {
+        const next = typeof value === 'function' ? value(assignmentClones) : value;
+        setAssignmentClonesState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, next);
+    }, [assignmentClones, restoring, persistStateKey]);
+
     const [draggedWorker, setDraggedWorker] = useState(null);
     const [updateReport, setUpdateReport] = useState(null);
     const [rvModalData, setRvModalData] = useState(null);
@@ -108,7 +126,12 @@ export const DataProvider = ({ children }) => {
     const [chessFilterShift, setChessFilterShift] = useState('all');
     const [chessSearch, setChessSearch] = useState('');
     const [isGlobalFill, setIsGlobalFill] = useState(false);
-    const [autoReassignEnabled, setAutoReassignEnabled] = useState(true);
+    const [autoReassignEnabled, setAutoReassignEnabledState] = useState(true);
+    const setAutoReassignEnabled = useCallback((value) => {
+        const next = typeof value === 'function' ? value(autoReassignEnabled) : value;
+        setAutoReassignEnabledState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, next);
+    }, [autoReassignEnabled, restoring, persistStateKey]);
     const [chessDisplayLimit, setChessDisplayLimit] = useState(50);
 
     // Chess Table (Worker offload)
@@ -121,8 +144,6 @@ export const DataProvider = ({ children }) => {
     // Verification (SCUD)
     const [factData, setFactData] = useState(null);
     const [factDates, setFactDates] = useState([]);
-
-    const { notify } = useNotification();
 
     // Ошибка синхронизации: откат к кэшу из remote (вызывается из remoteStorage)
     useEffect(() => {
@@ -296,7 +317,6 @@ export const DataProvider = ({ children }) => {
                 storedPlans = storedPlans.filter(p => p && typeof p === 'object' && p.id && p.data);
                 const storedCurrentPlanId = loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null);
                 if (storedPlans.length > 0) {
-                    debugPlans('RESTORE из localStorage', storedPlans);
                     savedPlansSourceRef.current = 'restoreData';
                     setSavedPlans(storedPlans);
                     const preferredId = storedCurrentPlanId || storedPlans.find(p => p.type === 'Operational')?.id || storedPlans[0].id;
@@ -352,7 +372,6 @@ export const DataProvider = ({ children }) => {
                                 manualAssignments: savedAssignments
                             }
                         };
-                        debugPlans('MIGRATION создан план', [migratedPlan]);
                         savedPlansSourceRef.current = 'migration';
                         setSavedPlans([migratedPlan]);
                         setCurrentPlanId(migratedPlan.id);
@@ -384,8 +403,6 @@ export const DataProvider = ({ children }) => {
         const serialized = JSON.stringify(savedPlans);
         if (lastSavedPlansSerializedRef.current === serialized) return;
         lastSavedPlansSerializedRef.current = serialized;
-        const src = savedPlansSourceRef.current || 'useEffect(смена savedPlans)';
-        debugPlans('СОХРАНЕНИЕ', savedPlans, `| источник: ${src}`);
         savedPlansSourceRef.current = null;
         persistStateKey(STORAGE_KEYS.SAVED_PLANS, savedPlans);
     }, [savedPlans, restoring, persistStateKey]);
@@ -395,20 +412,7 @@ export const DataProvider = ({ children }) => {
         persistStateKey(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
     }, [currentPlanId, restoring, persistStateKey]);
 
-    useEffect(() => {
-        if (restoring) return;
-        persistStateKey(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, autoReassignEnabled);
-    }, [autoReassignEnabled, restoring, persistStateKey]);
-
-    useEffect(() => {
-        if (restoring) return;
-        persistStateKey(STORAGE_KEYS.MANUAL_LINES, manualLines);
-    }, [manualLines, restoring, persistStateKey]);
-
-    useEffect(() => {
-        if (restoring) return;
-        persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, assignmentClones);
-    }, [assignmentClones, restoring, persistStateKey]);
+    // AUTO_REASSIGN_ENABLED, MANUAL_LINES, ASSIGNMENT_CLONES handled by wrappers
 
     useEffect(() => {
         const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
@@ -421,8 +425,6 @@ export const DataProvider = ({ children }) => {
         if (!remoteSnapshot) return;
         const pending = pendingUpdatesRef.current;
         const pendingMetaMap = pendingMetaRef.current;
-        const pendingKeys = Object.keys(pending);
-        debugLog('sync', 'Применение снапшота из облака. Pending ключи:', pendingKeys.length ? pendingKeys : '(нет)');
         const setLineTemplatesNorm = (updater) => setLineTemplates((prev) => {
             const next = typeof updater === 'function' ? updater(prev) : updater;
             return (next != null && typeof next === 'object' && !Array.isArray(next) ? normalizeLineTemplates(next) : next) ?? prev;
@@ -435,9 +437,9 @@ export const DataProvider = ({ children }) => {
             setSavedPlans,
             setCurrentPlanId,
             setManualAssignments: setManualAssignmentsNorm,
-            setManualLines,
-            setAssignmentClones,
-            setAutoReassignEnabled,
+            setManualLines: setManualLinesState,
+            setAssignmentClones: setAssignmentClonesState,
+            setAutoReassignEnabled: setAutoReassignEnabledState,
             setFactData,
             setFactDates,
             setRawTables,
@@ -451,7 +453,6 @@ export const DataProvider = ({ children }) => {
             hydrateWorkerRegistry,
             serializeWorkerRegistry,
             setSavedPlansSourceRef: (value) => { savedPlansSourceRef.current = value; },
-            debugPlans,
             getPendingUpdates: () => pendingUpdatesRef.current,
             getPendingMeta: () => pendingMetaRef.current,
             pendingUpdates: pending,
@@ -471,9 +472,6 @@ export const DataProvider = ({ children }) => {
             if (!match) nextPending[k] = prevK;
         }
         const remainingPending = Object.keys(nextPending);
-        if (remainingPending.length > 0) {
-            debugLog('sync', 'После применения: оставшиеся в pending (не совпали с remote):', remainingPending);
-        }
         pendingUpdatesRef.current = nextPending;
         setPendingUpdates(() => nextPending);
         const nextMeta = { ...pendingMetaRef.current };
@@ -559,20 +557,6 @@ export const DataProvider = ({ children }) => {
         }
     };
 
-    const debouncedSaveToLocal = useCallback(debounce((assignments) => {
-        try {
-            persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, assignments);
-            if (!useRemoteStorage) {
-                setSyncStatus('saved');
-                if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-                syncTimeoutRef.current = setTimeout(() => setSyncStatus('idle'), 800);
-            }
-        } catch (e) {
-            setSyncStatus('error');
-            console.error('Error saving assignments:', e);
-        }
-    }, 300), [useRemoteStorage]);
-
     const updateAssignments = useCallback((newAssignments) => {
         if (isReadOnly) {
             notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
@@ -587,8 +571,13 @@ export const DataProvider = ({ children }) => {
             return;
         }
         setManualAssignments(newAssignments);
-        debouncedSaveToLocal(newAssignments);
-    }, [debouncedSaveToLocal, isLocked, viewMode, isReadOnly]);
+        persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, newAssignments);
+        if (!useRemoteStorage) {
+            setSyncStatus('saved');
+            if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+            syncTimeoutRef.current = setTimeout(() => setSyncStatus('idle'), 800);
+        }
+    }, [persistStateKey, useRemoteStorage, isLocked, viewMode, isReadOnly, notify]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
         if (isReadOnly) {
@@ -811,8 +800,6 @@ export const DataProvider = ({ children }) => {
         const registry = {};
         let lastLineName = '';
 
-        debugLog('roster', 'Начинаю парсинг листа Справочник, строк:', rosterData.length);
-
         rosterData.slice(1).forEach((row, rowIdx) => {
             let lineName = cleanVal(row[4]);
             const role = cleanVal(row[5]);
@@ -829,7 +816,6 @@ export const DataProvider = ({ children }) => {
             ];
 
             if (roleLower.includes('подсобник') && countVal.length > 2 && !/^\d+$/.test(countVal)) {
-                debugLog('roster', `Строка ${rowIdx + 2}: Резерв (floater): ${role}`);
                 const names = countVal.split(/[,;\n]+/).map(n => n.trim()).filter(n => n.length > 1);
                 let context = roleLower.includes('ночь') ? 'night' : 'day';
                 names.forEach(name => {
@@ -872,17 +858,11 @@ export const DataProvider = ({ children }) => {
                 atomicLines.forEach((atomic) => {
                     if (!templates[atomic]) {
                         templates[atomic] = [];
-                        debugLog('roster', `Новая линия: "${atomic}"`);
                     }
                     templates[atomic].push(entry);
                 });
-                debugLog('roster', `Строка ${rowIdx + 2}: линия="${lineName}"→[${atomicLines.join(', ')}] роль="${role}" норма=${parseInt(countVal) || 1}`);
-            } else {
-                debugLog('roster', `Строка ${rowIdx + 2} пропущена: E="${row[4]}" F="${row[5]}"`);
             }
         });
-
-        debugLog('roster', 'Итого линий:', Object.keys(templates), '| floaters day:', floaterMap.day.size, 'night:', floaterMap.night.size);
 
         return {
             scheduleDates: sortedStringDates,
@@ -990,7 +970,7 @@ export const DataProvider = ({ children }) => {
                 setPlanHashes(newHashes);
                 analyzeData(loadedData['demand'], loadedData['roster']);
                 saveSourceDataToLocal(loadedData, newHashes);
-                debouncedSaveToLocal(keptAssignments);
+                persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, keptAssignments);
                 setStep('dashboard');
 
                 if (!currentPlanId) {
@@ -1057,8 +1037,6 @@ export const DataProvider = ({ children }) => {
     }), []);
 
     const createPlanFromSchedule = useCallback(({ demand, roster, name, planningState } = {}) => {
-        const eventsCount = (planningState?.products?.length ?? 0) + (planningState?.cipBetween?.length ?? 0);
-        debugLog('plans', `CREATE план "${name}" | ${eventsCount} событий (products: ${planningState?.products?.length ?? 0}, cipBetween: ${planningState?.cipBetween?.length ?? 0})`);
         if (!Array.isArray(demand) || demand.length === 0) throw new Error('Пустое расписание (demand).');
         if (!Array.isArray(roster) || roster.length === 0) throw new Error('Пустой справочник (roster).');
 
@@ -1112,9 +1090,7 @@ export const DataProvider = ({ children }) => {
         savedPlansSourceRef.current = 'createPlanFromSchedule';
         setSavedPlans(prev => {
             const idx = prev.findIndex(p => p.id === planId);
-            const next = idx !== -1 ? (() => { const n = [...prev]; n[idx] = plan; return n; })() : [...prev, plan];
-            debugPlans('CREATE план сохранён', next, `| planId: ${planId}`);
-            return next;
+            return idx !== -1 ? (() => { const n = [...prev]; n[idx] = plan; return n; })() : [...prev, plan];
         });
         setCurrentPlanId(planId);
         draftPlanIdRef.current = null;
@@ -1539,8 +1515,6 @@ export const DataProvider = ({ children }) => {
     const loadPlan = useCallback((planId, { switchToDashboard = true } = {}) => {
         const plan = savedPlans.find(p => p.id === planId);
         if (!plan?.data) return;
-        const n = (plan?.data?.planningState?.products?.length ?? 0) + (plan?.data?.planningState?.cipBetween?.length ?? 0);
-        debugLog('plans', `LOAD план "${plan?.name}" (${planId}) | ${n} событий | switchToDashboard: ${switchToDashboard}`);
         isLoadingPlanRef.current = true;
         applyPlanData(plan.data, { switchView: switchToDashboard });
         setCurrentPlanId(plan.id);
@@ -1557,8 +1531,6 @@ export const DataProvider = ({ children }) => {
     const loadPlanQueue = useCallback((planId) => {
         const plan = savedPlans.find(p => p.id === planId);
         if (!plan?.data?.planningState) return;
-        const n = (plan?.data?.planningState?.products?.length ?? 0) + (plan?.data?.planningState?.cipBetween?.length ?? 0);
-        debugLog('plans', `LOAD_QUEUE план "${plan?.name}" | ${n} событий загружено в форму`);
         setPlanningStateToLoad(plan.data.planningState);
         setPlanningStateVersion(v => v + 1);
     }, [savedPlans]);
@@ -1621,17 +1593,21 @@ export const DataProvider = ({ children }) => {
             return;
         }
         savedPlansSourceRef.current = 'deletePlan';
-        setSavedPlans(prev => {
-            const next = prev.filter(plan => plan.id !== planId);
-            debugPlans('DELETE план', next, `| удалён: ${planId}`);
-            return next;
-        });
+        setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
         if (currentPlanId === planId) {
             setCurrentPlanId(null);
             setRawTables({});
             setScheduleDates([]);
             setPlanHashes({});
             setManualAssignments({});
+            setManualLines({});
+            setAssignmentClones({});
+            setFactData(null);
+            setFactDates([]);
+            setWorkerRegistry({});
+            setLineTemplates({});
+            setFloaters({ day: [], night: [] });
+            setPlanningStateToLoad(null);
             setSelectedDate('');
         }
     }, [currentPlanId, isReadOnly]);
@@ -2980,9 +2956,67 @@ export const DataProvider = ({ children }) => {
             r2.getCell(nightCol).fill = nightFill;
         });
 
-        const resolveWorkerName = (shift, lineName, role, slotIndex) => {
+        // --- Collect lines and roles from BOTH templates and actual schedule ---
+        const linesMap = new Map(); // key -> { displayName, sortIndex, roles: Map<roleName, maxCount> }
+
+        // 1. Pre-fill from lineTemplates
+        Object.entries(lineTemplates).forEach(([lineKey, positions], idx) => {
+            const rolesMap = new Map();
+            positions.forEach(pos => {
+                rolesMap.set(pos.role, Math.max(rolesMap.get(pos.role) || 0, parseInt(pos.count) || 1));
+            });
+            linesMap.set(lineKey, { displayName: lineKey, sortIndex: idx, roles: rolesMap });
+        });
+
+        // 2. Scan actual schedule for missing lines/roles/counts
+        scheduleDates.forEach(date => {
+            const shifts = getShiftsForDate(date);
+            shifts.forEach(shift => {
+                if (!shift.lineTasks) return;
+                shift.lineTasks.forEach(task => {
+                    const lineName = task.displayName || 'Без названия';
+                    
+                    // Find matching key
+                    let matchedKey = null;
+                    for (const k of linesMap.keys()) {
+                        if (isLineMatch(k, lineName) || k === lineName) {
+                            matchedKey = k;
+                            break;
+                        }
+                    }
+
+                    if (!matchedKey) {
+                        matchedKey = lineName;
+                        if (!linesMap.has(matchedKey)) {
+                            linesMap.set(matchedKey, { displayName: lineName, sortIndex: 9999, roles: new Map() });
+                        }
+                    }
+
+                    const lineEntry = linesMap.get(matchedKey);
+                    
+                    // Count slots per role in this task
+                    const currentRoleCounts = {};
+                    task.slots.forEach(slot => {
+                        const role = slot.roleTitle || 'Оператор';
+                        currentRoleCounts[role] = (currentRoleCounts[role] || 0) + 1;
+                    });
+
+                    // Update max counts
+                    Object.entries(currentRoleCounts).forEach(([role, count]) => {
+                        const max = lineEntry.roles.get(role) || 0;
+                        if (count > max) {
+                            lineEntry.roles.set(role, count);
+                        }
+                    });
+                });
+            });
+        });
+
+        const sortedLines = Array.from(linesMap.entries()).sort((a, b) => a[1].sortIndex - b[1].sortIndex);
+
+        const resolveWorkerName = (shift, lineKey, role, slotIndex) => {
             if (!shift) return '';
-            const lineTask = shift.lineTasks.find(lt => isLineMatch(lt.displayName, lineName));
+            const lineTask = shift.lineTasks.find(lt => isLineMatch(lt.displayName, lineKey) || lt.displayName === lineKey);
             if (!lineTask) return '';
             const slotsForRole = lineTask.slots.filter(s => s.roleTitle === role);
             const slot = slotsForRole[slotIndex];
@@ -2993,20 +3027,24 @@ export const DataProvider = ({ children }) => {
             return '';
         };
 
-        Object.entries(lineTemplates).forEach(([lineName, positions]) => {
+        sortedLines.forEach(([lineKey, lineData]) => {
             let isFirstLineRow = true;
-            positions.forEach(pos => {
-                const count = parseInt(pos.count) || 1;
+            
+            // Sort roles? Maybe alphabetical or keep insertion order?
+            // lineTemplates order is preferred if available.
+            // We can just iterate the map.
+            
+            lineData.roles.forEach((count, role) => {
                 for (let i = 0; i < count; i++) {
-                    const roleLabel = `${pos.role}${count > 1 ? ` ${i + 1}` : ''}`.trim();
-                    const rowData = [isFirstLineRow ? lineName : '', roleLabel];
+                    const roleLabel = `${role}${count > 1 ? ` ${i + 1}` : ''}`.trim();
+                    const rowData = [isFirstLineRow ? lineData.displayName : '', roleLabel];
 
                     scheduleDates.forEach(date => {
                         const shifts = getShiftsForDate(date);
                         const dayShift = shifts.find(s => String(s.type || '').toLowerCase().includes('день'));
                         const nightShift = shifts.find(s => String(s.type || '').toLowerCase().includes('ночь'));
-                        rowData.push(resolveWorkerName(dayShift, lineName, pos.role, i));
-                        rowData.push(resolveWorkerName(nightShift, lineName, pos.role, i));
+                        rowData.push(resolveWorkerName(dayShift, lineKey, role, i));
+                        rowData.push(resolveWorkerName(nightShift, lineKey, role, i));
                     });
 
                     const row = worksheet.addRow(rowData);
@@ -3213,6 +3251,7 @@ export const DataProvider = ({ children }) => {
         pushLocalToCloud,
         persistStateKey,
         cloudStatus,
+        wipeAllData,
 
         // Actions / Setters
         setCurrentPlanId,
@@ -3253,7 +3292,7 @@ export const DataProvider = ({ children }) => {
         unlockWithCode
     }), [
         // ТОЛЬКО состояние, НЕ setState функции!
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, cloudStatus, userRole, isReadOnly,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, cloudStatus, userRole, isReadOnly, wipeAllData,
         display,
         planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         isLocked,

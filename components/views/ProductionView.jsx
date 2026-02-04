@@ -3,8 +3,6 @@ import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarCha
 import { generateProductionReportHtml } from './productionReportHtml';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS, loadFromLocalStorage } from '../../utils';
-import { log as debugLog } from '../../utils/debug';
-
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
     const colors = [
@@ -158,7 +156,6 @@ const ProductionView = () => {
                 }
             };
 
-            debugLog('production', `Отправка ${filesData.length} файлов воркеру, requestId: ${requestId}`);
             worker.postMessage({
                 type: 'parseFiles',
                 requestId,
@@ -652,14 +649,12 @@ const ProductionView = () => {
         if (productionWorkerRef.current) return;
 
         try {
-            debugLog('production', 'Инициализация production worker...');
             const worker = new Worker(new URL('../../production.worker.js', import.meta.url), { type: 'module' });
             productionWorkerRef.current = worker;
 
             worker.onmessage = (e) => {
                 const { type, requestId, results, flatRows: workerFlatRows, flatDowntimeRows: workerFlatDowntimeRows, error } = e.data || {};
                 
-                debugLog('production', `Получено сообщение от воркера: type=${type}, requestId=${requestId}, error=${error ? 'yes' : 'no'}`);
                 
                 if (error) {
                     console.error('Ошибка от воркера:', error);
@@ -669,13 +664,11 @@ const ProductionView = () => {
                 }
 
                 if (type === 'parseFiles') {
-                    debugLog('production', `Парсинг завершен, результатов: ${results?.length || 0}`);
                     setResults(results || []);
                     persistStateKey(STORAGE_KEY, results || []);
                     setIsParsing(false);
                     // Пересчет flatRows произойдет автоматически через useEffect при изменении results
                 } else if (type === 'calculateFlatRows') {
-                    debugLog('production', `Расчет завершен, flatRows: ${workerFlatRows?.length || 0}, flatDowntimeRows: ${workerFlatDowntimeRows?.length || 0}`);
                     setFlatRows(workerFlatRows || []);
                     setFlatDowntimeRows(workerFlatDowntimeRows || []);
                 }
@@ -687,7 +680,6 @@ const ProductionView = () => {
                 setIsParsing(false);
             };
 
-            debugLog('production', 'Production worker инициализирован');
         } catch (err) {
             console.error('Ошибка при создании воркера:', err);
             setParseError(`Ошибка инициализации воркера: ${err.message}`);
@@ -697,7 +689,6 @@ const ProductionView = () => {
             if (productionWorkerRef.current) {
                 try { 
                     productionWorkerRef.current.terminate(); 
-                    debugLog('production', 'Production worker завершен');
                 } catch (_) {}
                 productionWorkerRef.current = null;
             }

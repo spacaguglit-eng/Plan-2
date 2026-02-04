@@ -761,7 +761,7 @@ export default function ShiftReportsView() {
             <div className="flex-1 min-h-0 bg-white border border-t-0 border-slate-200 rounded-b-xl overflow-hidden flex flex-col">
                 <div className="flex-1 overflow-auto">
                     <table className="w-full text-sm border-collapse">
-                        <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200">
+                        <thead className="bg-slate-100 border-b border-slate-200">
                             <tr className="text-slate-600 text-xs font-semibold tracking-wide">
                                 <th className="px-3 py-2.5 text-left border-r border-slate-200 w-40">Продукт / Событие</th>
                                 <th className="px-3 py-2.5 text-left border-r border-slate-200 bg-slate-50/80">План: дата</th>
@@ -937,7 +937,7 @@ export default function ShiftReportsView() {
                 </div>
                 <div className="flex-1 overflow-auto">
                     <table className="w-full text-sm border-collapse">
-                        <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200">
+                        <thead className="bg-slate-100 border-b border-slate-200">
                             <tr className="text-slate-600 text-xs font-semibold tracking-wide">
                                 <th className="px-4 py-3 text-left border-r border-slate-200 w-48">Категория</th>
                                 <th className="px-4 py-3 text-left border-r border-slate-200">Описание</th>

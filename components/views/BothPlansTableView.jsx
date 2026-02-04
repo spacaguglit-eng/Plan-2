@@ -107,15 +107,9 @@ export default function BothPlansTableView() {
             Array.isArray(rawTables.demand) &&
             rawTables.demand.length > 0;
         const manualCount = typeof manualAssignments === 'object' && manualAssignments !== null ? Object.keys(manualAssignments).length : 0;
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/ad9ce692-55fa-4aa4-930f-d3f05c37bc61',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BothPlansTableView.jsx:useEffect',message:'snapshot effect',data:{hasValid,scheduleDatesLen:scheduleDates?.length,demandLen:rawTables?.demand?.length,manualAssignmentsCount:manualCount},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-        // #endregion
         if (!hasValid) return;
         const key = `${scheduleDates.length}_${(rawTables.demand?.length ?? 0)}_${manualCount}_${JSON.stringify(scheduleDates?.slice(0, 2))}`;
         if (key === lastSnapshotKeyRef.current) {
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/ad9ce692-55fa-4aa4-930f-d3f05c37bc61',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BothPlansTableView.jsx:useEffect',message:'skip set snapshot (key unchanged)',data:{key},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
-            // #endregion
             return;
         }
         lastSnapshotKeyRef.current = key;
@@ -128,9 +122,6 @@ export default function BothPlansTableView() {
             autoReassignEnabled
         });
         setShiftsSnapshot(cloneSnapshot(snap));
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/ad9ce692-55fa-4aa4-930f-d3f05c37bc61',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BothPlansTableView.jsx:useEffect',message:'set shiftsSnapshot',data:{key,manualCount},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1'})}).catch(()=>{});
-        // #endregion
     }, [rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled]);
 
     const masterPlan = useMemo(() => savedPlans.find((p) => p.type === 'Master'), [savedPlans]);
@@ -154,11 +145,6 @@ export default function BothPlansTableView() {
             autoReassignEnabled
         });
         const { slots } = buildPlanSlots(snap);
-        const withAssigned = slots.filter(s => s.assignedName).length;
-        const sampleNames = slots.filter(s => s.assignedName).slice(0, 3).map(s => s.assignedName);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/ad9ce692-55fa-4aa4-930f-d3f05c37bc61',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'BothPlansTableView.jsx:operationalSlots',message:'built right table',data:{totalSlots:slots.length,withAssigned,usedSnapshot:!!shiftsSnapshot,sampleNames},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4'})}).catch(()=>{});
-        // #endregion
         return slots;
     }, [buildPlanSlots, shiftsSnapshot, rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled]);
 

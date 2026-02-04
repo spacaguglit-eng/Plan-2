@@ -2,6 +2,7 @@ import {
     readFirestoreDoc,
     readFirestoreCollection,
     writeFirestoreDoc,
+    deleteFirestoreDoc,
     isFirebaseConfigured,
     subscribeToFirestoreDoc,
     subscribeToFirestoreCollection
@@ -335,6 +336,32 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
     } catch (err) {
         console.error('writeFullRemoteState failed:', err);
         addLog('error', `Ошибка: ${err.message}`);
+        throw err;
+    }
+};
+
+export const wipeRemoteStorage = async () => {
+    if (!isRemoteStorageEnabled()) return;
+    try {
+        addLog('syncing', 'Очистка облачного хранилища...');
+        const docs = await readFirestoreCollection(FIRESTORE_COLLECTION);
+        if (!docs || docs.length === 0) {
+            addLog('success', 'Облако уже пусто');
+            return;
+        }
+        
+        const deletePromises = docs.map(d => deleteFirestoreDoc(FIRESTORE_COLLECTION, d.id));
+        await Promise.all(deletePromises);
+        
+        // Clear local caches
+        Object.keys(lastKnownState).forEach(k => delete lastKnownState[k]);
+        Object.keys(lastKnownValueContent).forEach(k => delete lastKnownValueContent[k]);
+        updateQueue = {};
+        
+        addLog('success', 'Облачное хранилище очищено');
+    } catch (err) {
+        console.error('wipeRemoteStorage failed:', err);
+        addLog('error', `Ошибка очистки облака: ${err.message}`);
         throw err;
     }
 };

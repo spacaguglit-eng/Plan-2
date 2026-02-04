@@ -8,10 +8,9 @@ import {
     setRemoteFlushSuccessCallback,
     saveRemoteStateKey,
     writeFullRemoteState,
-    getClientId
+    getClientId,
+    wipeRemoteStorage
 } from '../services/remoteStorage';
-import { log as debugLog } from '../utils/debug';
-
 const SyncContext = createContext(null);
 
 /**
@@ -68,9 +67,6 @@ export const SyncProvider = ({ children }) => {
     useEffect(() => {
         setRemoteFlushSuccessCallback((keys) => {
             setSyncStatus('idle');
-            if (Array.isArray(keys) && keys.length > 0) {
-                debugLog('sync', 'Успешная запись в облако:', keys);
-            }
         });
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
@@ -86,7 +82,6 @@ export const SyncProvider = ({ children }) => {
             const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
             pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
             pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
-            debugLog('sync', 'persistStateKey: добавлен в pending', key, 'rev:', meta.rev);
             setPendingUpdates((prev) => ({ ...prev, [key]: value }));
             setPendingMeta((prev) => ({ ...prev, [key]: meta }));
             saveRemoteStateKey(key, value, meta).catch((err) =>
@@ -155,7 +150,8 @@ export const SyncProvider = ({ children }) => {
             persistStateKey,
             pushLocalToCloud,
             cloudStatus,
-            isRemoteStorageEnabled
+            isRemoteStorageEnabled,
+            wipeRemoteStorage
         }),
         [
             useRemoteStorage,
