@@ -341,7 +341,7 @@ const TimesheetView = () => {
                                 <td className="px-4 py-2 font-medium text-slate-900 sticky left-0 bg-white border-r border-slate-100 z-20 whitespace-nowrap group-hover:bg-slate-50 shadow-[2px_0_4px_rgba(0,0,0,0.05)]" title={workerRegistry[w.name]?.competencies.size > 0 ? `Компетенции: ${Array.from(workerRegistry[w.name].competencies).join(', ')}` : ''}>
                                     <div className="text-xs font-semibold text-slate-700 truncate flex items-center gap-1">
                                         <span className="flex-1 min-w-0 truncate">{w.name}</span>
-                                        {cloneCountsByName[w.name] > 0 && (
+                                        {cloneCountsByName?.[w.name] > 0 && (
                                             <Copy size={12} className="text-yellow-500" title="Сотрудник представлен на несколько линий" />
                                         )}
                                         {workerRegistry[w.name]?.competencies.size > 0 && (

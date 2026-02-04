@@ -21,34 +21,7 @@ export const STORAGE_KEYS = {
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',
     PLANNING_STATE: 'plan_planning_state',
     PRODUCTION_RESULTS: 'productionParsedResults',
-    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes',
-    STORAGE_MODE: 'plan_storage_mode'
-};
-
-// --- LOCAL STORAGE HELPERS ---
-export const saveToLocalStorage = (key, data) => {
-    try {
-        const str = JSON.stringify(data);
-        localStorage.setItem(key, str);
-    } catch (e) {
-        if (e.name === 'QuotaExceededError') {
-            console.error('localStorage переполнен. Удалите старые планы или отключите синхронизацию.');
-        } else {
-            console.error('Error saving to localStorage:', e);
-        }
-    }
-};
-
-export const loadFromLocalStorage = (key, defaultValue = null) => {
-    try {
-        const item = localStorage.getItem(key);
-        if (!item) return defaultValue;
-        const parsed = JSON.parse(item);
-        return parsed ?? defaultValue;
-    } catch (e) {
-        console.error(`Ошибка чтения ${key} из localStorage:`, e.message);
-        return defaultValue;
-    }
+    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes'
 };
 
 // --- GENERAL HELPERS ---

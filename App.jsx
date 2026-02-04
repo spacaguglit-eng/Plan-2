@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, Lock, Unlock, Database, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye, Trash2 } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, Lock, Unlock, ChevronDown, Factory, Calendar, BarChart, X, Cloud, CloudOff, Shield, Eye, Trash2 } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 import { PerformanceView } from './PerformanceMonitor';
@@ -9,14 +9,11 @@ import { usePerformanceMetrics } from './performanceStore';
 // Import view components
 import DashboardView from './components/views/DashboardView';
 import DistributionView from './components/views/DistributionView';
-import FileUploader from './components/views/FileUploader';
 import TimesheetView from './components/views/TimesheetView';
 import VerificationView from './components/views/VerificationView';
 import AllEmployeesView from './components/views/AllEmployeesView';
 import EmployeesListView from './components/views/EmployeesListView';
 import PlansView from './components/views/PlansView';
-import BothPlansTableView from './components/views/BothPlansTableView';
-import RawDataView from './components/views/RawDataView';
 import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
@@ -238,9 +235,7 @@ export default function App() {
                     lineTemplates={lineTemplates}
                 />
             )}
-            {step === 'upload' ? (
-                <FileUploader />
-            ) : (
+            {(
                 <>
                     <div className="bg-white border-b border-slate-200 shadow-sm px-6 py-3 flex-shrink-0">
                         <div className="max-w-[1800px] mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -331,7 +326,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsPlansMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans' || viewMode === 'both_plans')}`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans')}`}
                                         >
                                             <FolderOpen size={16} /> Планы
                                             <ChevronDown size={14} className={`transition-transform ${isPlansMenuOpen ? 'rotate-180' : ''}`} />
@@ -351,17 +346,6 @@ export default function App() {
                                                     }`}
                                                 >
                                                     <FolderOpen size={16} /> Список планов
-                                                </button>
-                                                <button
-                                                    onClick={() => {
-                                                        setViewMode('both_plans');
-                                                        setIsPlansMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'both_plans' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <FolderOpen size={16} /> Оба плана таблицей
                                                 </button>
                                             </div>
                                         )}
@@ -437,7 +421,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setIsExtraMenuOpen((prev) => !prev);
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance' || viewMode === 'raw_data')}`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'performance')}`}
                                         >
                                             <Activity size={16} /> Дополнительно
                                             <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
@@ -460,17 +444,6 @@ export default function App() {
                                                 </button>
                                                 <button
                                                     onClick={() => {
-                                                        setViewMode('raw_data');
-                                                        setIsExtraMenuOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
-                                                        viewMode === 'raw_data' ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <Database size={16} /> Исходные данные
-                                                </button>
-                                                <button
-                                                    onClick={() => {
                                                         setShowSyncLog(true);
                                                         setIsExtraMenuOpen(false);
                                                     }}
@@ -479,33 +452,6 @@ export default function App() {
                                                     <Activity size={16} /> Лог синхронизации
                                                 </button>
                                                 <div className="border-t border-slate-100 my-1"></div>
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setUseRemoteStorage(!useRemoteStorage);
-                                                    }}
-                                                    className={`w-full flex items-center justify-between px-4 py-2 text-sm font-medium transition-colors ${
-                                                        useRemoteStorage ? 'text-emerald-600 hover:bg-emerald-50' : 'text-slate-500 hover:bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        {useRemoteStorage ? <Cloud size={16} /> : <CloudOff size={16} />}
-                                                        <span>Облако (Firebase)</span>
-                                                    </div>
-                                                    <div className={`w-8 h-4 rounded-full relative transition-colors ${useRemoteStorage ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-                                                        <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${useRemoteStorage ? 'right-0.5' : 'left-0.5'}`}></div>
-                                                    </div>
-                                                </button>
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        pushLocalToCloud();
-                                                    }}
-                                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-                                                >
-                                                    <Cloud size={16} />
-                                                    <span>Загрузить локальные данные в облако</span>
-                                                </button>
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation();
@@ -561,12 +507,10 @@ export default function App() {
                         {viewMode === 'verification' && <VerificationView />}
                         {viewMode === 'performance' && <PerformanceView performanceMetrics={performanceMetrics} clearPerformanceMetrics={clearPerformanceMetrics} />}
                         {viewMode === 'plans' && <PlansView />}
-                        {viewMode === 'both_plans' && <BothPlansTableView />}
                         {viewMode === 'reports' && <ReportsView />}
                         {viewMode === 'shift_reports' && <ShiftReportsView />}
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
-                        {viewMode === 'raw_data' && <RawDataView />}
                     </div>
                 </>
             )}

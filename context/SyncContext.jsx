@@ -1,5 +1,5 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, useMemo } from 'react';
-import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage } from '../utils';
+import { STORAGE_KEYS } from '../utils';
 import {
     subscribeToRemoteState,
     isRemoteStorageEnabled,
@@ -14,17 +14,13 @@ import {
 const SyncContext = createContext(null);
 
 /**
- * Вся логика синхронизации с облаком в одном месте:
+ * Синхронизация только с облаком (Firestore).
  * - подписка на удалённый снапшот
- * - pending-обновления и их сброс при совпадении с remote
- * - persistStateKey (облако или localStorage)
- * - pushLocalToCloud (полная выгрузка локального состояния)
+ * - persistStateKey — только в облако
  * - статус и лог синхронизации
  */
 export const SyncProvider = ({ children }) => {
-    const [useRemoteStorage, setUseRemoteStorage] = useState(() =>
-        loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true)
-    );
+    const useRemoteStorage = true; // всегда облако, локальное хранилище отключено
     const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'saved' | 'error'
     const [syncLog, setSyncLog] = useState([]);
     const [showSyncLog, setShowSyncLog] = useState(false);
@@ -45,7 +41,8 @@ export const SyncProvider = ({ children }) => {
 
     // Подписка на удалённый снапшот
     useEffect(() => {
-        if (!isRemoteStorageEnabled() || !useRemoteStorage) {
+        setRemoteEnabledByUser(true);
+        if (!isRemoteStorageEnabled()) {
             setRemoteSnapshot(null);
             return () => {};
         }
@@ -53,7 +50,7 @@ export const SyncProvider = ({ children }) => {
             setRemoteSnapshot(parsed);
         });
         return () => unsubscribe();
-    }, [useRemoteStorage]);
+    }, []);
 
     // Лог сообщений от remoteStorage
     useEffect(() => {
@@ -71,26 +68,16 @@ export const SyncProvider = ({ children }) => {
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
 
-    // Режим облака: синхронизируем с localStorage и сервисом
-    useEffect(() => {
-        setRemoteEnabledByUser(useRemoteStorage);
-        saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
-    }, [useRemoteStorage]);
-
     const persistStateKey = useCallback((key, value) => {
-        if (useRemoteStorage) {
-            const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
-            pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
-            pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
-            setPendingUpdates((prev) => ({ ...prev, [key]: value }));
-            setPendingMeta((prev) => ({ ...prev, [key]: meta }));
-            saveRemoteStateKey(key, value, meta).catch((err) =>
-                console.error(`Error saving ${key} to remote:`, err)
-            );
-        } else {
-            saveToLocalStorage(key, value);
-        }
-    }, [useRemoteStorage]);
+        const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
+        pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
+        pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
+        setPendingUpdates((prev) => ({ ...prev, [key]: value }));
+        setPendingMeta((prev) => ({ ...prev, [key]: meta }));
+        saveRemoteStateKey(key, value, meta).catch((err) =>
+            console.error(`Error saving ${key} to remote:`, err)
+        );
+    }, []);
 
     const pushLocalToCloud = useCallback(
         async (getFullState) => {
@@ -118,19 +105,19 @@ export const SyncProvider = ({ children }) => {
     );
 
     const cloudStatus = useMemo(() => {
-        if (!useRemoteStorage || !isRemoteStorageEnabled()) return { status: 'off' };
+        if (!isRemoteStorageEnabled()) return { status: 'off' };
         if (remoteSnapshot === null) return { status: 'loading' };
         const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
         if (Array.isArray(plans) && plans.length > 0) return { status: 'has_data', planCount: plans.length };
         const keys = Object.keys(remoteSnapshot || {}).filter((k) => k !== 'updatedAt');
         if (keys.length > 0) return { status: 'has_data' };
         return { status: 'empty' };
-    }, [useRemoteStorage, remoteSnapshot, unwrapSnapshotValue]);
+    }, [remoteSnapshot, unwrapSnapshotValue]);
 
     const value = useMemo(
         () => ({
             useRemoteStorage,
-            setUseRemoteStorage,
+            setUseRemoteStorage: () => {}, // no-op, всегда облако
             syncStatus,
             setSyncStatus,
             syncLog,
@@ -154,7 +141,6 @@ export const SyncProvider = ({ children }) => {
             wipeRemoteStorage
         }),
         [
-            useRemoteStorage,
             syncStatus,
             syncLog,
             showSyncLog,

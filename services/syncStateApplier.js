@@ -20,7 +20,7 @@ function maybeMergePendingPlanningState(plans, currentPlanId, pendingPlanningSta
 /**
  * Применяет удалённый снапшот к состоянию приложения.
  * @param {Object} snapshot — распарсенный объект из Firestore (ключи STORAGE_KEYS, значения уже объекты/массивы)
- * @param {Object} ctx — контекст: сеттеры (setSavedPlans, setCurrentPlanId, …), applyPlanData, loadFromLocalStorage, hydrateWorkerRegistry, serializeWorkerRegistry, setSavedPlansSourceRef
+ * @param {Object} ctx — контекст: сеттеры (setSavedPlans, setCurrentPlanId, …), applyPlanData, hydrateWorkerRegistry, serializeWorkerRegistry, setSavedPlansSourceRef
  */
 export function applyRemoteSnapshot(snapshot, ctx) {
     if (!snapshot) return;
@@ -40,8 +40,13 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         setLineTemplates,
         setFloaters,
         setWorkerRegistry,
+        setPlanningState,
+        setProductionResults,
+        setProductionExcludedDowntimeTypes,
+        setAssignmentsBackup,
+        setAllEmployees,
+        setDepartmentMasterList,
         applyPlanData,
-        loadFromLocalStorage,
         hydrateWorkerRegistry,
         serializeWorkerRegistry,
         setSavedPlansSourceRef,
@@ -120,48 +125,34 @@ export function applyRemoteSnapshot(snapshot, ctx) {
                     return maybeMergePendingPlanningState(remotePlans, currentPlanId, pendingPlanningState);
                 }
                 if (JSON.stringify(local) === JSON.stringify(remotePlans)) return prev;
-                // UNION LOGIC: объединяем планы, отдавая приоритет remote, но сохраняя локальные, которых нет в облаке
+                // UNION: объединяем планы (remote приоритет, локальные в state — только из текущей сессии)
                 const next = [];
                 const processed = new Set();
 
-                // 1. Проходим по remote: берем их (или мержим с local)
                 remotePlans.forEach((rp) => {
                     processed.add(rp.id);
                     const lp = local.find((p) => p.id === rp.id);
                     if (lp) {
-                        // Конфликт: есть и там и там.
-                        // Если локальный "содержательный", а удаленный "пустой" — берем локальный.
                         if (hasPlanEvents(lp) && !hasPlanEvents(rp)) {
                             next.push(lp);
                         } else {
-                            // Иначе remote побеждает (или мы берем remote, но подмешиваем planningState, как было в старой логике)
-                            // Старая логика (ветка else) делала микс:
-                            // return { ...rp, data: { ...rp.data, planningState: localPlan.data.planningState } };
-                            // Но ветка if (localHasMorePlans) просто возвращала remote.
-                            // Для надежности берем remote, так как это источник правды.
                             next.push(rp);
                         }
                     } else {
-                        // Только в remote — оставляем (не даем удалить, если удалено локально, пока нет явного delete-флага)
                         next.push(rp);
                     }
                 });
 
-                // 2. Добавляем локальные, которых нет в remote (новые загруженные/созданные)
                 local.forEach((lp) => {
-                    if (!processed.has(lp.id)) {
-                        next.push(lp);
-                    }
+                    if (!processed.has(lp.id)) next.push(lp);
                 });
                 return maybeMergePendingPlanningState(next, currentPlanId, pendingPlanningState);
             });
 
             const preferLocal = (() => {
-                const local = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
-                if (!Array.isArray(local) || local.length === 0) return false;
-                if (local.length > remotePlans.length) return true;
-                if (remotePlans.some((rp) => !hasPlanEvents(rp)) && local.some(hasPlanEvents)) return true;
-                return false;
+                // local = текущее состояние (prev уже в замыкании выше не доступно здесь, используем remotePlans vs current state через следующий блок)
+                if (!Array.isArray(remotePlans) || remotePlans.length === 0) return false;
+                return false; // всегда доверяем облаку для currentPlanId
             })();
 
             if (!preferLocal) {
@@ -200,6 +191,18 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     applyField(STORAGE_KEYS.PLAN_HASHES, setPlanHashes);
     applyField(STORAGE_KEYS.LINE_TEMPLATES, setLineTemplates);
     applyField(STORAGE_KEYS.FLOATERS, setFloaters);
+    if (setPlanningState) applyField(STORAGE_KEYS.PLANNING_STATE, setPlanningState);
+    if (setProductionResults) applyField(STORAGE_KEYS.PRODUCTION_RESULTS, setProductionResults);
+    if (setProductionExcludedDowntimeTypes) {
+        const entry = snapshot[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES];
+        if (entry !== undefined && entry !== null && !shouldSkip(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, entry)) {
+            const { value: v } = unwrap(entry);
+            setProductionExcludedDowntimeTypes(Array.isArray(v) ? new Set(v) : new Set());
+        }
+    }
+    if (setAssignmentsBackup) applyField(STORAGE_KEYS.ASSIGNMENTS_BACKUP, setAssignmentsBackup);
+    if (setAllEmployees) applyField(STORAGE_KEYS.ALL_EMPLOYEES, setAllEmployees);
+    if (setDepartmentMasterList) applyField(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, setDepartmentMasterList);
 
     const serializedRegistry = snapshot[STORAGE_KEYS.WORKER_REGISTRY];
     if (serializedRegistry) {
