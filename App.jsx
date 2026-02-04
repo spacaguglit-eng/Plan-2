@@ -278,22 +278,6 @@ export default function App() {
                                         </div>
                                     )}
                                 </div>
-                                <button
-                                    onClick={() => {
-                                        if (isLocked) {
-                                            setIsPinModalOpen(true);
-                                        }
-                                    }}
-                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
-                                        isLocked
-                                            ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
-                                            : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                                    }`}
-                                    title={isLocked ? 'Мастер-план защищен' : 'Редактирование разрешено'}
-                                >
-                                    {isLocked ? <Lock size={14} /> : <Unlock size={14} />}
-                                    {isLocked ? 'Мастер (Защищено)' : 'Редактирование'}
-                                </button>
                                 <div className="bg-slate-100 p-1 rounded-lg flex border border-slate-200">
                                     {/* Staff Menu */}
                                     <div className="relative flex items-center">

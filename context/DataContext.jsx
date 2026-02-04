@@ -89,7 +89,7 @@ export const DataProvider = ({ children }) => {
     const [currentPlanId, setCurrentPlanId] = useState(null);
     const [planningStateVersion, setPlanningStateVersion] = useState(0);
     const [planningStateToLoad, setPlanningStateToLoad] = useState(null);
-    const [isLocked, setIsLocked] = useState(false);
+    const [isLocked, setIsLocked] = useState(false); // Deprecated: Always false
 
     const [lineTemplates, setLineTemplates] = useState({});
     const [floaters, setFloaters] = useState({ day: [], night: [] });
@@ -185,11 +185,8 @@ export const DataProvider = ({ children }) => {
     ]), []);
 
     const unlockWithCode = useCallback((code) => {
-        if (code === '1234') {
-            setIsLocked(false);
-            return true;
-        }
-        return false;
+        setIsLocked(false);
+        return true;
     }, []);
 
     const generatePlanId = () => `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
