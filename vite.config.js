@@ -3,7 +3,13 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './', // Важно для Electron - относительные пути
+  base: './',
+  resolve: {
+    dedupe: ['@tanstack/react-query'],
+  },
+  optimizeDeps: {
+    include: ['@tanstack/react-query'],
+  }, // Важно для Electron - относительные пути
   server: {
     port: 3000,
     host: true, // true = 0.0.0.0 — доступ по локальной сети для нескольких пользователей

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, loadFromLocalStorage } from '../../utils';
+import { STORAGE_KEYS } from '../../utils';
 // Функция для получения цвета категории простоев
 const getCategoryColor = (category) => {
     const colors = [
@@ -51,10 +51,14 @@ const buildConicGradient = (segments) => {
 };
 
 const ProductionView = () => {
-    const { persistStateKey } = useData();
-    const STORAGE_KEY = STORAGE_KEYS.PRODUCTION_RESULTS;
+    const {
+        productionResults,
+        setProductionResults,
+        productionExcludedDowntimeTypes,
+        setProductionExcludedDowntimeTypes
+    } = useData();
     const fileInputRef = useRef(null);
-    const [results, setResults] = useState([]);
+    const results = productionResults ?? [];
     const [isParsing, setIsParsing] = useState(false);
     const [parseError, setParseError] = useState('');
     const [filterLine, setFilterLine] = useState('');
@@ -64,10 +68,10 @@ const ProductionView = () => {
     const [reportError, setReportError] = useState('');
     const [reportDates, setReportDates] = useState([]);
     const [reportTargets, setReportTargets] = useState({});
-    const [excludedDowntimeTypes, setExcludedDowntimeTypes] = useState(() => {
-        const stored = loadFromLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES);
-        return stored ? new Set(stored) : new Set();
-    });
+    const excludedDowntimeTypes = useMemo(
+        () => new Set(productionExcludedDowntimeTypes || []),
+        [productionExcludedDowntimeTypes]
+    );
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
     
@@ -91,7 +95,7 @@ const ProductionView = () => {
 
         setIsParsing(true);
         setParseError('');
-        setResults([]);
+        setProductionResults([]);
         setFlatRows([]);
         setFlatDowntimeRows([]);
 
@@ -664,8 +668,7 @@ const ProductionView = () => {
                 }
 
                 if (type === 'parseFiles') {
-                    setResults(results || []);
-                    persistStateKey(STORAGE_KEY, results || []);
+                    setProductionResults(results || []);
                     setIsParsing(false);
                     // Пересчет flatRows произойдет автоматически через useEffect при изменении results
                 } else if (type === 'calculateFlatRows') {
@@ -719,25 +722,6 @@ const ProductionView = () => {
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
     }, [processFiles]);
-
-    // Загрузка данных из localStorage при монтировании
-    useEffect(() => {
-        const stored = loadFromLocalStorage(STORAGE_KEY);
-        if (stored && Array.isArray(stored) && stored.length > 0) {
-            setResults(stored);
-            if (productionWorkerRef.current) {
-                const requestId = ++productionWorkerReqIdRef.current;
-                productionWorkerRef.current.postMessage({
-                    type: 'calculateFlatRows',
-                    requestId,
-                    payload: {
-                        results: stored,
-                        excludedDowntimeTypes: Array.from(excludedDowntimeTypes)
-                    }
-                });
-            }
-        }
-    }, []);
 
     // Пересчет flatRows при изменении excludedDowntimeTypes или results
     useEffect(() => {
@@ -913,8 +897,7 @@ const ProductionView = () => {
                                                                 } else {
                                                                     newSet.delete(type);
                                                                 }
-                                                                setExcludedDowntimeTypes(newSet);
-                                                                persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, Array.from(newSet));
+                                                                setProductionExcludedDowntimeTypes(Array.from(newSet));
                                                             }}
                                                             className="hidden"
                                                         />

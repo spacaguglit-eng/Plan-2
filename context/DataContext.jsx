@@ -4,8 +4,6 @@ import ExcelJS from 'exceljs';
 import { useNotification } from '../components/common/Toast.jsx';
 import {
     STORAGE_KEYS,
-    saveToLocalStorage,
-    loadFromLocalStorage,
     debounce,
     cleanVal,
     extractShiftNumber,
@@ -34,8 +32,6 @@ export const DataProvider = ({ children }) => {
     const sync = useSync();
     const { notify } = useNotification();
     const {
-        useRemoteStorage,
-        setUseRemoteStorage,
         syncStatus,
         setSyncStatus,
         syncLog,
@@ -51,14 +47,13 @@ export const DataProvider = ({ children }) => {
         clientIdRef,
         unwrapSnapshotValue,
         persistStateKey,
-        pushLocalToCloud: syncPushLocalToCloud,
         cloudStatus,
         isRemoteStorageEnabled,
         wipeRemoteStorage
     } = sync;
 
     const wipeAllData = useCallback(async () => {
-        if (window.confirm('ВНИМАНИЕ! Это действие удалит ВСЕ данные (планы, настройки, сотрудников) из локального хранилища и из облака (если подключено). Восстановить данные будет невозможно. Продолжить?')) {
+        if (window.confirm('ВНИМАНИЕ! Это действие удалит ВСЕ данные (планы, настройки, сотрудников) из облака. Восстановить данные будет невозможно. Продолжить?')) {
             try {
                 if (isRemoteStorageEnabled()) {
                     await wipeRemoteStorage();
@@ -77,8 +72,6 @@ export const DataProvider = ({ children }) => {
     const [loading, setLoading] = useState(false);
     const [restoring, setRestoring] = useState(true);
     const [error, setError] = useState('');
-    const [userRole, setUserRole] = useState(() => loadFromLocalStorage('plan_user_role', 'guest')); // 'admin' | 'guest'
-
     const [rawTables, setRawTables] = useState({});
     const [scheduleDates, setScheduleDates] = useState([]);
     const [planHashes, setPlanHashes] = useState({});
@@ -86,10 +79,10 @@ export const DataProvider = ({ children }) => {
     // Multi-plan management (при sync on заполняется из облака, при sync off — в restoreData из localStorage)
     const [savedPlans, setSavedPlans] = useState([]);
     const savedPlansSourceRef = useRef(null);
+    const savedPlansRef = useRef([]);
     const [currentPlanId, setCurrentPlanId] = useState(null);
     const [planningStateVersion, setPlanningStateVersion] = useState(0);
     const [planningStateToLoad, setPlanningStateToLoad] = useState(null);
-    const [isLocked, setIsLocked] = useState(false); // Deprecated: Always false
 
     const [lineTemplates, setLineTemplates] = useState({});
     const [floaters, setFloaters] = useState({ day: [], night: [] });
@@ -145,6 +138,39 @@ export const DataProvider = ({ children }) => {
     const [factData, setFactData] = useState(null);
     const [factDates, setFactDates] = useState([]);
 
+    // Глобальные данные (облако)
+    const [allEmployees, setAllEmployeesState] = useState({});
+    const [departmentMasterList, setDepartmentMasterListState] = useState(null);
+    const [planningState, setPlanningStateState] = useState({});
+    const [productionResults, setProductionResultsState] = useState(null);
+    const [productionExcludedDowntimeTypes, setProductionExcludedDowntimeTypesState] = useState(null);
+
+    const setAllEmployees = useCallback((value) => {
+        const next = typeof value === 'function' ? value(allEmployees) : value;
+        setAllEmployeesState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, next);
+    }, [allEmployees, restoring, persistStateKey]);
+    const setDepartmentMasterList = useCallback((value) => {
+        const next = typeof value === 'function' ? value(departmentMasterList) : value;
+        setDepartmentMasterListState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, next);
+    }, [departmentMasterList, restoring, persistStateKey]);
+    const setPlanningState = useCallback((value) => {
+        const next = typeof value === 'function' ? value(planningState) : value;
+        setPlanningStateState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.PLANNING_STATE, next);
+    }, [planningState, restoring, persistStateKey]);
+    const setProductionResults = useCallback((value) => {
+        const next = typeof value === 'function' ? value(productionResults) : value;
+        setProductionResultsState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_RESULTS, next);
+    }, [productionResults, restoring, persistStateKey]);
+    const setProductionExcludedDowntimeTypes = useCallback((value) => {
+        const next = typeof value === 'function' ? value(productionExcludedDowntimeTypes) : value;
+        setProductionExcludedDowntimeTypesState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, next);
+    }, [productionExcludedDowntimeTypes, restoring, persistStateKey]);
+
     // Ошибка синхронизации: откат к кэшу из remote (вызывается из remoteStorage)
     useEffect(() => {
         setRemoteFlushErrorCallback((err, failedKeys) => {
@@ -164,13 +190,7 @@ export const DataProvider = ({ children }) => {
         return () => setRemoteFlushErrorCallback(null);
     }, [remoteSnapshot, notify, unwrapSnapshotValue, setSyncStatus]);
 
-    useEffect(() => {
-        if (userRole) {
-            localStorage.setItem('plan_user_role', JSON.stringify(userRole));
-        }
-    }, [userRole]);
-
-    const isReadOnly = userRole === 'guest';
+    const isReadOnly = false;
 
     const fileInputRef = useRef(null);
     const syncTimeoutRef = useRef(null);
@@ -183,11 +203,6 @@ export const DataProvider = ({ children }) => {
         { tableName: 'Сводная_По_Людям', expectedSheet: 'Расписание по сменам', type: 'demand' },
         { tableName: 'Люд', expectedSheet: 'Справочник', type: 'roster' }
     ]), []);
-
-    const unlockWithCode = useCallback((code) => {
-        setIsLocked(false);
-        return true;
-    }, []);
 
     const generatePlanId = () => `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -288,9 +303,9 @@ export const DataProvider = ({ children }) => {
         });
         persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
         setManualAssignments(normalizeManualAssignments(planData.manualAssignments || {}));
-        const savedManualLines = planData.manualLines || loadFromLocalStorage(STORAGE_KEYS.MANUAL_LINES, {});
+        const savedManualLines = planData.manualLines || {};
         setManualLines(savedManualLines);
-        const savedClones = planData.assignmentClones || loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
+        const savedClones = planData.assignmentClones || {};
         setAssignmentClones(savedClones);
         setAutoReassignEnabled(planData.autoReassignEnabled ?? true);
         if (planData.scheduleDates?.length > 0) {
@@ -299,101 +314,11 @@ export const DataProvider = ({ children }) => {
         if (switchView) setStep('dashboard');
     };
 
-    // --- EFFECT: LOAD — при sync off из localStorage, при sync on только подписка на облако (restoring снимется при первом снапшоте) ---
+    // Загрузка только из облака: restoring снимается при первом применении remoteSnapshot
     useEffect(() => {
-        if (useRemoteStorage) {
-            if (!isRemoteStorageEnabled()) setRestoring(false);
-            else setRestoring(true);
-            return;
-        }
-        const restoreData = () => {
-            setRestoring(true);
-            try {
-                let storedPlans = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
-                if (!Array.isArray(storedPlans)) storedPlans = [];
-                storedPlans = storedPlans.filter(p => p && typeof p === 'object' && p.id && p.data);
-                const storedCurrentPlanId = loadFromLocalStorage(STORAGE_KEYS.CURRENT_PLAN_ID, null);
-                if (storedPlans.length > 0) {
-                    savedPlansSourceRef.current = 'restoreData';
-                    setSavedPlans(storedPlans);
-                    const preferredId = storedCurrentPlanId || storedPlans.find(p => p.type === 'Operational')?.id || storedPlans[0].id;
-                    setCurrentPlanId(preferredId);
-                    const selectedPlan = storedPlans.find(p => p.id === preferredId);
-                    if (!selectedPlan?.data) {
-                        setStep('dashboard');
-                        setViewMode('plans');
-                    }
-                } else {
-                    // Нет планов - проверяем старые данные для миграции
-                    const savedTables = loadFromLocalStorage(STORAGE_KEYS.RAW_TABLES, {});
-                    if (savedTables.demand && savedTables.roster) {
-                        // Миграция старых данных в план
-                        if (savedTables.demand) {
-                            savedTables.demand = restoreDemandDates(savedTables.demand);
-                        }
-                        setRawTables(savedTables);
-                        
-                        const analysis = analyzeDataPure(savedTables.demand, savedTables.roster);
-                        const { templates: preTemplates } = preAnalyzeRoster(savedTables.roster);
-                        const newHashes = buildPlanHashes(savedTables.demand, preTemplates);
-                        
-                        setScheduleDates(analysis.scheduleDates);
-                        setLineTemplates(analysis.lineTemplates);
-                        setFloaters(analysis.floaters);
-                        setWorkerRegistry(hydrateWorkerRegistry(serializeWorkerRegistry(analysis.workerRegistry)));
-                        setPlanHashes(newHashes);
-                        
-                        const savedAssignments = loadFromLocalStorage(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
-                        setManualAssignments(savedAssignments);
-                        const savedManualLines = loadFromLocalStorage(STORAGE_KEYS.MANUAL_LINES, {});
-                        setManualLines(savedManualLines);
-                        
-                        if (analysis.scheduleDates.length > 0) {
-                            setSelectedDate(analysis.scheduleDates[0]);
-                        }
-                        
-                        // Создаём план из мигрированных данных
-                        const createdAt = new Date().toISOString();
-                        const migratedPlan = {
-                            id: generatePlanId(),
-                            name: `Миграция ${createdAt.slice(0, 10)}`,
-                            createdAt,
-                            type: 'Operational',
-                            data: {
-                                rawTables: savedTables,
-                                scheduleDates: analysis.scheduleDates,
-                                planHashes: newHashes,
-                                lineTemplates: analysis.lineTemplates,
-                                floaters: analysis.floaters,
-                                workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
-                                manualAssignments: savedAssignments
-                            }
-                        };
-                        savedPlansSourceRef.current = 'migration';
-                        setSavedPlans([migratedPlan]);
-                        setCurrentPlanId(migratedPlan.id);
-                        setStep('dashboard');
-                    } else {
-                        // Нет планов и нет данных - переходим в менеджер планов
-                        setStep('dashboard');
-                        setViewMode('plans');
-                    }
-                }
-
-                const savedFactData = loadFromLocalStorage(STORAGE_KEYS.FACT_DATA, null);
-                const savedFactDates = loadFromLocalStorage(STORAGE_KEYS.FACT_DATES, []);
-                if (savedFactData && Object.keys(savedFactData).length > 0) setFactData(savedFactData);
-                if (savedFactDates.length > 0) setFactDates(savedFactDates);
-
-            } catch (err) {
-                console.error('Error restoring data:', err);
-            } finally {
-                setRestoring(false);
-            }
-        };
-        restoreData();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [useRemoteStorage]);
+        if (!isRemoteStorageEnabled()) setRestoring(false);
+        else setRestoring(true);
+    }, []);
 
     useEffect(() => {
         if (restoring) return;
@@ -410,11 +335,6 @@ export const DataProvider = ({ children }) => {
     }, [currentPlanId, restoring, persistStateKey]);
 
     // AUTO_REASSIGN_ENABLED, MANUAL_LINES, ASSIGNMENT_CLONES handled by wrappers
-
-    useEffect(() => {
-        const activePlan = savedPlans.find(plan => plan.id === currentPlanId);
-        setIsLocked(activePlan?.type === 'Master');
-    }, [currentPlanId, savedPlans]);
 
     const hasAppliedRemoteRef = useRef(false);
     const lastAppliedRemoteRevRef = useRef({});
@@ -445,8 +365,13 @@ export const DataProvider = ({ children }) => {
             setLineTemplates: setLineTemplatesNorm,
             setFloaters,
             setWorkerRegistry,
+            setAllEmployees: setAllEmployeesState,
+            setDepartmentMasterList: setDepartmentMasterListState,
+            setPlanningState: setPlanningStateState,
+            setProductionResults: setProductionResultsState,
+            setProductionExcludedDowntimeTypes: setProductionExcludedDowntimeTypesState,
             applyPlanData,
-            loadFromLocalStorage,
+            getCurrentPlans: () => savedPlansRef.current,
             hydrateWorkerRegistry,
             serializeWorkerRegistry,
             setSavedPlansSourceRef: (value) => { savedPlansSourceRef.current = value; },
@@ -493,57 +418,17 @@ export const DataProvider = ({ children }) => {
     }, [restoring, remoteSnapshot, unwrapSnapshotValue, currentPlanId]);
 
     useEffect(() => {
-        if (!useRemoteStorage || restoring) return;
+        if (restoring) return;
         if (step !== 'upload') return;
         const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
         if (Array.isArray(plans) && plans.length > 0) {
             setStep('dashboard');
         }
-    }, [useRemoteStorage, restoring, step, remoteSnapshot, unwrapSnapshotValue]);
+    }, [restoring, step, remoteSnapshot, unwrapSnapshotValue]);
+
+    savedPlansRef.current = savedPlans;
 
     // --- LOGIC FUNCTIONS ---
-
-    const pushLocalToCloud = useCallback(async () => {
-        if (!isRemoteStorageEnabled()) {
-            notify({ type: 'error', message: 'Синхронизация недоступна (нет конфига Firebase).' });
-            return;
-        }
-        const result = await syncPushLocalToCloud(() => {
-            const reg = pendingUpdates[STORAGE_KEYS.WORKER_REGISTRY] ?? workerRegistry;
-            const stateObj = {
-                [STORAGE_KEYS.SAVED_PLANS]: pendingUpdates[STORAGE_KEYS.SAVED_PLANS] ?? savedPlans,
-                [STORAGE_KEYS.CURRENT_PLAN_ID]: pendingUpdates[STORAGE_KEYS.CURRENT_PLAN_ID] ?? currentPlanId,
-                [STORAGE_KEYS.MANUAL_ASSIGNMENTS]: pendingUpdates[STORAGE_KEYS.MANUAL_ASSIGNMENTS] ?? manualAssignments,
-                [STORAGE_KEYS.MANUAL_LINES]: pendingUpdates[STORAGE_KEYS.MANUAL_LINES] ?? manualLines,
-                [STORAGE_KEYS.ASSIGNMENT_CLONES]: pendingUpdates[STORAGE_KEYS.ASSIGNMENT_CLONES] ?? assignmentClones,
-                [STORAGE_KEYS.AUTO_REASSIGN_ENABLED]: pendingUpdates[STORAGE_KEYS.AUTO_REASSIGN_ENABLED] ?? autoReassignEnabled,
-                [STORAGE_KEYS.RAW_TABLES]: pendingUpdates[STORAGE_KEYS.RAW_TABLES] ?? rawTables,
-                [STORAGE_KEYS.SCHEDULE_DATES]: pendingUpdates[STORAGE_KEYS.SCHEDULE_DATES] ?? scheduleDates,
-                [STORAGE_KEYS.PLAN_HASHES]: pendingUpdates[STORAGE_KEYS.PLAN_HASHES] ?? planHashes,
-                [STORAGE_KEYS.LINE_TEMPLATES]: pendingUpdates[STORAGE_KEYS.LINE_TEMPLATES] ?? lineTemplates,
-                [STORAGE_KEYS.FLOATERS]: pendingUpdates[STORAGE_KEYS.FLOATERS] ?? floaters,
-                [STORAGE_KEYS.WORKER_REGISTRY]: serializeWorkerRegistry(reg),
-                [STORAGE_KEYS.FACT_DATA]: pendingUpdates[STORAGE_KEYS.FACT_DATA] ?? factData,
-                [STORAGE_KEYS.FACT_DATES]: pendingUpdates[STORAGE_KEYS.FACT_DATES] ?? factDates,
-                [STORAGE_KEYS.PLANNING_STATE]: loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, null),
-                [STORAGE_KEYS.ALL_EMPLOYEES]: loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, null),
-                [STORAGE_KEYS.DEPARTMENT_MASTER_LIST]: loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null),
-                [STORAGE_KEYS.PRODUCTION_RESULTS]: loadFromLocalStorage(STORAGE_KEYS.PRODUCTION_RESULTS, null),
-                [STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES]: loadFromLocalStorage(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, null),
-                [STORAGE_KEYS.ASSIGNMENTS_BACKUP]: loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENTS_BACKUP, null)
-            };
-            return { stateObj, revsPerKey: { ...lastAppliedRemoteRevRef.current } };
-        });
-        if (result?.ok) {
-            if (result.keysWritten === 0) {
-                notify({ type: 'info', message: 'В облаке более свежие данные. Обновите страницу.', duration: 5000 });
-            } else {
-                notify({ type: 'success', message: 'Локальные данные загружены в облако.' });
-            }
-        } else if (result?.error && result.error !== 'no_config') {
-            notify({ type: 'error', message: `Ошибка загрузки в облако: ${result.error}` });
-        }
-    }, [syncPushLocalToCloud, isRemoteStorageEnabled, pendingUpdates, savedPlans, currentPlanId, manualAssignments, manualLines, assignmentClones, autoReassignEnabled, rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, factData, factDates, notify]);
 
     const saveSourceDataToLocal = (tables, hashes) => {
         try {
@@ -565,12 +450,7 @@ export const DataProvider = ({ children }) => {
         }
         setManualAssignments(newAssignments);
         persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, newAssignments);
-        if (!useRemoteStorage) {
-            setSyncStatus('saved');
-            if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-            syncTimeoutRef.current = setTimeout(() => setSyncStatus('idle'), 800);
-        }
-    }, [persistStateKey, useRemoteStorage, viewMode, isReadOnly, notify]);
+    }, [persistStateKey, viewMode, isReadOnly, notify]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
         if (isReadOnly) {
@@ -2373,29 +2253,6 @@ export const DataProvider = ({ children }) => {
         updateAssignments(newAssignments);
     }, [manualAssignments, scheduleDates, selectedDate, getShiftsForDate, updateAssignments]);
 
-    const backupAssignments = useCallback(() => {
-        try {
-            persistStateKey(STORAGE_KEYS.ASSIGNMENTS_BACKUP, manualAssignments);
-            notify({ type: 'success', message: 'Расстановка сохранена в резервную копию' });
-        } catch (e) {
-            notify({ type: 'error', message: 'Ошибка сохранения резервной копии' });
-        }
-    }, [manualAssignments, notify]);
-
-    const restoreAssignments = useCallback(() => {
-        try {
-            const backup = loadFromLocalStorage(STORAGE_KEYS.ASSIGNMENTS_BACKUP, null);
-            if (!backup || Object.keys(backup).length === 0) {
-                notify({ type: 'warning', message: 'Нет сохраненной резервной копии' });
-                return;
-            }
-            updateAssignments(backup);
-            notify({ type: 'success', message: 'Расстановка восстановлена из резервной копии' });
-        } catch (e) {
-            notify({ type: 'error', message: 'Ошибка восстановления резервной копии' });
-        }
-    }, [updateAssignments, notify]);
-
     // --- CHESS TABLE WORKER LIFECYCLE ---
     useEffect(() => {
         if (!USE_CHESS_WORKER) return;
@@ -3162,12 +3019,18 @@ export const DataProvider = ({ children }) => {
         planHashes: pendingUpdates[STORAGE_KEYS.PLAN_HASHES] ?? planHashes,
         lineTemplates: pendingUpdates[STORAGE_KEYS.LINE_TEMPLATES] ?? lineTemplates,
         floaters: pendingUpdates[STORAGE_KEYS.FLOATERS] ?? floaters,
-        workerRegistry: pendingUpdates[STORAGE_KEYS.WORKER_REGISTRY] ?? workerRegistry
+        workerRegistry: pendingUpdates[STORAGE_KEYS.WORKER_REGISTRY] ?? workerRegistry,
+        allEmployees: pendingUpdates[STORAGE_KEYS.ALL_EMPLOYEES] ?? allEmployees,
+        departmentMasterList: pendingUpdates[STORAGE_KEYS.DEPARTMENT_MASTER_LIST] ?? departmentMasterList,
+        planningState: pendingUpdates[STORAGE_KEYS.PLANNING_STATE] ?? planningState,
+        productionResults: pendingUpdates[STORAGE_KEYS.PRODUCTION_RESULTS] ?? productionResults,
+        productionExcludedDowntimeTypes: pendingUpdates[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES] ?? productionExcludedDowntimeTypes
     }), [
         pendingUpdates,
         manualAssignments, manualLines, assignmentClones, savedPlans, currentPlanId,
         autoReassignEnabled, factData, factDates, rawTables, scheduleDates, planHashes,
-        lineTemplates, floaters, workerRegistry
+        lineTemplates, floaters, workerRegistry,
+        allEmployees, departmentMasterList, planningState, productionResults, productionExcludedDowntimeTypes
     ]);
 
     const workersValue = useMemo(() => ({
@@ -3184,25 +3047,24 @@ export const DataProvider = ({ children }) => {
         handleMatrixAssignment, handleDragStart, handleDragOver, handleDragEnd, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         cloneAssignedWorker, removeCloneEntry,
-        backupAssignments, restoreAssignments,
         cloneCountsByName, cloneDatesByName
     }), [
         display.manualAssignments, display.manualLines, display.assignmentClones, updateAssignments, addManualLine, removeManualLine,
         handleMatrixAssignment, handleDragStart, handleDragOver, handleDragEnd, handleDrop,
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
-        cloneAssignedWorker, removeCloneEntry, backupAssignments, restoreAssignments,
+        cloneAssignedWorker, removeCloneEntry,
         cloneCountsByName, cloneDatesByName
     ]);
 
     const plansValue = useMemo(() => ({
-        savedPlans: display.savedPlans, currentPlanId: display.currentPlanId, isLocked,
+        savedPlans: display.savedPlans, currentPlanId: display.currentPlanId,
         setCurrentPlanId,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
         createPlanFromSchedule, comparePlanSnapshots, buildPlanSlots
     }), [
-        display.savedPlans, display.currentPlanId, isLocked,
+        display.savedPlans, display.currentPlanId,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
@@ -3215,10 +3077,9 @@ export const DataProvider = ({ children }) => {
 
     const value = useMemo(() => ({
         // State (display = pending ?? server when sync on)
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, userRole, isReadOnly,
+        file, loading, restoring, error, syncStatus, isReadOnly,
         rawTables: display.rawTables, scheduleDates: display.scheduleDates, planHashes: display.planHashes,
         savedPlans: display.savedPlans, currentPlanId: display.currentPlanId, planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
-        isLocked,
         lineTemplates: display.lineTemplates, floaters: display.floaters, workerRegistry: display.workerRegistry,
         step, setStep, viewMode, setViewMode, selectedDate, setSelectedDate,
         manualAssignments: display.manualAssignments, setManualAssignments,
@@ -3227,6 +3088,11 @@ export const DataProvider = ({ children }) => {
         cloneCountsByName,
         cloneDatesByName,
         factData: display.factData, setFactData, factDates: display.factDates, setFactDates,
+        allEmployees: display.allEmployees, setAllEmployees,
+        departmentMasterList: display.departmentMasterList, setDepartmentMasterList,
+        planningState: display.planningState, setPlanningState,
+        productionResults: display.productionResults, setProductionResults,
+        productionExcludedDowntimeTypes: display.productionExcludedDowntimeTypes, setProductionExcludedDowntimeTypes,
         targetScrollBrigadeId, setTargetScrollBrigadeId,
         draggedWorker, setDraggedWorker,
         updateReport, setUpdateReport,
@@ -3238,8 +3104,7 @@ export const DataProvider = ({ children }) => {
         autoReassignEnabled: display.autoReassignEnabled, setAutoReassignEnabled,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
-        setSyncStatus, setShowSyncLog, setUseRemoteStorage, setUserRole,
-        pushLocalToCloud,
+        setSyncStatus,
         persistStateKey,
         cloudStatus,
         wipeAllData,
@@ -3278,15 +3143,12 @@ export const DataProvider = ({ children }) => {
         handleAssignRv, handleRemoveAssignment, handleAutoFillFloaters,
         cloneAssignedWorker,
         removeCloneEntry,
-        backupAssignments, restoreAssignments,
-        calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
-        unlockWithCode
+        calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel
     }), [
         // ТОЛЬКО состояние, НЕ setState функции!
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, useRemoteStorage, cloudStatus, userRole, isReadOnly, wipeAllData,
+        file, loading, restoring, error, syncStatus, cloudStatus, isReadOnly, wipeAllData,
         display,
         planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
-        isLocked,
         step, viewMode, selectedDate,
         cloneCountsByName,
         cloneDatesByName,
@@ -3325,10 +3187,6 @@ export const DataProvider = ({ children }) => {
         removeCloneEntry,
         exportChessTableToExcel,
         exportScheduleByLinesToExcel,
-        unlockWithCode,
-        backupAssignments,
-        restoreAssignments,
-        pushLocalToCloud,
         persistStateKey,
         cloudStatus
         // ❌ УБРАНЫ: все немемоизированные функции

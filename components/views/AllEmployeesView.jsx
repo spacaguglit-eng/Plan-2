@@ -1,22 +1,21 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Users, Search, Edit3, Check, X, Calendar, Zap, AlertTriangle, Clock, ChevronDown, ChevronRight, CheckCircle2, XCircle, Filter, Settings, Trash2, Plus } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames } from '../../utils';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { normalizeName, matchNames } from '../../utils';
+
+const DEPARTMENT_DEFAULTS = ['Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'];
 
 const AllEmployeesView = () => {
     const {
         workerRegistry,
         factData,
         savedPlans,
-        viewMode,
-        persistStateKey
+        allEmployees,
+        departmentMasterList,
+        setAllEmployees,
+        setDepartmentMasterList
     } = useData();
 
-    useRenderTime('all_employees', logPerformanceMetric, viewMode === 'all_employees');
-
-    const [allEmployees, setAllEmployees] = useState({});
     const [search, setSearch] = useState('');
     const [filterRole, setFilterRole] = useState('all');
     const [filterBrigade, setFilterBrigade] = useState('all');
@@ -37,12 +36,8 @@ const AllEmployeesView = () => {
             total: 0
         }
     });
-    const [departmentSuggestions] = useState([
-        'Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
-        'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'
-    ]);
+    const [departmentSuggestions] = useState(DEPARTMENT_DEFAULTS);
     const [showManageDepartments, setShowManageDepartments] = useState(false);
-    const [departmentMasterList, setDepartmentMasterList] = useState([]);
     const [currentPage, setCurrentPage] = useState(1);
     const PAGE_SIZE = 50;
     const [isInitializing, setIsInitializing] = useState(true);
@@ -51,26 +46,13 @@ const AllEmployeesView = () => {
     const requestIdRef = useRef(0);
     const isInitializingRef = useRef(true);
 
-    // Загружаем данные из localStorage при монтировании (async для неблокирующей инициализации)
+    const effectiveDepartmentList = departmentMasterList ?? DEPARTMENT_DEFAULTS;
+
     useEffect(() => {
-        // Use setTimeout to allow the browser to paint the loading state first
-        setTimeout(() => {
-            const saved = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-            setAllEmployees(saved);
-            
-            // Load department master list
-            const masterList = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
-            if (masterList) {
-                setDepartmentMasterList(masterList);
-            } else {
-                // Initialize with defaults
-                const defaults = ['Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
-                                'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'];
-                setDepartmentMasterList(defaults);
-                persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, defaults);
-            }
-        }, 0);
-    }, []);
+        if (departmentMasterList == null) {
+            setDepartmentMasterList(DEPARTMENT_DEFAULTS);
+        }
+    }, [departmentMasterList, setDepartmentMasterList]);
 
     // Синхронизируем данные из workerRegistry и factData
     useEffect(() => {
@@ -136,12 +118,9 @@ const AllEmployeesView = () => {
                 });
             }
 
-            if (changed) {
-                persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
-            }
             return updated;
         });
-    }, [workerRegistry, factData]);
+    }, [workerRegistry, factData, setAllEmployees]);
 
     const formatHours = (hoursData) => {
         if (!hoursData) return '—';
@@ -166,17 +145,13 @@ const AllEmployeesView = () => {
     };
 
     const handleDepartmentChange = (normName, newDepartment) => {
-        setAllEmployees(prev => {
-            const updated = {
-                ...prev,
-                [normName]: {
-                    ...prev[normName],
-                    department: newDepartment
-                }
-            };
-            persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
-            return updated;
-        });
+        setAllEmployees(prev => ({
+            ...prev,
+            [normName]: {
+                ...prev[normName],
+                department: newDepartment
+            }
+        }));
         setEditingDepartment(null);
         setDepartmentInput('');
     };
@@ -837,7 +812,7 @@ const AllEmployeesView = () => {
                 <ManageDepartmentsModal
                     isOpen={showManageDepartments}
                     onClose={() => setShowManageDepartments(false)}
-                    masterList={departmentMasterList}
+                    masterList={effectiveDepartmentList}
                     onUpdate={(updated) => {
                         setDepartmentMasterList(updated);
                         persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, updated);

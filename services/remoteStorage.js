@@ -84,10 +84,7 @@ const getRevFromRaw = (raw) => {
     }
 };
 
-let isUserRemoteEnabled = true;
-export const setRemoteEnabledByUser = (enabled) => { isUserRemoteEnabled = enabled; };
-
-export const isRemoteStorageEnabled = () => isFirebaseConfigured() && isUserRemoteEnabled;
+export const isRemoteStorageEnabled = () => isFirebaseConfigured();
 
 let logCallback = null;
 export const setRemoteLogCallback = (cb) => { logCallback = cb; };
@@ -281,7 +278,7 @@ export const loadRemoteStateKey = async (key, defaultValue = null) => {
 };
 
 /**
- * Записать полный снимок состояния в облако (merge). Для кнопки «Загрузить локальные данные в облако».
+ * Записать полный снимок состояния в облако (merge).
  * Не перезаписывает ключи, у которых в облаке ревизия новее, чем revsPerKey[key] (защита при нескольких клиентах).
  * @param {Object} stateObj — объект { [key]: value, ... }
  * @param {Object} [revsPerKey] — опционально { [key]: number } — ревизия, которую мы считаем «нашей»; если в облаке rev больше — ключ не перезаписываем
@@ -317,7 +314,7 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
         addLog('info', 'Загрузка в облако: все ключи новее в облаке, ничего не перезаписываем');
         return 0;
     }
-    addLog('syncing', 'Загрузка локальных данных в облако...');
+    addLog('syncing', 'Запись состояния в облако...');
     try {
         for (const key of Object.keys(serialized)) {
             await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: serialized[key] });

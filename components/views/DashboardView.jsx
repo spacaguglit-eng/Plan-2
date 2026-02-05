@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, Bug, ExternalLink } from 'lucide-react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
 import { normalizeName } from '../../utils';
 
 const parseTimeToMinutes = (value) => {
@@ -198,22 +196,13 @@ const DashboardView = () => {
         setIsGlobalFill,
         autoReassignEnabled,
         setAutoReassignEnabled,
-        backupAssignments,
-        restoreAssignments,
         draggedWorker,
-        viewMode,
         updateAssignments,
         manualAssignments,
         manualLines,
         addManualLine,
-        removeManualLine,
-        file,
-        savedPlans,
-        currentPlanId,
-        setViewMode
+        removeManualLine
     } = useData();
-
-    useRenderTime('dashboard', logPerformanceMetric, viewMode === 'dashboard');
 
     const [contextMenu, setContextMenu] = useState(null);
     const [contextMenuSearch, setContextMenuSearch] = useState('');
@@ -227,9 +216,6 @@ const DashboardView = () => {
         endDate: '',
         endTime: ''
     });
-    const [showLineSourceModal, setShowLineSourceModal] = useState(false);
-    const [showSlotSourceModal, setShowSlotSourceModal] = useState(false);
-
     // Create normalized registry map for robust lookup
     const normalizedRegistry = useMemo(() => {
         const map = new Map();
@@ -269,72 +255,6 @@ const DashboardView = () => {
 
     const shiftsData = getShiftsForDate(selectedDate);
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
-
-    const openArrangementInNewTab = useCallback(() => {
-        if (!shiftsData || shiftsData.length === 0) return;
-        const escapeHtml = (s) => {
-            if (s == null) return '';
-            const str = String(s);
-            return str
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
-        };
-        const rows = [];
-        shiftsData.forEach((shift) => {
-            (shift.lineTasks || []).forEach((task) => {
-                (task.slots || []).forEach((slot) => {
-                    const name = slot.assigned?.name ?? slot.currentWorkerName ?? (slot.status === 'outsourced' ? 'Аутсорс' : '—');
-                    const role = slot.roleTitle || '—';
-                    const status = slot.status === 'outsourced' ? ' (аутсорс)' : slot.status === 'manual' ? ' (руч.)' : slot.status === 'reassigned' ? ' (авто)' : '';
-                    rows.push({
-                        shift: `${shift.name || shift.id} · ${shift.type || ''}`,
-                        line: task.displayName || '—',
-                        role: role,
-                        name: name,
-                        status
-                    });
-                });
-            });
-        });
-        const tableRows = rows
-            .map(
-                (r) =>
-                    `<tr><td>${escapeHtml(r.shift)}</td><td>${escapeHtml(r.line)}</td><td>${escapeHtml(r.role)}</td><td>${escapeHtml(r.name)}</td><td class="muted">${escapeHtml(r.status)}</td></tr>`
-            )
-            .join('');
-        const html = `<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Расстановка ${escapeHtml(selectedDate)}</title>
-<style>
-body { font-family: system-ui, -apple-system, sans-serif; margin: 1rem; color: #1e293b; }
-h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
-.muted { color: #64748b; font-size: 0.875rem; }
-table { border-collapse: collapse; width: 100%; max-width: 900px; }
-th, td { border: 1px solid #e2e8f0; padding: 0.5rem 0.75rem; text-align: left; }
-th { background: #f1f5f9; font-weight: 600; font-size: 0.875rem; }
-tr:nth-child(even) { background: #f8fafc; }
-</style>
-</head>
-<body>
-<h1>Расстановка на ${escapeHtml(selectedDate)}</h1>
-<table>
-<thead><tr><th>Смена</th><th>Линия</th><th>Роль</th><th>Сотрудник</th><th>Примечание</th></tr></thead>
-<tbody>${tableRows}</tbody>
-</table>
-</body>
-</html>`;
-        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const w = window.open(url, '_blank', 'noopener');
-        if (w) w.focus();
-        else location.href = url;
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-    }, [selectedDate, shiftsData]);
 
     const handleAssignFromContextMenu = (worker, slotId) => {
         const assignmentEntry = {
@@ -528,46 +448,8 @@ tr:nth-child(even) { background: #f8fafc; }
                 manualAssignments={manualAssignments}
                 autoReassignEnabled={autoReassignEnabled}
                 onToggleAutoReassign={setAutoReassignEnabled}
-                onBackup={backupAssignments}
-                onRestore={restoreAssignments}
                 onExportLines={exportScheduleByLinesToExcel}
             />
-            <div className="flex justify-end gap-2 mb-2">
-                <button
-                    type="button"
-                    onClick={openArrangementInNewTab}
-                    disabled={!shiftsData || shiftsData.length === 0}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Открыть текущую расстановку по выбранной дате в новой вкладке"
-                >
-                    <ExternalLink size={16} /> Расстановка в новой вкладке
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setViewMode?.('reports')}
-                    disabled={!shiftsData || shiftsData.length === 0}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-medium text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Перейти к сравнению основного и оперативного плана (текущая расстановка участвует, если этот план — основной или оперативный)"
-                >
-                    <ArrowRightLeft size={16} /> Отправить в сравнение
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setShowLineSourceModal(true)}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium text-sm transition-colors"
-                    title="Источник каждой линии (дебаг)"
-                >
-                    <Bug size={16} /> Источники линий
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setShowSlotSourceModal(true)}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-200 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 font-medium text-sm transition-colors"
-                    title="Источник каждого слота (дебаг)"
-                >
-                    <Bug size={16} /> Источники слотов
-                </button>
-            </div>
             {rvModalData && (
                 <RvPickerModal
                     isOpen={!!rvModalData}
@@ -579,114 +461,6 @@ tr:nth-child(even) { background: #f8fafc; }
                     scheduleDates={scheduleDates}
                     onAssign={handleAssignRv}
                 />
-            )}
-            {showLineSourceModal && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowLineSourceModal(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
-                            <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
-                                <Bug size={20} className="text-slate-500" />
-                                Источник каждой линии (дебаг)
-                            </h3>
-                            <button type="button" onClick={() => setShowLineSourceModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="p-4 overflow-auto flex-1 text-sm">
-                            <div className="text-slate-500 mb-4">Дата: <strong className="text-slate-700">{selectedDate}</strong></div>
-                            {shiftsData.map((shift) => (
-                                <div key={shift.id} className="mb-6 last:mb-0">
-                                    <div className="font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                                        <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded">Смена {shift.id}</span>
-                                        {shift.name} · {shift.type}
-                                    </div>
-                                    <ul className="space-y-1.5 border border-slate-100 rounded-lg bg-slate-50/50 p-3">
-                                        {(shift.lineTasks || []).map((task, idx) => {
-                                            const isManual = task.isManualLine || task.lineSource === 'manual';
-                                            const sourceLabel = isManual
-                                                ? `Ручная линия${task.manualLineId ? ` (id: ${task.manualLineId})` : ''}${task.templateName ? `, шаблон: ${task.templateName}` : ''}`
-                                                : `Матрица (лист Люд)${task.templateName ? `, шаблон: ${task.templateName}` : ''}${task.activeLineName ? `, активная линия: ${task.activeLineName}` : ''}`;
-                                            return (
-                                                <li key={idx} className="flex flex-wrap items-baseline gap-2">
-                                                    <span className="font-medium text-slate-800">{task.displayName || '—'}</span>
-                                                    <span className="text-slate-400">·</span>
-                                                    <span className={isManual ? 'text-indigo-600' : 'text-slate-600'}>{sourceLabel}</span>
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-            {showSlotSourceModal && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowSlotSourceModal(false)}>
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-indigo-50 rounded-t-2xl">
-                            <h3 className="font-bold text-lg text-indigo-900 flex items-center gap-2">
-                                <Bug size={20} className="text-indigo-600" />
-                                Источник каждого слота
-                            </h3>
-                            <button type="button" onClick={() => setShowSlotSourceModal(false)} className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200">
-                                <X size={20} />
-                            </button>
-                        </div>
-                        <div className="p-4 overflow-auto flex-1 text-sm">
-                            <div className="text-slate-500 mb-4">
-                                Дата: <strong className="text-slate-700">{selectedDate}</strong> · Автоподстановка: <strong>{autoReassignEnabled ? 'вкл' : 'выкл'}</strong>
-                                <span className="ml-4">Файл: <strong className="text-slate-700">{file?.name || '—'}</strong></span>
-                                <span className="ml-4">План: <strong className="text-slate-700">{savedPlans?.find(p => p.id === currentPlanId)?.name || currentPlanId || '—'}</strong></span>
-                            </div>
-                            <div className="mb-4 text-xs text-slate-500 bg-slate-50 p-3 rounded-lg">
-                                Источник: roster = rawTables.roster+demand, manual = manualAssignments, автоподстановка = из резерва, outsourced = аутсорс, vacancy = вакансия. Ручные линии = manualLines.
-                            </div>
-                            {shiftsData.map((shift) => (
-                                <div key={shift.id} className="mb-6 border border-slate-200 rounded-xl overflow-hidden">
-                                    <div className="px-4 py-2 bg-blue-50 font-semibold text-slate-700 flex items-center gap-2">
-                                        <span className="bg-blue-200 text-blue-800 px-2 py-0.5 rounded">Смена {shift.id}</span>
-                                        {shift.name} · {shift.type}
-                                    </div>
-                                    <div className="p-4 space-y-4">
-                                        {(shift.lineTasks || []).map((task, taskIdx) => (
-                                            <div key={taskIdx} className="border-l-2 border-slate-200 pl-3">
-                                                <div className="font-bold text-slate-700 mb-2">{task.displayName || '—'}</div>
-                                                <div className="space-y-1 flex flex-wrap gap-2">
-                                                    {                                                    task.slots.map((slot, sIdx) => {
-                                                        const sourceLabel = slot.status === 'filled' ? 'roster' :
-                                                            slot.status === 'reassigned' ? 'автоподстановка' :
-                                                            slot.status === 'manual' ? 'manual' :
-                                                            slot.status === 'outsourced' ? 'outsourced' :
-                                                            slot.isManualVacancy ? 'vacancy (закрыто)' : 'vacancy';
-                                                        const hasManual = slot.slotId && manualAssignments?.[slot.slotId];
-                                                        const dataModule = hasManual ? 'manualAssignments' : (task.isManualLine ? 'manualLines' : 'rawTables');
-                                                        const sourceColor = sourceLabel === 'roster' ? 'bg-emerald-100 text-emerald-700' :
-                                                            sourceLabel === 'автоподстановка' ? 'bg-blue-100 text-blue-700' :
-                                                            sourceLabel === 'manual' ? 'bg-indigo-100 text-indigo-700' :
-                                                            sourceLabel === 'outsourced' ? 'bg-amber-100 text-amber-700' :
-                                                            'bg-slate-100 text-slate-600';
-                                                        const name = slot.assigned?.name || slot.currentWorkerName || '(вакансия)';
-                                                        return (
-                                                            <div key={sIdx} className="inline-flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-100 text-xs">
-                                                                <span className="font-medium text-slate-700 min-w-[100px] truncate" title={slot.slotId}>{slot.roleTitle}</span>
-                                                                <span className={`font-semibold min-w-[100px] truncate ${slot.assigned || slot.currentWorkerName ? 'text-slate-800' : 'text-slate-400 italic'}`}>{name}</span>
-                                                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sourceColor}`}>{sourceLabel}</span>
-                                                                <span className="text-[10px] text-slate-500" title="файл/копия/модуль">
-                                                                    {file?.name || '—'} · {savedPlans?.find(p => p.id === currentPlanId)?.name || '—'} · {dataModule}
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
             )}
             <div className="space-y-12">
                 {shiftsData.map((shift) => {

@@ -1,7 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { Upload, FolderOpen, Star, ShieldCheck, Trash2, Save, AlertCircle, ArrowLeftRight, X, Plus, Minus, ArrowRight, RefreshCw, ChevronDown, ChevronRight, UserPlus, UserMinus } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import PinModal from '../common/PinModal';
 
 const PlansView = () => {
     const {
@@ -24,8 +23,6 @@ const PlansView = () => {
     const [compareOpen, setCompareOpen] = useState(false);
     const [compareResult, setCompareResult] = useState(null);
     const [collapsedGroups, setCollapsedGroups] = useState(new Set());
-    const [isPinModalOpen, setIsPinModalOpen] = useState(false);
-    const [pendingMasterPlanId, setPendingMasterPlanId] = useState(null);
     const [selectedPlanIds, setSelectedPlanIds] = useState(new Set());
 
     const activePlan = useMemo(
@@ -242,20 +239,6 @@ const PlansView = () => {
 
     return (
         <div className="h-full flex flex-col bg-slate-50">
-            <PinModal
-                isOpen={isPinModalOpen}
-                onClose={() => {
-                    setIsPinModalOpen(false);
-                    setPendingMasterPlanId(null);
-                }}
-                onSuccess={() => {
-                    if (pendingMasterPlanId) {
-                        setPlanType(pendingMasterPlanId, 'Master');
-                    }
-                    setIsPinModalOpen(false);
-                    setPendingMasterPlanId(null);
-                }}
-            />
             <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 flex-shrink-0">
                 <div className="flex items-center gap-3">
                     <div className="bg-blue-100 text-blue-700 p-2 rounded-lg">
@@ -425,10 +408,7 @@ const PlansView = () => {
                                                     Загрузить
                                                 </button>
                                                 <button
-                                                    onClick={() => {
-                                                        setPendingMasterPlanId(plan.id);
-                                                        setIsPinModalOpen(true);
-                                                    }}
+                                                    onClick={() => setPlanType(plan.id, 'Master')}
                                                     className="px-3 py-1.5 text-xs font-semibold bg-emerald-100 text-emerald-700 rounded-md hover:bg-emerald-200"
                                                 >
                                                     Сделать основным

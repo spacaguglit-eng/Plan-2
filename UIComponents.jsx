@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
     X, Search, ArrowRightLeft, Plus, CheckCircle2, 
     UserPlus, ToggleRight, ToggleLeft, Ban, GraduationCap, 
-    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2, Save, Undo2,
+    ChevronUp, ChevronDown, Edit3, AlertTriangle, Briefcase, Users, Trash2,
     FileSpreadsheet
 } from 'lucide-react';
 import { checkWorkerAvailability, getRealNeighborDateStrings } from './utils';
@@ -425,7 +425,7 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onBackup, onRestore, onExportLines }) => {
+export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onExportLines }) => {
     if (!stats || !shiftsData || shiftsData.length === 0) return null;
     
     return (
@@ -442,22 +442,6 @@ export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, au
                         />
                         <span>Автоподстановка</span>
                     </label>
-                    <button
-                        onClick={onBackup}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-green-100 text-green-700 hover:bg-green-200 rounded-lg border border-green-200 transition-colors"
-                        title="Сохранить текущую расстановку в резервную копию"
-                    >
-                        <Save size={14} />
-                        Сохранить в бэкап
-                    </button>
-                    <button
-                        onClick={onRestore}
-                        className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg border border-blue-200 transition-colors"
-                        title="Восстановить расстановку из резервной копии"
-                    >
-                        <Undo2 size={14} />
-                        Восстановить из бэкапа
-                    </button>
                     {onExportLines && (
                         <button
                             onClick={onExportLines}

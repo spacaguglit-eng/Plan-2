@@ -1,30 +1,24 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, useMemo } from 'react';
-import { STORAGE_KEYS, saveToLocalStorage, loadFromLocalStorage } from '../utils';
+import { STORAGE_KEYS } from '../utils';
 import {
     subscribeToRemoteState,
     isRemoteStorageEnabled,
     setRemoteLogCallback,
-    setRemoteEnabledByUser,
     setRemoteFlushSuccessCallback,
     saveRemoteStateKey,
-    writeFullRemoteState,
     getClientId,
     wipeRemoteStorage
 } from '../services/remoteStorage';
 const SyncContext = createContext(null);
 
 /**
- * Вся логика синхронизации с облаком в одном месте:
+ * Логика синхронизации с облаком:
  * - подписка на удалённый снапшот
  * - pending-обновления и их сброс при совпадении с remote
- * - persistStateKey (облако или localStorage)
- * - pushLocalToCloud (полная выгрузка локального состояния)
+ * - persistStateKey — запись в облако
  * - статус и лог синхронизации
  */
 export const SyncProvider = ({ children }) => {
-    const [useRemoteStorage, setUseRemoteStorage] = useState(() =>
-        loadFromLocalStorage(STORAGE_KEYS.STORAGE_MODE, true)
-    );
     const [syncStatus, setSyncStatus] = useState('idle'); // 'idle' | 'syncing' | 'saved' | 'error'
     const [syncLog, setSyncLog] = useState([]);
     const [showSyncLog, setShowSyncLog] = useState(false);
@@ -45,7 +39,7 @@ export const SyncProvider = ({ children }) => {
 
     // Подписка на удалённый снапшот
     useEffect(() => {
-        if (!isRemoteStorageEnabled() || !useRemoteStorage) {
+        if (!isRemoteStorageEnabled()) {
             setRemoteSnapshot(null);
             return () => {};
         }
@@ -53,7 +47,7 @@ export const SyncProvider = ({ children }) => {
             setRemoteSnapshot(parsed);
         });
         return () => unsubscribe();
-    }, [useRemoteStorage]);
+    }, []);
 
     // Лог сообщений от remoteStorage
     useEffect(() => {
@@ -71,66 +65,29 @@ export const SyncProvider = ({ children }) => {
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
 
-    // Режим облака: синхронизируем с localStorage и сервисом
-    useEffect(() => {
-        setRemoteEnabledByUser(useRemoteStorage);
-        saveToLocalStorage(STORAGE_KEYS.STORAGE_MODE, useRemoteStorage);
-    }, [useRemoteStorage]);
-
     const persistStateKey = useCallback((key, value) => {
-        if (useRemoteStorage) {
-            const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
-            pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
-            pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
-            setPendingUpdates((prev) => ({ ...prev, [key]: value }));
-            setPendingMeta((prev) => ({ ...prev, [key]: meta }));
-            saveRemoteStateKey(key, value, meta).catch((err) =>
-                console.error(`Error saving ${key} to remote:`, err)
-            );
-        } else {
-            saveToLocalStorage(key, value);
-        }
-    }, [useRemoteStorage]);
-
-    const pushLocalToCloud = useCallback(
-        async (getFullState) => {
-            if (!isRemoteStorageEnabled()) {
-                return { ok: false, error: 'no_config' };
-            }
-            if (typeof getFullState !== 'function') {
-                return { ok: false, error: 'no_getter' };
-            }
-            setSyncStatus('syncing');
-            try {
-                const result = getFullState();
-                const stateObj = result?.stateObj != null ? result.stateObj : result;
-                const revsPerKey = result?.revsPerKey != null ? result.revsPerKey : {};
-                const keysWritten = await writeFullRemoteState(stateObj, revsPerKey);
-                setSyncStatus('saved');
-                setTimeout(() => setSyncStatus('idle'), 1200);
-                return { ok: true, keysWritten: keysWritten ?? 0 };
-            } catch (err) {
-                setSyncStatus('error');
-                return { ok: false, error: err?.message };
-            }
-        },
-        []
-    );
+        const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
+        pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
+        pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
+        setPendingUpdates((prev) => ({ ...prev, [key]: value }));
+        setPendingMeta((prev) => ({ ...prev, [key]: meta }));
+        saveRemoteStateKey(key, value, meta).catch((err) =>
+            console.error(`Error saving ${key} to remote:`, err)
+        );
+    }, []);
 
     const cloudStatus = useMemo(() => {
-        if (!useRemoteStorage || !isRemoteStorageEnabled()) return { status: 'off' };
+        if (!isRemoteStorageEnabled()) return { status: 'off' };
         if (remoteSnapshot === null) return { status: 'loading' };
         const plans = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
         if (Array.isArray(plans) && plans.length > 0) return { status: 'has_data', planCount: plans.length };
         const keys = Object.keys(remoteSnapshot || {}).filter((k) => k !== 'updatedAt');
         if (keys.length > 0) return { status: 'has_data' };
         return { status: 'empty' };
-    }, [useRemoteStorage, remoteSnapshot, unwrapSnapshotValue]);
+    }, [remoteSnapshot, unwrapSnapshotValue]);
 
     const value = useMemo(
         () => ({
-            useRemoteStorage,
-            setUseRemoteStorage,
             syncStatus,
             setSyncStatus,
             syncLog,
@@ -148,13 +105,11 @@ export const SyncProvider = ({ children }) => {
             clientIdRef,
             unwrapSnapshotValue,
             persistStateKey,
-            pushLocalToCloud,
             cloudStatus,
             isRemoteStorageEnabled,
             wipeRemoteStorage
         }),
         [
-            useRemoteStorage,
             syncStatus,
             syncLog,
             showSyncLog,
@@ -163,7 +118,6 @@ export const SyncProvider = ({ children }) => {
             pendingMeta,
             unwrapSnapshotValue,
             persistStateKey,
-            pushLocalToCloud,
             cloudStatus
         ]
     );

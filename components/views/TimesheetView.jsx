@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Filter, Search, Download, X, Plus, CheckCircle2, XCircle, Clock, AlertTriangle, GraduationCap, ChevronDown, Copy } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
 
 const TimesheetView = () => {
     const {
@@ -23,11 +21,8 @@ const TimesheetView = () => {
         factData,
         cloneCountsByName,
         cloneDatesByName,
-        viewMode,
         getShiftsForDate
     } = useData();
-
-    useRenderTime('chess', logPerformanceMetric, viewMode === 'chess');
 
     const ROW_HEIGHT_PX = 40;
     const OVERSCAN_ROWS = 12;

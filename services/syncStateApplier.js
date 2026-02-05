@@ -20,7 +20,7 @@ function maybeMergePendingPlanningState(plans, currentPlanId, pendingPlanningSta
 /**
  * Применяет удалённый снапшот к состоянию приложения.
  * @param {Object} snapshot — распарсенный объект из Firestore (ключи STORAGE_KEYS, значения уже объекты/массивы)
- * @param {Object} ctx — контекст: сеттеры (setSavedPlans, setCurrentPlanId, …), applyPlanData, loadFromLocalStorage, hydrateWorkerRegistry, serializeWorkerRegistry, setSavedPlansSourceRef
+ * @param {Object} ctx — контекст: сеттеры, applyPlanData, getCurrentPlans (текущие планы в памяти), hydrateWorkerRegistry, serializeWorkerRegistry, setSavedPlansSourceRef
  */
 export function applyRemoteSnapshot(snapshot, ctx) {
     if (!snapshot) return;
@@ -40,8 +40,13 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         setLineTemplates,
         setFloaters,
         setWorkerRegistry,
+        setAllEmployees,
+        setDepartmentMasterList,
+        setPlanningState,
+        setProductionResults,
+        setProductionExcludedDowntimeTypes,
         applyPlanData,
-        loadFromLocalStorage,
+        getCurrentPlans,
         hydrateWorkerRegistry,
         serializeWorkerRegistry,
         setSavedPlansSourceRef,
@@ -157,7 +162,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
             });
 
             const preferLocal = (() => {
-                const local = loadFromLocalStorage(STORAGE_KEYS.SAVED_PLANS, []);
+                const local = (typeof getCurrentPlans === 'function' ? getCurrentPlans() : null) || [];
                 if (!Array.isArray(local) || local.length === 0) return false;
                 if (local.length > remotePlans.length) return true;
                 if (remotePlans.some((rp) => !hasPlanEvents(rp)) && local.some(hasPlanEvents)) return true;
@@ -200,6 +205,11 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     applyField(STORAGE_KEYS.PLAN_HASHES, setPlanHashes);
     applyField(STORAGE_KEYS.LINE_TEMPLATES, setLineTemplates);
     applyField(STORAGE_KEYS.FLOATERS, setFloaters);
+    if (setAllEmployees) applyField(STORAGE_KEYS.ALL_EMPLOYEES, setAllEmployees);
+    if (setDepartmentMasterList) applyField(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, setDepartmentMasterList);
+    if (setPlanningState) applyField(STORAGE_KEYS.PLANNING_STATE, setPlanningState);
+    if (setProductionResults) applyField(STORAGE_KEYS.PRODUCTION_RESULTS, setProductionResults);
+    if (setProductionExcludedDowntimeTypes) applyField(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, setProductionExcludedDowntimeTypes);
 
     const serializedRegistry = snapshot[STORAGE_KEYS.WORKER_REGISTRY];
     if (serializedRegistry) {
@@ -215,7 +225,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     }
 
     if (skippedKeys.length > 0) {
-        const msg = `REMOTE SYNC: пропущены поля (локальные pending/ревизия новее) [${currentClientId ?? 'unknown'}]: ${skippedKeys.join(', ')}`;
+        const msg = `REMOTE SYNC: пропущены поля (pending/ревизия новее) [${currentClientId ?? 'unknown'}]: ${skippedKeys.join(', ')}`;
         if (typeof addSyncLogMessage === 'function') {
             addSyncLogMessage({ id: `sync-skip-${Date.now()}`, type: 'info', message: msg, timestamp: new Date().toISOString() });
         }

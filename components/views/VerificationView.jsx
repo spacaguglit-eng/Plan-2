@@ -2,9 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle, Edit3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, loadFromLocalStorage, normalizeName, matchNames, parseCellStrict } from '../../utils';
-import { useRenderTime } from '../../PerformanceMonitor';
-import { logPerformanceMetric } from '../../performanceStore';
+import { STORAGE_KEYS, normalizeName, matchNames, parseCellStrict } from '../../utils';
 
 const VerificationView = () => {
     const {
@@ -14,11 +12,12 @@ const VerificationView = () => {
         setFactData,
         factDates,
         setFactDates,
-        viewMode,
+        allEmployees: allEmployeesData,
+        setAllEmployees,
+        departmentMasterList,
+        setDepartmentMasterList,
         persistStateKey
     } = useData();
-
-    useRenderTime('verification', logPerformanceMetric, viewMode === 'verification');
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');
     const [isLoading, setIsLoading] = useState(false);
@@ -29,7 +28,6 @@ const VerificationView = () => {
     const [statusFilter, setStatusFilter] = useState('all');
     const [search, setSearch] = useState('');
     const [departmentFilter, setDepartmentFilter] = useState('all');
-    const [allEmployeesData, setAllEmployeesData] = useState({});
     const [visibleCount, setVisibleCount] = useState(50);
     const USE_VERIFICATION_WORKER = true;
     const [verificationWorkerResult, setVerificationWorkerResult] = useState(null);
@@ -44,64 +42,10 @@ const VerificationView = () => {
     const [editingDepartment, setEditingDepartment] = useState(null);
     const [departmentInput, setDepartmentInput] = useState('');
     const originalDepartmentRef = useRef(null);
-    const [departmentMasterList, setDepartmentMasterList] = useState([]);
 
-    // Загружаем данные об отделениях из localStorage
     useEffect(() => {
         isMountedRef.current = true;
-        const saved = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-        setAllEmployeesData(saved);
-        
-        // Load department master list
-        const masterList = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
-        if (masterList) {
-            setDepartmentMasterList(masterList);
-        }
-        
-        const handleStorageChange = (e) => {
-            if (e.key === STORAGE_KEYS.ALL_EMPLOYEES && isMountedRef.current) {
-                const updated = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-                setAllEmployeesData(updated);
-            }
-            if (e.key === STORAGE_KEYS.DEPARTMENT_MASTER_LIST && isMountedRef.current) {
-                const updated = loadFromLocalStorage(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
-                if (updated) {
-                    setDepartmentMasterList(updated);
-                }
-            }
-        };
-        
-        window.addEventListener('storage', handleStorageChange);
-        
-        let focusTimeout;
-        const handleFocus = () => {
-            if (!isMountedRef.current || document.hidden) return;
-            clearTimeout(focusTimeout);
-            focusTimeout = setTimeout(() => {
-                if (isMountedRef.current) {
-                    const updated = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-                    setAllEmployeesData(updated);
-                }
-            }, 300);
-        };
-        
-        const handleVisibilityChange = () => {
-            if (!document.hidden && isMountedRef.current) {
-                const updated = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-                setAllEmployeesData(updated);
-            }
-        };
-        
-        window.addEventListener('focus', handleFocus);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        
-        return () => {
-            isMountedRef.current = false;
-            window.removeEventListener('storage', handleStorageChange);
-            window.removeEventListener('focus', handleFocus);
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            clearTimeout(focusTimeout);
-        };
+        return () => { isMountedRef.current = false; };
     }, []);
 
     useEffect(() => {
@@ -397,32 +341,29 @@ const VerificationView = () => {
                 persistStateKey(STORAGE_KEYS.FACT_DATA, parsedFact);
                 persistStateKey(STORAGE_KEYS.FACT_DATES, allDates);
                 
-                // Sync employees from SCUD data to allEmployeesData
-                const currentEmployees = loadFromLocalStorage(STORAGE_KEYS.ALL_EMPLOYEES, {});
-                let employeesUpdated = false;
-                
-                Object.values(parsedFact).forEach(dateData => {
-                    if (!dateData || typeof dateData !== 'object') return;
-                    Object.values(dateData).forEach(entry => {
-                        if (entry && entry.rawName) {
-                            const normName = normalizeName(entry.rawName);
-                            if (!currentEmployees[normName]) {
-                                currentEmployees[normName] = {
-                                    name: entry.rawName,
-                                    role: 'Не указано',
-                                    department: '',
-                                    source: 'СКУД'
-                                };
-                                employeesUpdated = true;
+                // Sync employees from SCUD data to allEmployees
+                setAllEmployees(prev => {
+                    let employeesUpdated = false;
+                    const currentEmployees = { ...prev };
+                    Object.values(parsedFact).forEach(dateData => {
+                        if (!dateData || typeof dateData !== 'object') return;
+                        Object.values(dateData).forEach(entry => {
+                            if (entry && entry.rawName) {
+                                const normName = normalizeName(entry.rawName);
+                                if (!currentEmployees[normName]) {
+                                    currentEmployees[normName] = {
+                                        name: entry.rawName,
+                                        role: 'Не указано',
+                                        department: '',
+                                        source: 'СКУД'
+                                    };
+                                    employeesUpdated = true;
+                                }
                             }
-                        }
+                        });
                     });
+                    return employeesUpdated ? currentEmployees : prev;
                 });
-                
-                if (employeesUpdated) {
-                    persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, currentEmployees);
-                    setAllEmployeesData(currentEmployees);
-                }
                 
                 if (allDates.length > 0) setSelectedDate(allDates[0]);
 
@@ -850,7 +791,7 @@ const VerificationView = () => {
             'Бухгалтерия', 'Склад', 'Линия 1', 'Линия 2', 'Линия 3', 'Линия 4', 
             'Администрация', 'ОТК', 'Ремонт', 'Энергетика', 'Транспорт', 'Охрана'
         ];
-        const suggestions = [...(departmentMasterList.length > 0 ? departmentMasterList : defaults)];
+        const suggestions = [...(Array.isArray(departmentMasterList) && departmentMasterList.length > 0 ? departmentMasterList : defaults)];
         // Add existing departments from data for backward compatibility
         departments.forEach(dept => {
             if (!suggestions.includes(dept)) {
@@ -864,17 +805,13 @@ const VerificationView = () => {
         const normName = normalizeName(employeeName);
         // If input is empty and we have an original value, restore it; otherwise use the new value
         const finalDepartment = newDepartment.trim() || (originalDepartmentRef.current || '');
-        setAllEmployeesData(prev => {
-            const updated = {
-                ...prev,
-                [normName]: {
-                    ...(prev[normName] || { name: employeeName }),
-                    department: finalDepartment
-                }
-            };
-            persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, updated);
-            return updated;
-        });
+        setAllEmployees(prev => ({
+            ...prev,
+            [normName]: {
+                ...(prev[normName] || { name: employeeName }),
+                department: finalDepartment
+            }
+        }));
         setEditingDepartment(null);
         setDepartmentInput('');
         originalDepartmentRef.current = null;

@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, CalendarDays, Droplet, Plus, Clock4, Database, GripVertical, Trash2, BarChart2, Package, Zap, Beaker, GitBranch, ChevronDown, ChevronRight, Replace } from 'lucide-react';
-import { STORAGE_KEYS, loadFromLocalStorage, saveToLocalStorage, debounce, isLineMatch, expandCompositeLineKey } from '../../utils';
+import { Calendar, Droplet, Plus, Clock4, Database, GripVertical, Trash2, BarChart2, Package, Zap, Beaker, GitBranch, ChevronDown, ChevronRight, Replace } from 'lucide-react';
+import { STORAGE_KEYS, debounce, isLineMatch, expandCompositeLineKey } from '../../utils';
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
-import CalendarTab from './CalendarTab';
 
 const DEFAULT_LINE_OPTIONS = [
     'Линия 1',
@@ -430,11 +429,7 @@ const DEFAULT_LINE_EVENTS = [
 ];
 
 const PlanningView = () => {
-    const storedPlanning = useMemo(
-        () => loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {}),
-        []
-    );
-    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, persistStateKey, updatePlanPlanningState } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState } = useData();
     const getTemplateKeyForLine = useCallback((line) => {
         if (!line || !lineTemplates) return line;
         const key = Object.keys(lineTemplates).find((k) => isLineMatch(line, k));
@@ -901,7 +896,7 @@ const PlanningView = () => {
                 skipNextLocalStorageApplyRef.current = false;
                 return;
             }
-            const loaded = loadFromLocalStorage(STORAGE_KEYS.PLANNING_STATE, {});
+            const loaded = storedPlanning;
             if (!loaded || typeof loaded !== 'object') return;
             if (Array.isArray(loaded.products)) setProducts(loaded.products);
             if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
@@ -916,7 +911,7 @@ const PlanningView = () => {
             if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
             if (loaded.lineWorkDates && typeof loaded.lineWorkDates === 'object') setLineWorkDates(loaded.lineWorkDates);
         }
-    }, [planningStateVersion, planningStateToLoad, setPlanningStateToLoad]);
+    }, [planningStateVersion, planningStateToLoad, setPlanningStateToLoad, storedPlanning]);
 
     useEffect(() => {
         if (activeTab === 'schedule' && currentPlanId && activePlanHasQueue) {
@@ -1939,9 +1934,9 @@ const PlanningView = () => {
     const joinUnique = (items) => Array.from(new Set(items.filter(Boolean))).join(', ');
 
     const buildRosterFromDistribution = () => {
-        const sourceLineTemplates = loadFromLocalStorage(STORAGE_KEYS.LINE_TEMPLATES, {});
-        const sourceFloaters = loadFromLocalStorage(STORAGE_KEYS.FLOATERS, { day: [], night: [] });
-        const sourceWorkerRegistry = loadFromLocalStorage(STORAGE_KEYS.WORKER_REGISTRY, {});
+        const sourceLineTemplates = lineTemplates || {};
+        const sourceFloaters = floaters || { day: [], night: [] };
+        const sourceWorkerRegistry = workerRegistry || {};
 
         const header = new Array(19).fill('');
         header[4] = 'Линия';
@@ -2188,36 +2183,6 @@ const PlanningView = () => {
         return sorted.length > 0 ? sorted : lineOptions;
     }, [products, cipBetween, lineOptions]);
 
-    const ganttSections = useMemo(() => {
-        return linesFromGraph.map((line) => {
-            const missing = buildMissingTransitionMap(line);
-            const rows = buildRows(products, cipBetween, line, missing);
-            const anchorIndex = rows.findIndex((r) => r.manualStart || r.manualEnd);
-            const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
-            return {
-                line,
-                rows: scheduled.map((row) => {
-                    const absStart = buildAbsMinutes(row.date, row.start);
-                    const endDate = row.endDate && row.endDate !== row.date ? row.endDate : row.date;
-                    const absEndRaw = buildAbsMinutes(endDate, row.end);
-                    const absEnd = (absEndRaw != null && absEndRaw > (absStart ?? 0))
-                        ? absEndRaw
-                        : (absStart ?? 0) + (row.durationMinutes || 0);
-                    return {
-                        date: row.date,
-                        start: row.start,
-                        end: row.end,
-                        absStart: absStart ?? 0,
-                        absEnd,
-                        label: row.kind === 'cip' ? (eventLabelByKey[row.eventKey] || row.eventKey || 'CIP') : row.name,
-                        kind: row.kind,
-                        durationMinutes: row.durationMinutes
-                    };
-                })
-            };
-        });
-    }, [linesFromGraph, products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap, eventLabelByKey]);
-
     useEffect(() => {
         const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
@@ -2307,7 +2272,6 @@ const PlanningView = () => {
 
     const tabItems = [
         { id: 'schedule', label: 'График', icon: BarChart2 },
-        { id: 'calendar', label: 'Календарь', icon: CalendarDays },
         { id: 'products', label: 'База продуктов', icon: Package },
         { id: 'speeds', label: 'Скорости', icon: Zap },
         { id: 'cips', label: 'CIP', icon: Beaker },
@@ -2424,12 +2388,6 @@ const PlanningView = () => {
                         </button>
                     ))}
                 </nav>
-
-                {visitedTabs.calendar && (
-                    <div style={{ display: activeTab === 'calendar' ? 'block' : 'none' }}>
-                        <CalendarTab ganttSections={ganttSections} />
-                    </div>
-                )}
 
                 {visitedTabs.products && (
                     <div style={{ display: activeTab === 'products' ? 'block' : 'none' }}>
