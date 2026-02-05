@@ -76,7 +76,7 @@ export const DataProvider = ({ children }) => {
     const [scheduleDates, setScheduleDates] = useState([]);
     const [planHashes, setPlanHashes] = useState({});
 
-    // Multi-plan management (при sync on заполняется из облака, при sync off — в restoreData из localStorage)
+    // Multi-plan: при sync on — из облака (каждый план отдельный документ в БД), при sync off — пустой список
     const [savedPlans, setSavedPlans] = useState([]);
     const savedPlansSourceRef = useRef(null);
     const savedPlansRef = useRef([]);
@@ -134,9 +134,19 @@ export const DataProvider = ({ children }) => {
     const chessTableWorkerRef = useRef(null);
     const chessTableWorkerReqIdRef = useRef(0);
 
-    // Verification (SCUD)
-    const [factData, setFactData] = useState(null);
-    const [factDates, setFactDates] = useState([]);
+    // Verification (СКУД) — один для всех планов, сохраняется в облако
+    const [factData, setFactDataState] = useState(null);
+    const [factDates, setFactDatesState] = useState([]);
+    const setFactData = useCallback((value) => {
+        const next = typeof value === 'function' ? value(factData) : value;
+        setFactDataState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.FACT_DATA, next);
+    }, [factData, restoring, persistStateKey]);
+    const setFactDates = useCallback((value) => {
+        const next = typeof value === 'function' ? value(factDates) : value;
+        setFactDatesState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.FACT_DATES, next);
+    }, [factDates, restoring, persistStateKey]);
 
     // Глобальные данные (облако)
     const [allEmployees, setAllEmployeesState] = useState({});
@@ -186,9 +196,17 @@ export const DataProvider = ({ children }) => {
                 const cached = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.SAVED_PLANS]).value;
                 if (Array.isArray(cached)) setSavedPlans(cached);
             }
+            if (failedKeys.includes(STORAGE_KEYS.FACT_DATA) && !(STORAGE_KEYS.FACT_DATA in pending)) {
+                const cached = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.FACT_DATA]).value;
+                if (cached != null) setFactData(cached);
+            }
+            if (failedKeys.includes(STORAGE_KEYS.FACT_DATES) && !(STORAGE_KEYS.FACT_DATES in pending)) {
+                const cached = unwrapSnapshotValue(remoteSnapshot?.[STORAGE_KEYS.FACT_DATES]).value;
+                if (Array.isArray(cached)) setFactDates(cached);
+            }
         });
         return () => setRemoteFlushErrorCallback(null);
-    }, [remoteSnapshot, notify, unwrapSnapshotValue, setSyncStatus]);
+    }, [remoteSnapshot, notify, unwrapSnapshotValue, setSyncStatus, setFactData, setFactDates]);
 
     const isReadOnly = false;
 
@@ -1471,8 +1489,7 @@ export const DataProvider = ({ children }) => {
             setManualAssignments({});
             setManualLines({});
             setAssignmentClones({});
-            setFactData(null);
-            setFactDates([]);
+            // СКУД не сбрасываем — один для всех планов
             setWorkerRegistry({});
             setLineTemplates({});
             setFloaters({ day: [], night: [] });
@@ -1562,7 +1579,7 @@ export const DataProvider = ({ children }) => {
         manualLines
     ]);
 
-    // Автозагрузка последнего активного плана после восстановления (localStorage или облако).
+    // Автозагрузка последнего активного плана после восстановления из облака.
     useEffect(() => {
         if (restoring) return;
         if (hasAutoLoadedLastPlanRef.current) return;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { FileCheck, Upload, Loader2, Search, Filter, X, CheckCircle2, XCircle, Clock, AlertTriangle, Download, Calendar, Plus, Trash2, UserPlus, AlertCircle, Edit3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useData } from '../../context/DataContext';
-import { STORAGE_KEYS, normalizeName, matchNames, parseCellStrict } from '../../utils';
+import { normalizeName, matchNames, parseCellStrict } from '../../utils';
 
 const VerificationView = () => {
     const {
@@ -15,8 +15,7 @@ const VerificationView = () => {
         allEmployees: allEmployeesData,
         setAllEmployees,
         departmentMasterList,
-        setDepartmentMasterList,
-        persistStateKey
+        setDepartmentMasterList
     } = useData();
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');
@@ -337,10 +336,8 @@ const VerificationView = () => {
                 
                 setFactData(parsedFact);
                 setFactDates(allDates);
-                
-                persistStateKey(STORAGE_KEYS.FACT_DATA, parsedFact);
-                persistStateKey(STORAGE_KEYS.FACT_DATES, allDates);
-                
+                // СКУД сохраняется в облако через обёртки setFactData/setFactDates
+
                 // Sync employees from SCUD data to allEmployees
                 setAllEmployees(prev => {
                     let employeesUpdated = false;
@@ -896,8 +893,6 @@ const VerificationView = () => {
                     <button onClick={() => {
                         setFactData(null);
                         setFactDates([]);
-                        persistStateKey(STORAGE_KEYS.FACT_DATA, null);
-                        persistStateKey(STORAGE_KEYS.FACT_DATES, []);
                     }} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-colors" title="Сбросить файл">
                         <Trash2 size={20} />
                     </button>

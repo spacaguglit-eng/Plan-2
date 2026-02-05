@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Loader2, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2 } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2 } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
 
@@ -124,13 +124,8 @@ export default function App() {
                             </div>
                             <div className="flex items-center gap-3">
                                 <div className="flex items-center gap-2 mr-4">
-                                    {syncStatus === 'syncing' && (
-                                        <div className="text-xs text-blue-500 flex items-center gap-1" title="Синхронизация...">
-                                            <Loader2 size={12} className="animate-spin" />
-                                        </div>
-                                    )}
                                     {syncStatus === 'error' && (
-                                        <div className="text-xs text-red-500 flex items-center gap-1" title="Ошибка сохранения">
+                                        <div className="text-xs text-red-500 flex items-center gap-1" title="Ошибка сохранения в облако">
                                             <AlertCircle size={14} />
                                         </div>
                                     )}

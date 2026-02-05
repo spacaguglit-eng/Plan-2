@@ -1,19 +1,21 @@
+import { STORAGE_KEYS } from '../utils';
 import {
-    readFirestoreDoc,
     readFirestoreCollection,
     writeFirestoreDoc,
     deleteFirestoreDoc,
     isFirebaseConfigured,
-    subscribeToFirestoreDoc,
     subscribeToFirestoreCollection
 } from './firebaseService';
 
 const FIRESTORE_COLLECTION = import.meta.env.VITE_FIREBASE_STATE_COLLECTION || 'plan_state';
 const FIRESTORE_DOCUMENT = import.meta.env.VITE_FIREBASE_STATE_DOC_ID || 'shared';
 const DOC_PREFIX = `${FIRESTORE_DOCUMENT}_`;
+const PLAN_LIST_DOC_ID = `${DOC_PREFIX}plan_list`;
+/** Ид документа плана в Firestore = planId (например plan_123_abc). Отличаем от shared-ключей: shared всегда с DOC_PREFIX. */
+const isPlanDocId = (id) => id && id.startsWith('plan_') && !id.startsWith(DOC_PREFIX);
 const CLIENT_ID_KEY = 'plan_sync_client_id';
 
-/** Собирает из массива документов коллекции один объект { key: rawEnvelope }. Поддерживает старый один документ "shared" и новый формат shared_key. */
+/** Собирает из массива документов коллекции объект state. Shared-ключи: shared_key → key. Каждый план — отдельный документ planId → value. */
 const mergeDocsToState = (docs) => {
     const state = {};
     if (!Array.isArray(docs)) return state;
@@ -26,6 +28,8 @@ const mergeDocsToState = (docs) => {
                 if (k === 'updatedAt') return;
                 state[k] = data[k];
             });
+        } else if (isPlanDocId(id) && data && typeof data.value !== 'undefined') {
+            state[id] = data.value;
         }
     });
     return state;
@@ -106,6 +110,25 @@ const addLog = (type, message) => {
     }
 };
 
+/** Запись планов в Firestore: один документ plan_list (метаданные) + один документ на каждый план. Удаление документов удалённых планов. */
+const writePlansToFirestore = async (plans) => {
+    if (!Array.isArray(plans)) return;
+    const docs = await readFirestoreCollection(FIRESTORE_COLLECTION);
+    const existingPlanIds = docs.filter((d) => isPlanDocId(d.id)).map((d) => d.id);
+    const newPlanIds = plans.map((p) => p.id);
+    const toDelete = existingPlanIds.filter((id) => !newPlanIds.includes(id));
+    for (const id of toDelete) {
+        await deleteFirestoreDoc(FIRESTORE_COLLECTION, id);
+    }
+    const planListMeta = plans.map((p) => ({ id: p.id, name: p.name, createdAt: p.createdAt, type: p.type }));
+    const planListEnvelope = buildEnvelope(STORAGE_KEYS.SAVED_PLANS, planListMeta);
+    await writeFirestoreDoc(FIRESTORE_COLLECTION, PLAN_LIST_DOC_ID, { value: JSON.stringify(planListEnvelope) });
+    for (const plan of plans) {
+        const envelope = buildEnvelope(plan.id, plan);
+        await writeFirestoreDoc(FIRESTORE_COLLECTION, plan.id, { value: JSON.stringify(envelope) });
+    }
+};
+
 // Queue for debounced updates
 let updateQueue = {};
 let syncTimeout = null;
@@ -149,6 +172,23 @@ const flushQueue = async () => {
 
         if (Object.keys(trulyChangedData).length === 0) return;
 
+        const savedPlansRaw = trulyChangedData[STORAGE_KEYS.SAVED_PLANS];
+        if (savedPlansRaw) {
+            try {
+                const envelope = JSON.parse(savedPlansRaw);
+                const plans = envelope?.value;
+                if (Array.isArray(plans)) {
+                    addLog('syncing', `Синхронизация планов (${plans.length} шт.)...`);
+                    await writePlansToFirestore(plans);
+                    lastKnownState[STORAGE_KEYS.SAVED_PLANS] = savedPlansRaw;
+                    lastKnownValueContent[STORAGE_KEYS.SAVED_PLANS] = JSON.stringify(plans);
+                    delete trulyChangedData[STORAGE_KEYS.SAVED_PLANS];
+                }
+            } catch (e) {
+                console.error('writePlansToFirestore failed:', e);
+            }
+        }
+
         Object.keys(trulyChangedData).forEach((key) => {
             try {
                 const envelope = JSON.parse(trulyChangedData[key]);
@@ -157,12 +197,16 @@ const flushQueue = async () => {
                 }
             } catch (_) {}
         });
-        addLog('syncing', `Синхронизация изменений (${Object.keys(trulyChangedData).join(', ')})...`);
-        for (const key of Object.keys(trulyChangedData)) {
-            await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: trulyChangedData[key] });
+        const keysToSync = Object.keys(trulyChangedData);
+        if (keysToSync.length > 0) {
+            addLog('syncing', `Синхронизация изменений (${keysToSync.join(', ')})...`);
+            for (const key of keysToSync) {
+                await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: trulyChangedData[key] });
+            }
         }
         addLog('success', 'Облако успешно обновлено');
-        flushSuccessCallback?.(Object.keys(trulyChangedData));
+        const allSyncedKeys = savedPlansRaw ? [STORAGE_KEYS.SAVED_PLANS, ...keysToSync] : keysToSync;
+        flushSuccessCallback?.(allSyncedKeys);
     } catch (err) {
         console.error('Batch sync failed:', err);
         addLog('error', `Ошибка синхронизации: ${err.message}`);
@@ -199,10 +243,10 @@ export const saveRemoteStateKey = async (key, value, meta) => {
     }
     
     updateQueue[key] = serializedValue;
-    
-    // Reset debounce timer — короткая задержка для бесшовной синхронизации
+
+    // Мгновенная запись в фоне: батчинг только в рамках одного тика (без задержки 400ms)
     if (syncTimeout) clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(flushQueue, 400);
+    syncTimeout = setTimeout(flushQueue, 0);
 };
 
 export const loadRemoteState = async () => {
@@ -223,12 +267,57 @@ export const loadRemoteState = async () => {
                 } catch (_) {}
             });
         }
-        return parseRemoteData(data);
+        const parsed = parseRemoteData(data);
+        const savedPlans = parsed[STORAGE_KEYS.SAVED_PLANS]?.value;
+        if (Array.isArray(savedPlans)) {
+            lastKnownValueContent[STORAGE_KEYS.SAVED_PLANS] = JSON.stringify(savedPlans);
+        }
+        return parsed;
     } catch (err) {
         console.error('Failed to load remote state:', err);
         addLog('error', `Ошибка загрузки: ${err.message}`);
         return null;
     }
+};
+
+/** Собирает массив планов из plan_list + отдельных документов планов. Поддержка legacy: один документ plan_saved_plans. */
+const buildSavedPlansFromState = (data) => {
+    const planListRaw = data?.plan_list;
+    if (planListRaw != null) {
+        let metaList;
+        try {
+            const parsed = typeof planListRaw === 'string' ? JSON.parse(planListRaw) : planListRaw;
+            metaList = (parsed && typeof parsed.value !== 'undefined') ? parsed.value : parsed;
+        } catch {
+            metaList = null;
+        }
+        if (Array.isArray(metaList) && metaList.length > 0) {
+            const plans = [];
+            for (const meta of metaList) {
+                const planId = meta?.id;
+                if (!planId) continue;
+                const raw = data[planId];
+                if (raw == null) continue;
+                try {
+                    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    const envelope = normalizeEnvelope(parsed);
+                    if (envelope.value != null) plans.push(envelope.value);
+                } catch {
+                    // пропуск битого плана
+                }
+            }
+            if (plans.length > 0) return plans;
+        }
+    }
+    const legacyRaw = data?.plan_saved_plans;
+    if (legacyRaw != null) {
+        try {
+            const parsed = typeof legacyRaw === 'string' ? JSON.parse(legacyRaw) : legacyRaw;
+            const envelope = normalizeEnvelope(parsed);
+            if (Array.isArray(envelope.value)) return envelope.value;
+        } catch {}
+    }
+    return null;
 };
 
 const parseRemoteData = (data) => {
@@ -239,6 +328,7 @@ const parseRemoteData = (data) => {
             parsedData[key] = data[key];
             return;
         }
+        if (key === 'plan_list' || isPlanDocId(key)) return;
         try {
             const val = data[key];
             const parsedVal = typeof val === 'string' ? JSON.parse(val) : val;
@@ -247,6 +337,10 @@ const parseRemoteData = (data) => {
             parsedData[key] = normalizeEnvelope(data[key]);
         }
     });
+    const savedPlans = buildSavedPlansFromState(data);
+    if (savedPlans != null) {
+        parsedData[STORAGE_KEYS.SAVED_PLANS] = { value: savedPlans, _meta: null };
+    }
     return parsedData;
 };
 
@@ -267,6 +361,10 @@ export const subscribeToRemoteState = (callback) => {
             } catch (_) {}
         });
         const parsed = parseRemoteData(data);
+        const savedPlans = parsed[STORAGE_KEYS.SAVED_PLANS]?.value;
+        if (Array.isArray(savedPlans)) {
+            lastKnownValueContent[STORAGE_KEYS.SAVED_PLANS] = JSON.stringify(savedPlans);
+        }
         callback(parsed);
     });
 };
@@ -301,8 +399,14 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
     });
 
     const serialized = {};
+    let plansToWrite = null;
     Object.keys(stateObj).forEach((key) => {
         if (key === 'updatedAt') return;
+        if (key === STORAGE_KEYS.SAVED_PLANS) {
+            const val = stateObj[key];
+            if (Array.isArray(val)) plansToWrite = val;
+            return;
+        }
         const ourRev = Number(revsPerKey[key] ?? 0);
         const remoteRev = getRevFromRaw(remoteData?.[key]);
         if (remoteRev > ourRev) return;
@@ -310,12 +414,16 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
         const envelope = buildEnvelope(key, val);
         serialized[key] = JSON.stringify(envelope ?? null);
     });
-    if (Object.keys(serialized).length === 0) {
+    if (Object.keys(serialized).length === 0 && !(plansToWrite && plansToWrite.length > 0)) {
         addLog('info', 'Загрузка в облако: все ключи новее в облаке, ничего не перезаписываем');
         return 0;
     }
     addLog('syncing', 'Запись состояния в облако...');
     try {
+        if (plansToWrite && plansToWrite.length > 0) {
+            await writePlansToFirestore(plansToWrite);
+            lastKnownValueContent[STORAGE_KEYS.SAVED_PLANS] = JSON.stringify(plansToWrite);
+        }
         for (const key of Object.keys(serialized)) {
             await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: serialized[key] });
         }
@@ -329,7 +437,7 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
             } catch (_) {}
         });
         addLog('success', 'Данные загружены в облако');
-        return Object.keys(serialized).length;
+        return Object.keys(serialized).length + (plansToWrite?.length ? 1 : 0);
     } catch (err) {
         console.error('writeFullRemoteState failed:', err);
         addLog('error', `Ошибка: ${err.message}`);

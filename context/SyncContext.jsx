@@ -37,14 +37,21 @@ export const SyncProvider = ({ children }) => {
         return { value: entry, meta: null };
     }, []);
 
-    // Подписка на удалённый снапшот
+    // Подписка на удалённый снапшот. Обновляем только при реальном изменении данных — без лишних ре-рендеров при подтверждении своей записи.
     useEffect(() => {
         if (!isRemoteStorageEnabled()) {
             setRemoteSnapshot(null);
             return () => {};
         }
         const unsubscribe = subscribeToRemoteState((parsed) => {
-            setRemoteSnapshot(parsed);
+            setRemoteSnapshot((prev) => {
+                if (!parsed) return parsed;
+                if (!prev) return parsed;
+                try {
+                    if (JSON.stringify(prev) === JSON.stringify(parsed)) return prev;
+                } catch (_) {}
+                return parsed;
+            });
         });
         return () => unsubscribe();
     }, []);
