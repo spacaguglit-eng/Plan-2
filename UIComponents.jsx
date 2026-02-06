@@ -383,11 +383,11 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
 
     return (
         <div className="relative w-64" ref={containerRef}>
-            <button onClick={() => setIsOpen(!isOpen)} className="w-full bg-white border border-slate-200 hover:border-blue-400 text-slate-700 font-semibold py-2 pl-3 pr-10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-all flex items-center justify-between shadow-sm">
-                <div className="flex items-center gap-2">
+            <button onClick={() => setIsOpen(!isOpen)} className="w-full relative bg-white border border-slate-200 hover:border-blue-400 text-slate-700 font-semibold py-2 pl-3 pr-9 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-all flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                     <span>{selectedDate || 'Выберите дату'}</span>
                     {selectedStats && (
-                        <div className="flex items-center gap-1 ml-1 opacity-90">
+                        <div className="flex items-center gap-1 ml-1 opacity-90 shrink-0">
                             {selectedStats.vacancies > 0 ? (
                                 <span className="bg-red-100 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5"><AlertTriangle size={10} /> {selectedStats.vacancies}</span>
                             ) : (<span className="bg-green-100 text-green-600 text-[10px] px-1.5 py-0.5 rounded font-bold"><CheckCircle2 size={10} /></span>)}
@@ -395,7 +395,7 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
                         </div>
                     )}
                 </div>
-                {isOpen ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 shrink-0">{isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>
             </button>
 
             {isOpen && (
@@ -425,13 +425,13 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onExportLines }) => {
+export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onExportLines, dateSelector }) => {
     if (!stats || !shiftsData || shiftsData.length === 0) return null;
     
     return (
         <div className="mb-6 space-y-3 animate-in fade-in slide-in-from-top-4 duration-300">
             <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-slate-700">Дата: {date}</div>
+                <div className="text-sm font-semibold text-slate-700">{dateSelector != null ? dateSelector : `Дата: ${date}`}</div>
                 <div className="flex items-center gap-2">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors select-none">
                         <input

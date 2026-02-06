@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase } from 'lucide-react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { RvPickerModal, DayStatusHeader } from '../../UIComponents';
+import { RvPickerModal, DayStatusHeader, CustomDateSelector } from '../../UIComponents';
 import { normalizeName } from '../../utils';
 
 const parseTimeToMinutes = (value) => {
@@ -175,13 +175,14 @@ const DashboardView = () => {
     const {
         getShiftsForDate,
         calculateDailyStats,
-        selectedDate,
         rvModalData,
         setRvModalData,
         lineTemplates,
         workerRegistry,
         globalWorkSchedule,
         scheduleDates,
+        selectedDate,
+        setSelectedDate,
         handleAssignRv,
         handleRemoveAssignment,
         handleDragStart,
@@ -201,7 +202,11 @@ const DashboardView = () => {
         manualAssignments,
         manualLines,
         addManualLine,
-        removeManualLine
+        removeManualLine,
+        savedPlans,
+        currentPlanId,
+        setCurrentPlanId,
+        loadPlan
     } = useData();
 
     const [contextMenu, setContextMenu] = useState(null);
@@ -449,6 +454,35 @@ const DashboardView = () => {
                 autoReassignEnabled={autoReassignEnabled}
                 onToggleAutoReassign={setAutoReassignEnabled}
                 onExportLines={exportScheduleByLinesToExcel}
+                dateSelector={
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <CustomDateSelector
+                            dates={scheduleDates}
+                            selectedDate={selectedDate}
+                            onSelect={setSelectedDate}
+                            dayStats={calculateDailyStats}
+                        />
+                        <div className="relative w-64">
+                            <select
+                                value={currentPlanId || ''}
+                                onChange={(e) => {
+                                    const id = e.target.value || null;
+                                    if (id) loadPlan?.(id, { switchToDashboard: false });
+                                    else setCurrentPlanId?.(null);
+                                }}
+                                className="w-full bg-white border border-slate-200 hover:border-blue-400 text-slate-700 font-semibold py-2 pl-3 pr-9 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-all appearance-none cursor-pointer shadow-sm"
+                            >
+                                <option value="">— не выбран —</option>
+                                {(savedPlans || []).map((plan) => (
+                                    <option key={plan.id} value={plan.id}>
+                                        {plan.name || plan.id}
+                                    </option>
+                                ))}
+                            </select>
+                            <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
+                        </div>
+                    </div>
+                }
             />
             {rvModalData && (
                 <RvPickerModal

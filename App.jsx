@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
 import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2 } from 'lucide-react';
 import { useData } from './context/DataContext';
-import { UpdateReportModal, CustomDateSelector, EditWorkerModal } from './UIComponents';
+import { UpdateReportModal, EditWorkerModal } from './UIComponents';
 
 // Import view components
 import DashboardView from './components/views/DashboardView';
@@ -18,10 +18,7 @@ import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
 import ShiftReportsView from './components/views/ShiftReportsView';
 export default function App() {
-    const [isExtraMenuOpen, setIsExtraMenuOpen] = useState(false);
-    const [isStaffMenuOpen, setIsStaffMenuOpen] = useState(false);
-    const [isPlansMenuOpen, setIsPlansMenuOpen] = useState(false);
-    const [isReportsMenuOpen, setIsReportsMenuOpen] = useState(false);
+    const [openNavMenu, setOpenNavMenu] = useState(null); // 'staff' | 'plans' | 'reports' | 'extra' | null — только одно меню открыто
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
     const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
 
@@ -58,16 +55,11 @@ export default function App() {
     }, [viewMode, selectedDate]);
 
     useEffect(() => {
-        if (!isExtraMenuOpen && !isStaffMenuOpen && !isPlansMenuOpen && !isReportsMenuOpen) return;
-        const handleClickOutside = () => {
-            setIsExtraMenuOpen(false);
-            setIsStaffMenuOpen(false);
-            setIsPlansMenuOpen(false);
-            setIsReportsMenuOpen(false);
-        };
+        if (openNavMenu == null) return;
+        const handleClickOutside = () => setOpenNavMenu(null);
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
-    }, [isExtraMenuOpen, isStaffMenuOpen, isPlansMenuOpen, isReportsMenuOpen]);
+    }, [openNavMenu]);
 
     const isStaffView = ['dashboard', 'chess', 'employees_list', 'employees_roster', 'verification', 'all_employees']
         .includes(viewMode);
@@ -106,44 +98,44 @@ export default function App() {
             )}
             <>
                     <div className="bg-white border-b border-slate-200 shadow-sm px-6 py-3 flex-shrink-0">
-                        <div className="max-w-[1800px] mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-                            <div className="flex items-center gap-3 mr-6 shrink-0">
-                                <div className="flex items-center justify-center h-14 sm:h-16 min-w-[3rem] max-w-[16rem] overflow-hidden bg-white rounded px-2 py-1.5 shrink-0">
-                                    {showBrandFallback ? (
-                                        <Briefcase size={32} className="shrink-0 text-slate-500" />
-                                    ) : (
-                                        <img
-                                            src={BRAND_IMAGES[brandLogoIndex]}
-                                            alt="Бренд"
-                                            className="max-h-full max-w-full w-auto h-auto object-contain object-center"
-                                            style={{ background: 'white' }}
-                                            onError={() => setBrandLogoIndex((i) => i + 1)}
-                                        />
-                                    )}
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <div className="flex items-center gap-2 mr-4">
+                        <div className="max-w-[1800px] mx-auto flex flex-col md:flex-row md:items-center gap-4">
+                            <div className="flex flex-1 items-center md:justify-start">
+                                <div className="flex items-center gap-3">
+                                    <div className="flex justify-center h-14 sm:h-16 min-w-[3rem] max-w-[16rem] overflow-hidden bg-white rounded px-2 py-1.5 shrink-0">
+                                        {showBrandFallback ? (
+                                            <Briefcase size={32} className="shrink-0 text-slate-500" />
+                                        ) : (
+                                            <img
+                                                src={BRAND_IMAGES[brandLogoIndex]}
+                                                alt="Бренд"
+                                                className="max-h-full max-w-full w-auto h-auto object-contain object-center"
+                                                style={{ background: 'white' }}
+                                                onError={() => setBrandLogoIndex((i) => i + 1)}
+                                            />
+                                        )}
+                                    </div>
                                     {syncStatus === 'error' && (
                                         <div className="text-xs text-red-500 flex items-center gap-1" title="Ошибка сохранения в облако">
                                             <AlertCircle size={14} />
                                         </div>
                                     )}
                                 </div>
+                            </div>
+                            <div className="flex flex-shrink-0 justify-center">
                                 <div className="bg-slate-100 p-1 rounded-lg flex border border-slate-200">
                                     {/* Staff Menu */}
                                     <div className="relative flex items-center">
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                setIsStaffMenuOpen((prev) => !prev);
+                                                setOpenNavMenu((prev) => (prev === 'staff' ? null : 'staff'));
                                             }}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('staff', isStaffView)}`}
                                         >
                                             <Users size={16} /> Штат
-                                            <ChevronDown size={14} className={`transition-transform ${isStaffMenuOpen ? 'rotate-180' : ''}`} />
+                                            <ChevronDown size={14} className={`transition-transform ${openNavMenu === 'staff' ? 'rotate-180' : ''}`} />
                                         </button>
-                                        {isStaffMenuOpen && (
+                                        {openNavMenu === 'staff' && (
                                             <div
                                                 className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
@@ -162,7 +154,7 @@ export default function App() {
                                                             key={item.id}
                                                             onClick={() => {
                                                                 setViewMode(item.id);
-                                                                setIsStaffMenuOpen(false);
+                                                                setOpenNavMenu(null);
                                                             }}
                                                             className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
                                                                 viewMode === item.id ? 'bg-emerald-50 text-emerald-600' : 'text-slate-600 hover:bg-slate-50'
@@ -181,14 +173,14 @@ export default function App() {
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                setIsPlansMenuOpen((prev) => !prev);
+                                                setOpenNavMenu((prev) => (prev === 'plans' ? null : 'plans'));
                                             }}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('plans', viewMode === 'plans' || viewMode === 'both_plans')}`}
                                         >
                                             <FolderOpen size={16} /> Планы
-                                            <ChevronDown size={14} className={`transition-transform ${isPlansMenuOpen ? 'rotate-180' : ''}`} />
+                                            <ChevronDown size={14} className={`transition-transform ${openNavMenu === 'plans' ? 'rotate-180' : ''}`} />
                                         </button>
-                                        {isPlansMenuOpen && (
+                                        {openNavMenu === 'plans' && (
                                             <div
                                                 className="absolute left-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
@@ -196,7 +188,7 @@ export default function App() {
                                                 <button
                                                     onClick={() => {
                                                         setViewMode('plans');
-                                                        setIsPlansMenuOpen(false);
+                                                        setOpenNavMenu(null);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
                                                         viewMode === 'plans' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:bg-slate-50'
@@ -207,7 +199,7 @@ export default function App() {
                                                 <button
                                                     onClick={() => {
                                                         setViewMode('both_plans');
-                                                        setIsPlansMenuOpen(false);
+                                                        setOpenNavMenu(null);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
                                                         viewMode === 'both_plans' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:bg-slate-50'
@@ -224,14 +216,14 @@ export default function App() {
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                setIsReportsMenuOpen((prev) => !prev);
+                                                setOpenNavMenu((prev) => (prev === 'reports' ? null : 'reports'));
                                             }}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('reports', isReportsActive)}`}
                                         >
                                             <BarChart size={16} /> Отчёты
-                                            <ChevronDown size={14} className={`transition-transform ${isReportsMenuOpen ? 'rotate-180' : ''}`} />
+                                            <ChevronDown size={14} className={`transition-transform ${openNavMenu === 'reports' ? 'rotate-180' : ''}`} />
                                         </button>
-                                        {isReportsMenuOpen && (
+                                        {openNavMenu === 'reports' && (
                                             <div
                                                 className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
@@ -239,7 +231,7 @@ export default function App() {
                                                 <button
                                                     onClick={() => {
                                                         setViewMode('reports');
-                                                        setIsReportsMenuOpen(false);
+                                                        setOpenNavMenu(null);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
                                                         viewMode === 'reports' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
@@ -250,7 +242,7 @@ export default function App() {
                                                 <button
                                                     onClick={() => {
                                                         setViewMode('shift_reports');
-                                                        setIsReportsMenuOpen(false);
+                                                        setOpenNavMenu(null);
                                                     }}
                                                     className={`w-full flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${
                                                         viewMode === 'shift_reports' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'
@@ -287,14 +279,14 @@ export default function App() {
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                setIsExtraMenuOpen((prev) => !prev);
+                                                setOpenNavMenu((prev) => (prev === 'extra' ? null : 'extra'));
                                             }}
                                             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', false)}`}
                                         >
                                             <Activity size={16} /> Дополнительно
-                                            <ChevronDown size={14} className={`transition-transform ${isExtraMenuOpen ? 'rotate-180' : ''}`} />
+                                            <ChevronDown size={14} className={`transition-transform ${openNavMenu === 'extra' ? 'rotate-180' : ''}`} />
                                         </button>
-                                        {isExtraMenuOpen && (
+                                        {openNavMenu === 'extra' && (
                                             <div
                                                 className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
@@ -313,15 +305,8 @@ export default function App() {
                                         )}
                                     </div>
                                 </div>
-                                {viewMode === 'dashboard' && (
-                                    <CustomDateSelector
-                                        dates={scheduleDates}
-                                        selectedDate={selectedDate}
-                                        onSelect={setSelectedDate}
-                                        dayStats={calculateDailyStats}
-                                    />
-                                )}
                             </div>
+                            <div className="flex-1 hidden md:block" aria-hidden />
                         </div>
                     </div>
                     <div className="flex-1 overflow-hidden p-4 sm:p-6 w-full max-w-[1800px] mx-auto">

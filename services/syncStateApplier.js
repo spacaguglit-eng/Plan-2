@@ -198,6 +198,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     applyField(STORAGE_KEYS.MANUAL_LINES, setManualLines);
     applyField(STORAGE_KEYS.ASSIGNMENT_CLONES, setAssignmentClones);
     applyField(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, setAutoReassignEnabled);
+    applyField(STORAGE_KEYS.CURRENT_PLAN_ID, setCurrentPlanId);
     applyField(STORAGE_KEYS.FACT_DATA, setFactData);
     applyField(STORAGE_KEYS.FACT_DATES, setFactDates);
     applyField(STORAGE_KEYS.RAW_TABLES, setRawTables);
