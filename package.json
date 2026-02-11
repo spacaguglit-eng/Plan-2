@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:electron": "cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "build:portable": "cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable",
+    "build:dir": "npm run build && cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --dir",
     "preview": "vite preview",
     "check": "node check-setup.js",
     "electron": "electron electron/main.js",
@@ -47,6 +48,7 @@
       "node_modules/**/*"
     ],
     "win": {
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",
@@ -60,8 +62,7 @@
             "x64"
           ]
         }
-      ],
-      "icon": "build/icon.ico"
+      ]
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
