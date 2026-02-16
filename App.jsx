@@ -1,5 +1,21 @@
 import React, { useEffect, useState } from 'react';
 const BRAND_IMAGES = ['/brand.jpg', '/brand.png', '/brand.svg'];
+
+const UI_SCALE_STORAGE_KEY = 'plan_ui_scale';
+const BASE_FONT_SIZE_PX = 16;
+const SCALE_OPTIONS = Array.from({ length: 11 }, (_, i) => (50 + i * 5) / 100); // 50%–100% шаг 5%
+
+function getStoredScale() {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(UI_SCALE_STORAGE_KEY) : null;
+    const n = raw != null ? parseFloat(raw) : NaN;
+    return SCALE_OPTIONS.includes(n) ? n : 1;
+}
+
+function applyUIScale(scale) {
+    if (typeof document === 'undefined') return;
+    document.documentElement.style.fontSize = `${BASE_FONT_SIZE_PX * scale}px`;
+}
+
 import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2 } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, EditWorkerModal } from './UIComponents';
@@ -20,7 +36,15 @@ import ShiftReportsView from './components/views/ShiftReportsView';
 export default function App() {
     const [openNavMenu, setOpenNavMenu] = useState(null); // 'staff' | 'plans' | 'reports' | 'extra' | null — только одно меню открыто
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
+    const [uiScale, setUiScale] = useState(getStoredScale);
     const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
+
+    useEffect(() => {
+        applyUIScale(uiScale);
+        try {
+            localStorage.setItem(UI_SCALE_STORAGE_KEY, String(uiScale));
+        } catch (_) {}
+    }, [uiScale]);
 
     const {
         step,
@@ -84,7 +108,7 @@ export default function App() {
     };
 
     return (
-        <div className="h-screen bg-slate-100 font-sans text-slate-800 flex flex-col overflow-hidden">
+        <div className="min-h-screen bg-slate-100 font-sans text-slate-800 overflow-y-auto">
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
             {editingWorker && (
                 <EditWorkerModal
@@ -97,7 +121,7 @@ export default function App() {
                 />
             )}
             <>
-                    <div className="bg-white border-b border-slate-200 shadow-sm px-6 py-3 flex-shrink-0">
+                    <div className="bg-white border-b border-slate-200 shadow-sm px-6 py-3">
                         <div className="max-w-[1800px] mx-auto flex flex-col md:flex-row md:items-center gap-4">
                             <div className="flex flex-1 items-center md:justify-start">
                                 <div className="flex items-center gap-3">
@@ -291,6 +315,23 @@ export default function App() {
                                                 className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
+                                                <div className="px-4 py-2 border-b border-slate-100">
+                                                    <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Масштаб интерфейса</span>
+                                                    <div className="flex flex-wrap gap-1 mt-1.5">
+                                                        {SCALE_OPTIONS.map((s) => (
+                                                            <button
+                                                                key={s}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setUiScale(s);
+                                                                }}
+                                                                className={`px-2 py-1 rounded text-sm font-medium transition-colors ${uiScale === s ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                                                            >
+                                                                {Math.round(s * 100)}%
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation();
@@ -309,8 +350,8 @@ export default function App() {
                             <div className="flex-1 hidden md:block" aria-hidden />
                         </div>
                     </div>
-                    <div className="flex-1 overflow-hidden p-4 sm:p-6 w-full max-w-[1800px] mx-auto">
-                        {viewMode === 'dashboard' && <div className="h-full overflow-y-auto pr-2"><DashboardView /></div>}
+                    <div className="p-4 sm:p-6 w-full max-w-[1800px] mx-auto min-h-0">
+                        {viewMode === 'dashboard' && <div className="min-h-[70vh] overflow-y-auto pr-2"><DashboardView /></div>}
                         {viewMode === 'chess' && <TimesheetView />}
                         {viewMode === 'employees_list' && <EmployeesListView />}
                         {viewMode === 'employees_roster' && <DistributionView />}

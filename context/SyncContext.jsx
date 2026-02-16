@@ -41,7 +41,7 @@ export const SyncProvider = ({ children }) => {
     useEffect(() => {
         if (!isRemoteStorageEnabled()) {
             setRemoteSnapshot(null);
-            return () => {};
+            return () => { };
         }
         const unsubscribe = subscribeToRemoteState((parsed) => {
             setRemoteSnapshot((prev) => {
@@ -49,7 +49,7 @@ export const SyncProvider = ({ children }) => {
                 if (!prev) return parsed;
                 try {
                     if (JSON.stringify(prev) === JSON.stringify(parsed)) return prev;
-                } catch (_) {}
+                } catch (_) { }
                 return parsed;
             });
         });

@@ -160,7 +160,7 @@ const DEFAULT_PRODUCTS = [
 
 const TRANSITION_RULES_VERSION = 'rules_sets_2026_01_27';
 
-const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]?|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*(?:[«"](?<brand>[^"»]+)[»"]|(?<brand>[^\s\t]+)))?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)(?:\s*(?:шт|шт\.|штук))?)?/iu;
+const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]?|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*(?<brand>(?:[«"][^"»]+[»"])|(?:[^\s\t]+)))?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)(?:\s*(?:шт|шт\.|штук))?)?/iu;
 
 const extractTypeFlavor = (value) => {
     if (!value) return { type: '', flavor: '' };
@@ -195,7 +195,8 @@ const extractProductParts = (value) => {
         return { type: '', flavor: '', volume: '', brand: '' };
     }
     const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
-    const brand = match.groups.brand ? match.groups.brand.trim() : '';
+    let brand = match.groups.brand ? match.groups.brand.trim() : '';
+    if (brand && (/^[«"]/.test(brand))) brand = brand.replace(/^[«"](.*)[»"]$/, '$1').trim();
     return {
         type: match.groups.type.trim(),
         flavor: match.groups.flavor.trim(),
@@ -429,7 +430,7 @@ const DEFAULT_LINE_EVENTS = [
 ];
 
 const PlanningView = () => {
-    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState, productionResults } = useData();
     const getTemplateKeyForLine = useCallback((line) => {
         if (!line || !lineTemplates) return line;
         const key = Object.keys(lineTemplates).find((k) => isLineMatch(line, k));
@@ -465,6 +466,31 @@ const PlanningView = () => {
     );
     const activePlanName = activePlan?.name ?? null;
     const activePlanHasQueue = !!(activePlan?.data?.planningState);
+
+    // Нормализация для сопоставления плана и факта: регистр не важен, объём в любом написании (1 л, 1.0 л, 1,0 л и т.д.) не различается
+    const normalizeProductNameForMatch = (name) => {
+        let s = String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+        // Убираем объём в любом виде (1 л, 1.0 л, 1,0 л, 0.33, 0,33 и т.д.), чтобы «Сироп ... 1.0 л ТМ «Баринофф»» и «сироп ... тм «баринофф» 1 л» совпадали
+        s = s.replace(/\d+(?:[,.]\d+)?\s*(л|кг|мл|г)\s*/gi, ' ').replace(/(?:^|\s)0[,.]33(?=\s|$)/g, ' ');
+        return s.replace(/\s+/g, ' ').trim();
+    };
+    const factQtyByProductName = useMemo(() => {
+        const map = {};
+        const results = productionResults ?? [];
+        results.forEach((result) => {
+            const rows = result?.rows ?? [];
+            rows.forEach((row) => {
+                const product = row?.product;
+                const qty = Number(row?.qty);
+                if (!product || !Number.isFinite(qty)) return;
+                const key = normalizeProductNameForMatch(product);
+                if (!key) return;
+                map[key] = (map[key] ?? 0) + qty;
+            });
+        });
+        return map;
+    }, [productionResults]);
+
     const resolveLineOption = (value) => (
         lineOptions.includes(value) ? value : lineOptions[0]
     );
@@ -3132,6 +3158,7 @@ const PlanningView = () => {
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Конец</th>
                                             <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 min-w-[180px]">Наименование</th>
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Кол-во</th>
+                                            <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Факт</th>
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Скорость</th>
                                             <th className="px-3 py-3 text-center text-xs font-medium text-slate-500 uppercase tracking-wider border-l border-slate-200/40 whitespace-nowrap w-0">Длит.</th>
                                             <th className="px-2 py-3 w-0 border-l border-slate-200/40" title="Удалить"> </th>
@@ -3222,6 +3249,9 @@ const PlanningView = () => {
                                                     </td>
                                                     <td className={`px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums whitespace-nowrap w-0 ${isCip ? 'text-slate-400' : 'font-medium text-slate-600'}`}>
                                                         {isCip ? '—' : row.qty}
+                                                    </td>
+                                                    <td className={`px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums whitespace-nowrap w-0 ${isCip ? 'text-slate-400' : 'text-slate-600'}`}>
+                                                        {isCip ? '—' : (factQtyByProductName[normalizeProductNameForMatch(row.name)] ?? '—')}
                                                     </td>
                                                     <td className={`px-3 py-2.5 text-center border-l border-slate-200/40 tabular-nums whitespace-nowrap w-0 ${isCip ? 'text-slate-400' : 'text-slate-500'}`}>
                                                         {isCip ? '—' : `${row.speed}/ч`}

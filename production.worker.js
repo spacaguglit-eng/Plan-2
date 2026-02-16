@@ -112,8 +112,8 @@ const readRowRange = (sheet, startRow, endRow, shift) => {
         const start = getCellDisplayValue(cellB);
         const end = getCellDisplayValue(cellC);
         
-        // Если ячейка продукта пуста (даже если там формула) - продукта нет, пропускаем строку
-        if (!isMeaningfulValue(product)) {
+        // Если ячейка продукта пуста или содержит "00:00" (признак отсутствия продукта в отчёте) — пропускаем строку
+        if (!isMeaningfulValue(product) || String(product).trim() === '00:00') {
             continue;
         }
         
@@ -164,10 +164,10 @@ const readRowRange = (sheet, startRow, endRow, shift) => {
 // Чтение диапазона простоев
 // Диапазоны строк: 47-113 для дня, 162-205 для ночи
 // Столбцы:
-//   F-G - объединенная ячейка категория простоя (вид категории простоя)
-//   H - вид простоя
+//   F-G - объединённая ячейка, описание простоя
+//   H - категория простоя (КИПиА, Механические, Плановые и т.д. — для группировки и цветов)
 //   I-J - начало и конец простоя
-//   L-N - объединенная ячейка описание простоя
+//   L-N - объединённая ячейка, комментарий
 // ВАЖНО: Все данные о конкретном простое располагаются строго в одной строке
 const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = null) => {
     const downtimes = [];
@@ -177,7 +177,7 @@ const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = nu
         const cellA = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 0 })]; // A - возможно линия
         const cellF = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 5 })]; // F
         const cellG = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 6 })]; // G
-        const cellH = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 7 })]; // H - вид простоя
+        const cellH = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 7 })]; // H - категория
         const cellI = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 8 })]; // I - начало
         const cellJ = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 9 })]; // J - конец
         const cellL = sheet[XLSX.utils.encode_cell({ r: row - 1, c: 11 })]; // L
@@ -189,16 +189,11 @@ const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = nu
         // Приоритет: название из файла > значение из ячейки A
         const lineValue = lineNameFromFile || lineValueFromCell || '';
         
-        // Категория простоя (F-G объединенная ячейка)
-        // Для объединенных ячеек значение обычно находится в первой ячейке (F)
-        // Если F пустая, проверяем G
-        const categoryF = getCellDisplayValue(cellF);
-        const categoryG = getCellDisplayValue(cellG);
-        // Объединяем значения, убирая лишние пробелы
-        const category = (categoryF || categoryG || '').trim();
+        // Категория простоя (H) — КИПиА, Механические, Плановые и т.д.
+        const category = (getCellDisplayValue(cellH) || '').trim();
         
-        // Вид простоя (H) - это ключевое поле для идентификации простоя
-        const type = getCellDisplayValue(cellH);
+        // Описание простоя (F-G объединённая ячейка)
+        const descFG = (getCellDisplayValue(cellF) || getCellDisplayValue(cellG) || '').trim();
         
         // Начало и конец простоя (I-J)
         // Читаем как дробное число (доля дня) и преобразуем в HH:MM
@@ -221,20 +216,15 @@ const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = nu
             }
         }
         
-        // Описание простоя (L-N объединенная ячейка)
-        // Для объединенных ячеек значение может быть в любой из ячеек L, M, N
-        // Объединяем все непустые значения
+        // Комментарий (L-N)
         const descL = getCellDisplayValue(cellL);
         const descM = getCellDisplayValue(cellM);
         const descN = getCellDisplayValue(cellN);
-        // Объединяем все непустые части описания
-        const descriptionParts = [descL, descM, descN].filter(part => part && part.trim());
-        const description = descriptionParts.join(' ').trim();
+        const commentParts = [descL, descM, descN].filter(part => part && part.trim());
+        const comment = commentParts.join(' ').trim();
         
-        // ВАЖНО: Все данные о простое должны быть строго в одной строке
-        // Создаем запись простоя только если есть хотя бы вид простоя (H) или время (I-J)
-        // Описание (L-N) может быть пустым, но если оно есть, оно принадлежит именно этой строке
-        if (isMeaningfulValue(type) || (isMeaningfulValue(start) && isMeaningfulValue(end))) {
+        // Создаём запись простоя, если есть категория (H), описание (F-G) или время (I-J)
+        if (isMeaningfulValue(category) || isMeaningfulValue(descFG) || (isMeaningfulValue(start) && isMeaningfulValue(end))) {
             const startMinutes = parseTimeToMinutes(start);
             const endMinutes = parseTimeToMinutes(end);
             let durationMinutes = null;
@@ -252,12 +242,13 @@ const readDowntimeRange = (sheet, startRow, endRow, shift, lineNameFromFile = nu
             // Описание берется строго из этой строки, не из предыдущих
             downtimes.push({
                 rowNum: row,
-                line: lineValue, // Линия из названия файла или из столбца A
-                category: category || 'Без категории',
-                type: type || '',
+                line: lineValue,
+                category: category || 'Без категории', // H
+                type: category || '', // для фильтра «не влияющие на план»
                 start: start || '',
                 end: end || '',
-                description: description || '', // Описание строго из этой строки
+                description: descFG || '', // F-G описание
+                comment: comment || '', // L-N комментарий
                 durationMinutes: durationMinutes !== null ? Math.round(durationMinutes) : null,
                 shift
             });
@@ -518,7 +509,8 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
                         start: d.start || '',
                         end: d.end || '',
                         durationMinutes: d.durationMinutes,
-                        description: d.description || ''
+                        description: d.description || '',
+                        comment: d.comment || ''
                     })),
                     shift: rowData.shift,
                     start: start || '',
@@ -548,7 +540,7 @@ const calculateFlatDowntimeRows = (results) => {
             }).map(row => row.product || '').filter(p => p);
             
             // Добавляем только если есть хотя бы один значимый параметр
-            if (downtime.type || downtime.start || downtime.end || downtime.description) {
+            if (downtime.type || downtime.start || downtime.end || downtime.description || downtime.comment) {
                 flatDowntimeRows.push({
                     date: result.date,
                     fileName: result.fileName,
@@ -556,6 +548,7 @@ const calculateFlatDowntimeRows = (results) => {
                     category: downtime.category || 'Без категории',
                     type: downtime.type || '',
                     description: downtime.description || '',
+                    comment: downtime.comment || '',
                     start: downtime.start || '',
                     end: downtime.end || '',
                     durationMinutes: downtime.durationMinutes !== null ? Math.round(downtime.durationMinutes) : null,

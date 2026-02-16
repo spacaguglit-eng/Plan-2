@@ -20,7 +20,9 @@ export const STORAGE_KEYS = {
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',
     PLANNING_STATE: 'plan_planning_state',
     PRODUCTION_RESULTS: 'productionParsedResults',
-    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes'
+    PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes',
+    PRODUCTION_SELECTED_FILE_NAMES: 'productionSelectedFileNames',
+    PRODUCTION_SELECTED_FILE_PATHS: 'productionSelectedFilePaths'
 };
 
 // --- GENERAL HELPERS ---

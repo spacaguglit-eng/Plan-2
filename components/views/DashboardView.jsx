@@ -197,6 +197,7 @@ const DashboardView = () => {
         setIsGlobalFill,
         autoReassignEnabled,
         setAutoReassignEnabled,
+        applyAutoReassignForDate,
         draggedWorker,
         updateAssignments,
         manualAssignments,
@@ -211,6 +212,7 @@ const DashboardView = () => {
 
     const [contextMenu, setContextMenu] = useState(null);
     const [contextMenuSearch, setContextMenuSearch] = useState('');
+    const [selectedShiftId, setSelectedShiftId] = useState('');
     const [manualLineForm, setManualLineForm] = useState({
         shiftId: null,
         templateName: '',
@@ -259,6 +261,28 @@ const DashboardView = () => {
     }, [workerRegistry, normalizedRegistry]);
 
     const shiftsData = getShiftsForDate(selectedDate);
+    const displayShifts = useMemo(() => {
+        if (!shiftsData || shiftsData.length === 0) return [];
+        if (!selectedShiftId) return shiftsData;
+        return shiftsData.filter(s => String(s.id) === selectedShiftId);
+    }, [shiftsData, selectedShiftId]);
+
+    const datesForSelector = useMemo(() => {
+        if (!scheduleDates || scheduleDates.length === 0) return [];
+        if (!selectedShiftId) return scheduleDates;
+        return scheduleDates.filter(dateStr => {
+            const shifts = getShiftsForDate(dateStr);
+            return shifts && shifts.some(s => String(s.id) === selectedShiftId);
+        });
+    }, [scheduleDates, selectedShiftId, getShiftsForDate]);
+
+    useEffect(() => {
+        if (!selectedShiftId || !datesForSelector.length) return;
+        if (selectedDate && !datesForSelector.includes(selectedDate)) {
+            setSelectedDate(datesForSelector[0]);
+        }
+    }, [selectedShiftId, datesForSelector, selectedDate, setSelectedDate]);
+
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
 
     const handleAssignFromContextMenu = (worker, slotId) => {
@@ -297,17 +321,17 @@ const DashboardView = () => {
         );
     }, [contextMenu?.availableEmployees, contextMenuSearch]);
 
-    // Close context menu on click outside
+    // Close context menu on click outside (mousedown чтобы клик по кнопке «Добавить из свободных» не закрывал меню сразу)
     useEffect(() => {
-        const handleClickOutside = () => {
+        const handleClickOutside = (e) => {
             if (contextMenu) {
                 setContextMenu(null);
                 setContextMenuSearch('');
             }
         };
         if (contextMenu) {
-            document.addEventListener('click', handleClickOutside);
-            return () => document.removeEventListener('click', handleClickOutside);
+            document.addEventListener('mousedown', handleClickOutside);
+            return () => document.removeEventListener('mousedown', handleClickOutside);
         }
     }, [contextMenu]);
 
@@ -324,6 +348,14 @@ const DashboardView = () => {
     if (!shiftsData || shiftsData.length === 0) {
         return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
     }
+
+    const shiftFilterOptions = [
+        { value: '', label: 'Все смены' },
+        { value: '1', label: 'Смена 1' },
+        { value: '2', label: 'Смена 2' },
+        { value: '3', label: 'Смена 3' },
+        { value: '4', label: 'Смена 4' }
+    ];
 
     const openManualLineForm = (shift) => {
         const options = getManualTemplateOptionsForShift(shift.id);
@@ -451,17 +483,29 @@ const DashboardView = () => {
                 date={selectedDate}
                 shiftsData={shiftsData}
                 manualAssignments={manualAssignments}
-                autoReassignEnabled={autoReassignEnabled}
-                onToggleAutoReassign={setAutoReassignEnabled}
+                onRunAutoReassign={() => applyAutoReassignForDate(selectedDate)}
                 onExportLines={exportScheduleByLinesToExcel}
                 dateSelector={
                     <div className="flex items-center gap-3 flex-wrap">
                         <CustomDateSelector
-                            dates={scheduleDates}
+                            dates={datesForSelector}
                             selectedDate={selectedDate}
                             onSelect={setSelectedDate}
                             dayStats={calculateDailyStats}
                         />
+                        <div className="relative">
+                            <label className="sr-only">Смена</label>
+                            <select
+                                value={selectedShiftId}
+                                onChange={(e) => setSelectedShiftId(e.target.value)}
+                                className="bg-white border border-slate-200 hover:border-blue-400 text-slate-700 font-semibold py-2 pl-3 pr-9 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-all appearance-none cursor-pointer shadow-sm min-w-[140px]"
+                            >
+                                {shiftFilterOptions.map((opt) => (
+                                    <option key={opt.value || 'all'} value={opt.value}>{opt.label}</option>
+                                ))}
+                            </select>
+                            <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
+                        </div>
                         <div className="relative w-64">
                             <select
                                 value={currentPlanId || ''}
@@ -496,8 +540,13 @@ const DashboardView = () => {
                     onAssign={handleAssignRv}
                 />
             )}
+            {(selectedShiftId && displayShifts.length === 0) && (
+                <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
+                    На выбранную дату эта смена не выходит.
+                </div>
+            )}
             <div className="space-y-12">
-                {shiftsData.map((shift) => {
+                {displayShifts.map((shift) => {
                     const isDayShift = shift.type?.toLowerCase().includes('день');
                     const hasFloaters = shift.floaters.length > 0;
                     const hasVacanciesHere = shift.filledSlots < shift.totalRequired;
@@ -777,6 +826,32 @@ const DashboardView = () => {
                                                             {!draggedWorker && !slot.isManualVacancy && (
                                                                 <div className="flex items-center gap-2">
                                                                     <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            e.preventDefault();
+                                                                            const rect = e.currentTarget.getBoundingClientRect();
+                                                                            const availableEmployees = [
+                                                                                ...(shift?.unassignedPeople || []).filter(p => p.isAvailable),
+                                                                                ...(shift?.floaters || [])
+                                                                            ];
+                                                                            setTimeout(() => {
+                                                                                setContextMenu({
+                                                                                    x: rect.left,
+                                                                                    y: rect.bottom + 4,
+                                                                                    slotId: slot.slotId,
+                                                                                    roleTitle: slot.roleTitle,
+                                                                                    availableEmployees
+                                                                                });
+                                                                                setContextMenuSearch('');
+                                                                            }, 0);
+                                                                        }}
+                                                                        className="w-6 h-6 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-md border border-emerald-200 transition-colors flex items-center justify-center shadow-sm"
+                                                                        title="Добавить из свободных сотрудников"
+                                                                    >
+                                                                        <Users size={12} />
+                                                                    </button>
+                                                                    <button
                                                                         onClick={() => handleMarkOutsource(slot.slotId, slot.roleTitle)}
                                                                         className="w-6 h-6 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-md border border-amber-200 transition-colors flex items-center justify-center shadow-sm"
                                                                         title="Закрыть аутсорсом"
@@ -886,6 +961,7 @@ const DashboardView = () => {
                         transform: 'translate(-10px, -10px)'
                     }}
                     onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
                 >
                     <div className="p-3 border-b border-slate-200 bg-slate-50">
                         <div className="text-xs font-semibold text-slate-600 mb-2">Назначить на: {contextMenu.roleTitle}</div>

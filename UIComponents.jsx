@@ -425,7 +425,7 @@ export const CustomDateSelector = ({ dates, selectedDate, onSelect, dayStats }) 
     );
 };
 
-export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, autoReassignEnabled, onToggleAutoReassign, onExportLines, dateSelector }) => {
+export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, onRunAutoReassign, onExportLines, dateSelector }) => {
     if (!stats || !shiftsData || shiftsData.length === 0) return null;
     
     return (
@@ -433,15 +433,16 @@ export const DayStatusHeader = ({ stats, date, shiftsData, manualAssignments, au
             <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-slate-700">{dateSelector != null ? dateSelector : `Дата: ${date}`}</div>
                 <div className="flex items-center gap-2">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition-colors select-none">
-                        <input
-                            type="checkbox"
-                            className="accent-blue-600"
-                            checked={autoReassignEnabled}
-                            onChange={(e) => onToggleAutoReassign && onToggleAutoReassign(e.target.checked)}
-                        />
-                        <span>Автоподстановка</span>
-                    </label>
+                    {onRunAutoReassign && (
+                        <button
+                            type="button"
+                            onClick={onRunAutoReassign}
+                            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-sm"
+                            title="Заполнить вакансии на выбранную дату из свободных сотрудников"
+                        >
+                            Заполнить вакансии
+                        </button>
+                    )}
                     {onExportLines && (
                         <button
                             onClick={onExportLines}

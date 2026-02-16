@@ -78,7 +78,7 @@ export const deleteFirestoreDoc = async (collectionName, docId) => {
 
 export const subscribeToFirestoreDoc = (collectionName, docId, callback) => {
     const docRef = getDocRef(collectionName, docId);
-    if (!docRef) return () => {};
+    if (!docRef) return () => { };
     return onSnapshot(docRef, snapshot => {
         const data = snapshot.exists() ? snapshot.data() : null;
         const fromCache = snapshot.metadata?.fromCache ?? false;
@@ -99,7 +99,7 @@ export const readFirestoreCollection = async (collectionName) => {
 /** Подписка на изменения всей коллекции. callback(docs: { id, data }[]) вызывается при любом изменении. */
 export const subscribeToFirestoreCollection = (collectionName, callback) => {
     const db = getFirestoreInstance();
-    if (!db) return () => {};
+    if (!db) return () => { };
     const colRef = collection(db, collectionName);
     return onSnapshot(colRef, snapshot => {
         const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));

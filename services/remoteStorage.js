@@ -153,7 +153,7 @@ const flushQueue = async () => {
                     if (parsed && typeof parsed.value !== 'undefined') {
                         lastKnownValueContent[key] = JSON.stringify(parsed.value);
                     }
-                } catch (_) {}
+                } catch (_) { }
             });
         }
 
@@ -195,7 +195,7 @@ const flushQueue = async () => {
                 if (envelope && typeof envelope.value !== 'undefined') {
                     lastKnownValueContent[key] = JSON.stringify(envelope.value);
                 }
-            } catch (_) {}
+            } catch (_) { }
         });
         const keysToSync = Object.keys(trulyChangedData);
         if (keysToSync.length > 0) {
@@ -216,7 +216,7 @@ const flushQueue = async () => {
 
 export const saveRemoteStateKey = async (key, value, meta) => {
     if (!isRemoteStorageEnabled()) return;
-    
+
     const valueContentStr = JSON.stringify(value);
     if (lastKnownValueContent[key] === valueContentStr) {
         if (updateQueue[key]) {
@@ -228,7 +228,7 @@ export const saveRemoteStateKey = async (key, value, meta) => {
         }
         return;
     }
-    
+
     const envelope = buildEnvelope(key, value, meta);
     const serializedValue = JSON.stringify(envelope);
     const queuedValue = updateQueue[key];
@@ -241,7 +241,7 @@ export const saveRemoteStateKey = async (key, value, meta) => {
         }
         return;
     }
-    
+
     updateQueue[key] = serializedValue;
 
     // Мгновенная запись в фоне: батчинг только в рамках одного тика (без задержки 400ms)
@@ -264,7 +264,7 @@ export const loadRemoteState = async () => {
                     if (parsed && typeof parsed.value !== 'undefined') {
                         lastKnownValueContent[key] = JSON.stringify(parsed.value);
                     }
-                } catch (_) {}
+                } catch (_) { }
             });
         }
         const parsed = parseRemoteData(data);
@@ -315,7 +315,7 @@ const buildSavedPlansFromState = (data) => {
             const parsed = typeof legacyRaw === 'string' ? JSON.parse(legacyRaw) : legacyRaw;
             const envelope = normalizeEnvelope(parsed);
             if (Array.isArray(envelope.value)) return envelope.value;
-        } catch {}
+        } catch { }
     }
     return null;
 };
@@ -345,7 +345,7 @@ const parseRemoteData = (data) => {
 };
 
 export const subscribeToRemoteState = (callback) => {
-    if (!isRemoteStorageEnabled()) return () => {};
+    if (!isRemoteStorageEnabled()) return () => { };
     return subscribeToFirestoreCollection(FIRESTORE_COLLECTION, (docs, metadata = {}) => {
         const { fromCache = false, hasPendingWrites = false } = metadata;
         if (fromCache || hasPendingWrites) return;
@@ -358,7 +358,7 @@ export const subscribeToRemoteState = (callback) => {
                 if (parsed && typeof parsed.value !== 'undefined') {
                     lastKnownValueContent[key] = JSON.stringify(parsed.value);
                 }
-            } catch (_) {}
+            } catch (_) { }
         });
         const parsed = parseRemoteData(data);
         const savedPlans = parsed[STORAGE_KEYS.SAVED_PLANS]?.value;
@@ -395,7 +395,7 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
             if (parsed && typeof parsed.value !== 'undefined') {
                 lastKnownValueContent[key] = JSON.stringify(parsed.value);
             }
-        } catch (_) {}
+        } catch (_) { }
     });
 
     const serialized = {};
@@ -434,7 +434,7 @@ export const writeFullRemoteState = async (stateObj, revsPerKey = {}) => {
                 if (envelope && typeof envelope.value !== 'undefined') {
                     lastKnownValueContent[k] = JSON.stringify(envelope.value);
                 }
-            } catch (_) {}
+            } catch (_) { }
         });
         addLog('success', 'Данные загружены в облако');
         return Object.keys(serialized).length + (plansToWrite?.length ? 1 : 0);
@@ -454,15 +454,15 @@ export const wipeRemoteStorage = async () => {
             addLog('success', 'Облако уже пусто');
             return;
         }
-        
+
         const deletePromises = docs.map(d => deleteFirestoreDoc(FIRESTORE_COLLECTION, d.id));
         await Promise.all(deletePromises);
-        
+
         // Clear local caches
         Object.keys(lastKnownState).forEach(k => delete lastKnownState[k]);
         Object.keys(lastKnownValueContent).forEach(k => delete lastKnownValueContent[k]);
         updateQueue = {};
-        
+
         addLog('success', 'Облачное хранилище очищено');
     } catch (err) {
         console.error('wipeRemoteStorage failed:', err);

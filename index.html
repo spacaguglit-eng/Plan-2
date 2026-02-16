@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Планировщик смен</title>
     <!-- Библиотеки XLSX и ExcelJS теперь устанавливаются локально через npm, не требуют интернета -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('plan_ui_scale');
+          var scale = raw != null ? parseFloat(raw) : 1;
+          scale = Math.max(0.5, Math.min(1, Math.round(scale * 20) / 20));
+          document.documentElement.style.fontSize = (16 * scale) + 'px';
+        } catch (e) {}
+      })();
+    </script>
     <style>
       /* Предзагрузка для предотвращения FOUC */
       body {

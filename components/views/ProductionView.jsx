@@ -1,41 +1,78 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight } from 'lucide-react';
+import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS } from '../../utils';
-// Функция для получения цвета категории простоев
-const getCategoryColor = (category) => {
-    const colors = [
-        'bg-red-400', 'bg-pink-400', 'bg-purple-400', 'bg-indigo-400',
-        'bg-blue-400', 'bg-cyan-400', 'bg-teal-400', 'bg-yellow-400',
-        'bg-amber-400', 'bg-orange-400', 'bg-gray-400', 'bg-slate-400'
-    ];
-    // Простой хэш для стабильного цвета
-    let hash = 0;
-    for (let i = 0; i < category.length; i++) {
-        hash = category.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return colors[Math.abs(hash) % colors.length];
+// Палитра отчёта: цвет и HEX для категорий простоев
+// Полуночный синий #003366 — база/план | Стальной серый #546E7A — нейтральный | Темный изумруд #00695C — успех
+// Винный #880E4F — риски | Глубокий охристый #B8860B — умеренные результаты | Темный индиго #283593 — инновации | Аспидно-сизый #37474F — итоги
+const DOWNTIME_CATEGORY_COLORS = {
+    'КИПиА':           { class: 'bg-[#283593]', hex: '#283593' }, // Темный индиго — инновации
+    'Механические':    { class: 'bg-[#880E4F]', hex: '#880E4F' }, // Винный — риски
+    'Энергетические':  { class: 'bg-[#B8860B]', hex: '#B8860B' }, // Глубокий охристый
+    'Организационные': { class: 'bg-[#546E7A]', hex: '#546E7A' }, // Стальной серый — нейтральный
+    'Сервисные':       { class: 'bg-[#00695C]', hex: '#00695C' }, // Темный изумруд — успех
+    'Технологические': { class: 'bg-[#37474F]', hex: '#37474F' }, // Аспидно-сизый — итоги
+    'Плановые':        { class: 'bg-[#003366]', hex: '#003366' }  // Полуночный синий — план/база
 };
 
-const CATEGORY_COLOR_HEX = {
-    'bg-red-400': '#f87171',
-    'bg-pink-400': '#f472b6',
-    'bg-purple-400': '#c084fc',
-    'bg-indigo-400': '#818cf8',
-    'bg-blue-400': '#60a5fa',
-    'bg-cyan-400': '#22d3ee',
-    'bg-teal-400': '#2dd4bf',
-    'bg-yellow-400': '#facc15',
-    'bg-amber-400': '#fbbf24',
-    'bg-orange-400': '#fb923c',
-    'bg-gray-400': '#9ca3af',
-    'bg-slate-400': '#94a3b8'
+const FALLBACK_CATEGORY_COLORS = [
+    'bg-red-400', 'bg-pink-400', 'bg-cyan-400', 'bg-yellow-400', 'bg-gray-400'
+];
+const FALLBACK_CATEGORY_HEX = {
+    'bg-red-400': '#f87171', 'bg-pink-400': '#f472b6', 'bg-cyan-400': '#22d3ee',
+    'bg-yellow-400': '#facc15', 'bg-gray-400': '#9ca3af'
+};
+
+const CATEGORY_KEYS = Object.keys(DOWNTIME_CATEGORY_COLORS);
+
+/** Нормализация названия категории для подстановки цвета: trim + поиск по ключам без учёта регистра */
+const resolveCategoryKey = (category) => {
+    const raw = (category || '').trim();
+    if (!raw) return null;
+    if (DOWNTIME_CATEGORY_COLORS[raw]) return raw;
+    const lower = raw.toLowerCase();
+    const found = CATEGORY_KEYS.find((k) => k.toLowerCase() === lower);
+    return found || null;
+};
+
+const getCategoryColor = (category) => {
+    const key = resolveCategoryKey(category);
+    if (key) return DOWNTIME_CATEGORY_COLORS[key].class;
+    let hash = 0;
+    const str = (category || '');
+    for (let i = 0; i < str.length; i++) {
+        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return FALLBACK_CATEGORY_COLORS[Math.abs(hash) % FALLBACK_CATEGORY_COLORS.length];
 };
 
 const getCategoryColorHex = (category) => {
+    const key = resolveCategoryKey(category);
+    if (key) return DOWNTIME_CATEGORY_COLORS[key].hex;
     const className = getCategoryColor(category);
-    return CATEGORY_COLOR_HEX[className] || '#94a3b8';
+    return FALLBACK_CATEGORY_HEX[className] || '#94a3b8';
+};
+
+/** Естественная сортировка: 1, 2, 10 вместо 1, 10, 2 */
+const naturalCompare = (a, b) => {
+    const sa = String(a ?? '');
+    const sb = String(b ?? '');
+    const partsA = sa.split(/(\d+)/).filter(Boolean);
+    const partsB = sb.split(/(\d+)/).filter(Boolean);
+    for (let i = 0; i < Math.min(partsA.length, partsB.length); i++) {
+        const pa = partsA[i];
+        const pb = partsB[i];
+        const na = parseInt(pa, 10);
+        const nb = parseInt(pb, 10);
+        if (!isNaN(na) && !isNaN(nb)) {
+            if (na !== nb) return na - nb;
+        } else {
+            const cmp = pa.localeCompare(pb, undefined, { numeric: true });
+            if (cmp !== 0) return cmp;
+        }
+    }
+    return partsA.length - partsB.length;
 };
 
 const buildConicGradient = (segments) => {
@@ -90,6 +127,24 @@ const ProductionView = () => {
     const [lineSlideIndex, setLineSlideIndex] = useState(0);
     const [isLineSlideVisible, setIsLineSlideVisible] = useState(true);
 
+    // Выбранные файлы: ref для сессии, state для отображения и кнопки «Обновить»
+    const lastSelectedFilesRef = useRef([]);
+    const [selectedFileNames, setSelectedFileNames] = useState(() => {
+        try {
+            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES) : null;
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+            }
+        } catch (_) {}
+        return [];
+    });
+    const [hasFilesInRef, setHasFilesInRef] = useState(false);
+    const [selectedFilePaths, setSelectedFilePaths] = useState([]);
+
+    const isElectron = typeof window !== 'undefined' && window.electronAPI;
+    const basename = (p) => String(p).replace(/^.*[/\\]/, '');
+
     const processFiles = useCallback(async (files) => {
         if (!files || files.length === 0) return;
 
@@ -107,22 +162,31 @@ const ProductionView = () => {
                 return;
             }
 
-            // Подготавливаем данные файлов для воркера
+            // Подготавливаем данные файлов для воркера (File или { arrayBuffer, fileName } из Electron)
             const filesData = [];
             const transferables = [];
             for (const file of files) {
                 try {
-                    const data = await file.arrayBuffer();
+                    let data;
+                    let fileName;
+                    if (file.arrayBuffer != null && file.fileName != null) {
+                        data = file.arrayBuffer instanceof ArrayBuffer ? file.arrayBuffer : file.arrayBuffer;
+                        fileName = file.fileName;
+                    } else {
+                        data = await file.arrayBuffer();
+                        fileName = file.name;
+                    }
                     if (!data || data.byteLength === 0) {
-                        throw new Error(`Файл ${file.name} пуст или поврежден`);
+                        throw new Error(`Файл ${fileName} пуст или поврежден`);
                     }
                     filesData.push({
                         data: data,
-                        fileName: file.name
+                        fileName: fileName
                     });
                     transferables.push(data);
                 } catch (fileErr) {
-                    throw new Error(`Ошибка чтения файла ${file.name}: ${fileErr.message}`);
+                    const name = file.fileName ?? file.name ?? '?';
+                    throw new Error(`Ошибка чтения файла ${name}: ${fileErr.message}`);
                 }
             }
 
@@ -180,24 +244,7 @@ const ProductionView = () => {
             ...flatRows.map(r => r.line),
             ...flatDowntimeRows.map(r => r.line)
         ]);
-        return Array.from(lines).sort((a, b) => {
-            const matchA = a.match(/\d+/);
-            const matchB = b.match(/\d+/);
-            const numA = matchA ? parseInt(matchA[0], 10) : NaN;
-            const numB = matchB ? parseInt(matchB[0], 10) : NaN;
-            
-            // Если оба имеют числа - сортируем по числу
-            if (!isNaN(numA) && !isNaN(numB)) {
-                if (numA !== numB) return numA - numB;
-                // Если числа одинаковые, сортируем лексикографически
-                return a.localeCompare(b);
-            }
-            // Если только один имеет число - он идет первым
-            if (!isNaN(numA) && isNaN(numB)) return -1;
-            if (isNaN(numA) && !isNaN(numB)) return 1;
-            // Если оба без чисел - лексикографическая сортировка
-            return a.localeCompare(b);
-        });
+        return Array.from(lines).sort(naturalCompare);
     }, [flatRows, flatDowntimeRows]);
 
     const uniqueDowntimeTypes = useMemo(() => {
@@ -218,14 +265,7 @@ const ProductionView = () => {
                 dates.add(result.date);
             }
         });
-        return Array.from(dates).sort((a, b) => {
-            const numA = parseInt(a, 10);
-            const numB = parseInt(b, 10);
-            if (!isNaN(numA) && !isNaN(numB)) {
-                return numA - numB;
-            }
-            return a.localeCompare(b);
-        });
+        return Array.from(dates).sort(naturalCompare);
     }, [results]);
 
     const filteredRows = useMemo(() => {
@@ -246,7 +286,8 @@ const ProductionView = () => {
                 const match = [
                     row.category,
                     row.type,
-                    row.description
+                    row.description,
+                    row.comment
                 ].filter(Boolean).some((value) => String(value).toLowerCase().includes(search));
                 if (!match) return false;
             }
@@ -259,7 +300,7 @@ const ProductionView = () => {
         const dateSet = new Set(dates);
         const rowsForDates = flatRows.filter(row => dateSet.has(row.date));
         const downtimesForDates = flatDowntimeRows.filter(row => dateSet.has(row.date));
-        const lines = Array.from(new Set(rowsForDates.map(r => r.line))).sort();
+        const lines = Array.from(new Set(rowsForDates.map(r => r.line))).sort(naturalCompare);
         return lines.map((line) => {
             const lineRows = rowsForDates.filter(r => r.line === line);
             const lineDowntimes = downtimesForDates.filter(d => d.line === line);
@@ -319,9 +360,10 @@ const ProductionView = () => {
     }, [flatRows, flatDowntimeRows, excludedDowntimeTypes]);
 
     const lineSlides = useMemo(() => {
-        if (!filterDate) return [];
-        return buildLineSlidesForDates([filterDate]);
-    }, [buildLineSlidesForDates, filterDate]);
+        const datesToUse = filterDate ? [filterDate] : uniqueDates;
+        if (!datesToUse || datesToUse.length === 0) return [];
+        return buildLineSlidesForDates(datesToUse);
+    }, [buildLineSlidesForDates, filterDate, uniqueDates]);
 
     const sortedReportDates = useMemo(() => {
         if (reportDates.length === 0) return [];
@@ -626,12 +668,12 @@ const ProductionView = () => {
         return {
             byDate: Array.from(byDate.entries())
                 .map(([date, data]) => processData(date, data, 'date'))
-                .filter(item => item.date) // Фильтруем элементы без даты
-                .sort((a, b) => (a.date || '').localeCompare(b.date || '')),
+                .filter(item => item.date)
+                .sort((a, b) => naturalCompare(a.date, b.date)),
             byLine: Array.from(byLine.entries())
                 .map(([line, data]) => processData(line, data, 'line'))
-                .filter(item => item.line) // Фильтруем элементы без линии
-                .sort((a, b) => (a.line || '').localeCompare(b.line || '')),
+                .filter(item => item.line)
+                .sort((a, b) => naturalCompare(a.line, b.line)),
             byProduct: Array.from(byProduct.entries())
                 .map(([product, data]) => processData(product, data, 'product'))
                 .filter(item => item.product) // Фильтруем элементы без продукта
@@ -642,11 +684,70 @@ const ProductionView = () => {
 
 
 
-    const handleFileChange = async (event) => {
+    useEffect(() => {
+        if (!isElectron) return;
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
+            if (raw) {
+                const paths = JSON.parse(raw);
+                if (Array.isArray(paths) && paths.length > 0) {
+                    setSelectedFilePaths(paths);
+                    setSelectedFileNames(paths.map(basename));
+                    setHasFilesInRef(true);
+                }
+            }
+        } catch (_) {}
+    }, [isElectron]);
+
+    const handleFileChange = (event) => {
         const files = Array.from(event.target.files || []);
-        await processFiles(files);
         event.target.value = '';
+        if (files.length === 0) return;
+        lastSelectedFilesRef.current = files;
+        const names = files.map(f => f.name);
+        setSelectedFileNames(names);
+        setHasFilesInRef(true);
+        try {
+            localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(names));
+        } catch (_) {}
     };
+
+    const handleSelectFiles = useCallback(async () => {
+        if (isElectron && window.electronAPI) {
+            try {
+                const paths = await window.electronAPI.productionSelectFiles();
+                if (paths && paths.length > 0) {
+                    setSelectedFilePaths(paths);
+                    setSelectedFileNames(paths.map(basename));
+                    setHasFilesInRef(true);
+                    try {
+                        localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS, JSON.stringify(paths));
+                        localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(paths.map(basename)));
+                    } catch (_) {}
+                }
+            } catch (err) {
+                console.error('productionSelectFiles', err);
+                setParseError(err?.message || 'Ошибка выбора файлов');
+            }
+        } else {
+            fileInputRef.current?.click();
+        }
+    }, [isElectron]);
+
+    const handleRefresh = useCallback(async () => {
+        if (isElectron && window.electronAPI && selectedFilePaths.length > 0) {
+            try {
+                const entries = await window.electronAPI.productionReadFiles(selectedFilePaths);
+                if (entries && entries.length > 0) await processFiles(entries);
+            } catch (err) {
+                console.error('productionReadFiles', err);
+                setParseError(err?.message || 'Ошибка чтения файлов');
+            }
+        } else {
+            const files = lastSelectedFilesRef.current;
+            if (files && files.length > 0) processFiles(files);
+        }
+    }, [processFiles, isElectron, selectedFilePaths.length]);
 
     // Инициализация воркера
     useEffect(() => {
@@ -778,13 +879,22 @@ const ProductionView = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                         <button
-                            onClick={() => fileInputRef.current?.click()}
+                            onClick={handleSelectFiles}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
                         >
                             <FileUp size={16} />
-                            Загрузить Excel
+                            Выбор файлов
+                        </button>
+                        <button
+                            onClick={handleRefresh}
+                            disabled={!hasFilesInRef && !(isElectron && selectedFilePaths.length > 0)}
+                            title={!(hasFilesInRef || (isElectron && selectedFilePaths.length > 0)) ? 'Сначала выберите файлы' : 'Загрузить данные из выбранных файлов'}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-600 text-white rounded-lg text-sm font-semibold hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <RefreshCw size={16} />
+                            Обновить
                         </button>
                     </div>
                     <input
@@ -796,6 +906,11 @@ const ProductionView = () => {
                         onChange={handleFileChange}
                     />
                 </div>
+                {selectedFileNames.length > 0 && (
+                    <div className="mt-2 text-xs text-slate-500">
+                        Выбрано: {selectedFileNames.join(', ')}
+                    </div>
+                )}
                     <div className="flex flex-wrap gap-3">
                     <div className="relative flex-1 min-w-[200px]">
                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -1058,11 +1173,11 @@ const ProductionView = () => {
                                             <th className="px-4 py-3 border-b">Дата</th>
                                             <th className="px-4 py-3 border-b">Файл</th>
                                             <th className="px-4 py-3 border-b">Линия</th>
-                                            <th className="px-4 py-3 border-b">Категория (F-G)</th>
-                                            <th className="px-4 py-3 border-b">Вид (H)</th>
+                                            <th className="px-4 py-3 border-b">Категория (H)</th>
                                             <th className="px-4 py-3 border-b">Время начала (I)</th>
                                             <th className="px-4 py-3 border-b">Время конца (J)</th>
-                                            <th className="px-4 py-3 border-b">Описание (L-N)</th>
+                                            <th className="px-4 py-3 border-b">Описание (F-G)</th>
+                                            <th className="px-4 py-3 border-b">Комментарий (L-N)</th>
                                             <th className="px-4 py-3 border-b text-center">Длительность (мин)</th>
                                             <th className="px-4 py-3 border-b text-center">Смена</th>
                                         </tr>
@@ -1081,10 +1196,10 @@ const ProductionView = () => {
                                                     <td className="px-4 py-3 text-slate-500 text-xs">{row.fileName}</td>
                                                     <td className="px-4 py-3 text-slate-700">{row.line}</td>
                                                     <td className="px-4 py-3 text-slate-800 font-medium">{row.category || '—'}</td>
-                                                    <td className="px-4 py-3 text-slate-700">{row.type || '—'}</td>
                                                     <td className="px-4 py-3 text-slate-600">{row.start || '—'}</td>
                                                     <td className="px-4 py-3 text-slate-600">{row.end || '—'}</td>
                                                     <td className="px-4 py-3 text-slate-600">{row.description || '—'}</td>
+                                                    <td className="px-4 py-3 text-slate-600">{row.comment || '—'}</td>
                                                     <td className="px-4 py-3 text-center text-slate-700">
                                                         {row.durationMinutes !== null && row.durationMinutes !== undefined 
                                                             ? <span className="font-semibold">{Math.round(row.durationMinutes)}</span>
@@ -1116,6 +1231,22 @@ const ProductionView = () => {
                                         </div>
                                     ) : (
                                         <>
+                                            {/* Легенда по цветам категорий простоев */}
+                                            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                                                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Легенда — категории простоев</div>
+                                                <div className="flex flex-wrap gap-x-6 gap-y-2">
+                                                    {Object.entries(DOWNTIME_CATEGORY_COLORS).map(([name, { hex }]) => (
+                                                        <div key={name} className="flex items-center gap-2">
+                                                            <div
+                                                                className="w-3.5 h-3.5 rounded flex-shrink-0 border border-slate-200"
+                                                                style={{ backgroundColor: hex }}
+                                                                aria-hidden
+                                                            />
+                                                            <span className="text-sm text-slate-700">{name}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
                                             {/* Общая статистика */}
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 border border-blue-200">
@@ -1221,10 +1352,11 @@ const ProductionView = () => {
                                                                             return (
                                                                                 <div
                                                                                     key={dIdx}
-                                                                                    className={`absolute top-0 h-full ${getCategoryColor(downtime.category)} transition-all duration-500 border-r border-slate-300`}
+                                                                                    className="absolute top-0 h-full transition-all duration-500 border-r border-slate-300"
                                                                                     style={{ 
                                                                                         left: `${currentLeft}%`, 
-                                                                                        width: `${width}%` 
+                                                                                        width: `${width}%`,
+                                                                                        backgroundColor: getCategoryColorHex(downtime.category)
                                                                                     }}
                                                                                     title={`${downtime.category}: ${downtime.minutes || 0} мин (${downtime.percent.toFixed(1)}%)`}
                                                                                 />
@@ -1256,7 +1388,7 @@ const ProductionView = () => {
                                                                                         <div key={dIdx} className="bg-slate-50 p-3 rounded border border-slate-200">
                                                                                             <div className="flex items-center justify-between mb-2">
                                                                                                 <div className="flex items-center gap-2">
-                                                                                                    <div className={`w-3 h-3 rounded ${getCategoryColor(downtime.category)}`} />
+                                                                                                    <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(downtime.category) }} />
                                                                                                     <span className="text-sm font-semibold text-slate-700">{downtime.category}</span>
                                                                                                 </div>
                                                                                                 <span className="text-sm font-semibold text-slate-600">
@@ -1357,10 +1489,11 @@ const ProductionView = () => {
                                                                             return (
                                                                                 <div
                                                                                     key={dIdx}
-                                                                                    className={`absolute top-0 h-full ${getCategoryColor(downtime.category)} transition-all duration-500 border-r border-slate-300`}
+                                                                                    className="absolute top-0 h-full transition-all duration-500 border-r border-slate-300"
                                                                                     style={{ 
                                                                                         left: `${currentLeft}%`, 
-                                                                                        width: `${width}%` 
+                                                                                        width: `${width}%`,
+                                                                                        backgroundColor: getCategoryColorHex(downtime.category)
                                                                                     }}
                                                                                     title={`${downtime.category}: ${downtime.minutes || 0} мин (${downtime.percent.toFixed(1)}%)`}
                                                                                 />
@@ -1392,143 +1525,7 @@ const ProductionView = () => {
                                                                                         <div key={dIdx} className="bg-slate-50 p-3 rounded border border-slate-200">
                                                                                             <div className="flex items-center justify-between mb-2">
                                                                                                 <div className="flex items-center gap-2">
-                                                                                                    <div className={`w-3 h-3 rounded ${getCategoryColor(downtime.category)}`} />
-                                                                                                    <span className="text-sm font-semibold text-slate-700">{downtime.category}</span>
-                                                                                                </div>
-                                                                                                <span className="text-sm font-semibold text-slate-600">
-                                                                                                    {downtime.minutes || 0} мин · {downtime.percent.toFixed(2)}%
-                                                                                                </span>
-                                                                                            </div>
-                                                                                            {downtime.descriptions && downtime.descriptions.length > 0 && (
-                                                                                                <div className="mt-2 space-y-1">
-                                                                                                    {downtime.descriptions.map((desc, descIdx) => (
-                                                                                                        <div key={descIdx} className="text-xs text-slate-600 pl-5">
-                                                                                                            • {desc}
-                                                                                                        </div>
-                                                                                                    ))}
-                                                                                                </div>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    ))}
-                                                                                </div>
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            </div>
-
-                                            {/* График по продуктам (топ 15) */}
-                                            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-                                                <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                                                    <BarChart3 size={20} className="text-blue-600" />
-                                                    Выработка по продуктам (Топ 15)
-                                                </h3>
-                                                <div className="space-y-4">
-                                                    {chartData.byProduct.map((item, idx) => {
-                                                        const efficiencyPercent = Math.min(item.efficiency, 100);
-                                                        const isOverPlan = item.fact >= item.plan;
-                                                        const isGreen = item.efficiency >= 95;
-                                                        const isExpanded = expandedCharts.byProduct.has(item.product);
-                                                        let leftOffset = efficiencyPercent;
-                                                        
-                                                        return (
-                                                            <div key={idx} className="space-y-2 border border-slate-200 rounded-lg p-3 hover:bg-slate-50 transition-colors">
-                                                                <div className="flex items-center justify-between text-sm">
-                                                                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                                                                        <button
-                                                                            onClick={() => {
-                                                                                const newExpanded = new Set(expandedCharts.byProduct);
-                                                                                if (isExpanded) {
-                                                                                    newExpanded.delete(item.product);
-                                                                                } else {
-                                                                                    newExpanded.add(item.product);
-                                                                                }
-                                                                                setExpandedCharts({ ...expandedCharts, byProduct: newExpanded });
-                                                                            }}
-                                                                            className="p-1 hover:bg-slate-200 rounded transition-colors flex-shrink-0"
-                                                                        >
-                                                                            {isExpanded ? (
-                                                                                <ChevronDown size={16} className="text-slate-600" />
-                                                                            ) : (
-                                                                                <ChevronRight size={16} className="text-slate-600" />
-                                                                            )}
-                                                                        </button>
-                                                                        <span className="font-medium text-slate-700 truncate">{item.product}</span>
-                                                                    </div>
-                                                                    <div className="flex items-center gap-4 text-xs flex-shrink-0">
-                                                                        <span className="text-blue-600">План: {item.plan.toLocaleString()}</span>
-                                                                        <span className={`font-semibold ${isOverPlan ? 'text-green-600' : 'text-orange-600'}`}>
-                                                                            Факт: {item.fact.toLocaleString()}
-                                                                        </span>
-                                                                        <span className={`font-semibold ${isGreen ? 'text-green-600' : item.efficiency >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
-                                                                            {item.efficiency}%
-                                                                        </span>
-                                                                    </div>
-                                                                </div>
-                                                                <div className="relative h-10 bg-slate-100 rounded-lg overflow-hidden border border-slate-200">
-                                                                    {/* Факт - процент от плана */}
-                                                                    <div 
-                                                                        className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
-                                                                            isGreen
-                                                                                ? 'bg-gradient-to-r from-green-400 to-green-500' 
-                                                                                : isOverPlan 
-                                                                                    ? 'bg-gradient-to-r from-green-400 to-green-500'
-                                                                                    : 'bg-gradient-to-r from-orange-400 to-orange-500'
-                                                                        }`}
-                                                                        style={{ width: `${efficiencyPercent}%` }}
-                                                                    />
-                                                                    {/* Простои по категориям */}
-                                                                    {item.downtimeCategories && item.downtimeCategories.map((downtime, dIdx) => {
-                                                                        const maxAvailable = 100 - efficiencyPercent;
-                                                                        const usedSoFar = leftOffset - efficiencyPercent;
-                                                                        const remainingAvailable = maxAvailable - usedSoFar;
-                                                                        const width = Math.min(downtime.percent, remainingAvailable);
-                                                                        const currentLeft = leftOffset;
-                                                                        if (width > 0) {
-                                                                            leftOffset += width;
-                                                                            return (
-                                                                                <div
-                                                                                    key={dIdx}
-                                                                                    className={`absolute top-0 h-full ${getCategoryColor(downtime.category)} transition-all duration-500 border-r border-slate-300`}
-                                                                                    style={{ 
-                                                                                        left: `${currentLeft}%`, 
-                                                                                        width: `${width}%` 
-                                                                                    }}
-                                                                                    title={`${downtime.category}: ${downtime.minutes || 0} мин (${downtime.percent.toFixed(1)}%)`}
-                                                                                />
-                                                                            );
-                                                                        }
-                                                                        return null;
-                                                                    })}
-                                                                </div>
-                                                                {/* Детальная информация при раскрытии */}
-                                                                {isExpanded && (
-                                                                    <div className="mt-3 pt-3 border-t border-slate-200 space-y-2">
-                                                                        <div className="grid grid-cols-2 gap-4 text-xs">
-                                                                            <div>
-                                                                                <span className="text-slate-500">Количество записей: </span>
-                                                                                <span className="font-semibold text-slate-700">{item.count}</span>
-                                                                            </div>
-                                                                            <div>
-                                                                                <span className="text-slate-500">Эффективность: </span>
-                                                                                <span className={`font-semibold ${isGreen ? 'text-green-600' : item.efficiency >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
-                                                                                    {item.efficiency}%
-                                                                                </span>
-                                                                            </div>
-                                                                        </div>
-                                                                        {item.downtimeCategories && item.downtimeCategories.length > 0 && (
-                                                                            <div className="mt-2">
-                                                                                <div className="text-xs font-semibold text-slate-700 mb-2">Детализация простоев:</div>
-                                                                                <div className="space-y-2">
-                                                                                    {item.downtimeCategories.map((downtime, dIdx) => (
-                                                                                        <div key={dIdx} className="bg-slate-50 p-3 rounded border border-slate-200">
-                                                                                            <div className="flex items-center justify-between mb-2">
-                                                                                                <div className="flex items-center gap-2">
-                                                                                                    <div className={`w-3 h-3 rounded ${getCategoryColor(downtime.category)}`} />
+                                                                                                    <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(downtime.category) }} />
                                                                                                     <span className="text-sm font-semibold text-slate-700">{downtime.category}</span>
                                                                                                 </div>
                                                                                                 <span className="text-sm font-semibold text-slate-600">
@@ -1695,23 +1692,26 @@ const ProductionView = () => {
                             )}
                             {activeTab === 'lines' && (
                                 <div className="p-6 space-y-6">
-                                    {!filterDate ? (
-                                        <div className="text-center py-12 text-slate-400">
-                                            <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
-                                            <p className="text-lg font-medium">Выберите дату</p>
-                                            <p className="text-sm mt-2">Для просмотра линий выберите дату в фильтре</p>
-                                        </div>
-                                    ) : lineSlides.length === 0 ? (
-                                        <div className="text-center py-12 text-slate-400">
-                                            <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
-                                            <p className="text-lg font-medium">Нет линий на выбранную дату</p>
-                                        </div>
+                                    {lineSlides.length === 0 ? (
+                                        uniqueDates.length === 0 ? (
+                                            <div className="text-center py-12 text-slate-400">
+                                                <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
+                                                <p className="text-lg font-medium">Нет данных</p>
+                                                <p className="text-sm mt-2">Загрузите файл для просмотра линий</p>
+                                            </div>
+                                        ) : (
+                                            <div className="text-center py-12 text-slate-400">
+                                                <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
+                                                <p className="text-lg font-medium">Нет линий</p>
+                                                <p className="text-sm mt-2">{filterDate ? 'На выбранную дату нет данных по линиям' : 'Нет данных по линиям'}</p>
+                                            </div>
+                                        )
                                     ) : (
                                         <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
                                             <div className="flex items-center justify-between mb-6">
                                                 <div>
                                                     <h3 className="text-lg font-bold text-slate-800">Линия: {lineSlides[lineSlideIndex]?.line}</h3>
-                                                    <div className="text-xs text-slate-500">Дата: {filterDate}</div>
+                                                    <div className="text-xs text-slate-500">Дата: {filterDate || 'Все даты'}</div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <button
@@ -1753,6 +1753,22 @@ const ProductionView = () => {
                                                         </div>
                                                         <div className="mt-4 text-lg font-medium text-slate-600">
                                                             Простои по категориям (мин)
+                                                        </div>
+                                                        {/* Легенда по цветам категорий */}
+                                                        <div className="mt-3 w-full max-w-sm">
+                                                            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Легенда</div>
+                                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                                                                {Object.entries(DOWNTIME_CATEGORY_COLORS).map(([name, { hex }]) => (
+                                                                    <div key={name} className="flex items-center gap-2">
+                                                                        <div
+                                                                            className="w-3 h-3 rounded-full flex-shrink-0 border border-slate-200"
+                                                                            style={{ backgroundColor: hex }}
+                                                                            aria-hidden
+                                                                        />
+                                                                        <span className="text-sm text-slate-700">{name}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
                                                         </div>
                                                         
                                                         {/* План / Факт / Эффективность */}
@@ -1799,17 +1815,17 @@ const ProductionView = () => {
                                                             </div>
                                                         </div>
                                                     </div>
-                                                    <div>
+                                                    <div className="min-w-0 overflow-y-auto max-h-[65vh]">
                                                         {lineSlides[lineSlideIndex]?.downtimeList?.length ? (
-                                                            <div className="space-y-3">
+                                                            <div className="space-y-3 pr-1">
                                                                 {lineSlides[lineSlideIndex].downtimeList.slice(0, 6).map((item) => (
-                                                                    <div key={item.category} className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
-                                                                        <div className="flex items-center justify-between text-lg">
-                                                                            <div className="flex items-center gap-2">
-                                                                                <div className="w-4 h-4 rounded" style={{ backgroundColor: item.color }} />
-                                                                                <span className="text-slate-700 font-semibold">{item.category}</span>
+                                                                    <div key={item.category} className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 min-w-0">
+                                                                        <div className="flex items-center justify-between text-lg flex-wrap gap-y-1">
+                                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                                <div className="w-4 h-4 rounded flex-shrink-0" style={{ backgroundColor: item.color }} />
+                                                                                <span className="text-slate-700 font-semibold truncate">{item.category}</span>
                                                                             </div>
-                                                                            <div className="flex flex-col items-end">
+                                                                            <div className="flex flex-col items-end flex-shrink-0">
                                                                                 <span className="font-semibold text-slate-600 text-lg">{item.minutes} мин</span>
                                                                                 <span className="text-base text-slate-500 mt-0.5">
                                                                                     {item.underproduction?.toLocaleString() || 0} шт
@@ -1817,9 +1833,9 @@ const ProductionView = () => {
                                                                             </div>
                                                                         </div>
                                                                         {item.descriptions?.length ? (
-                                                                            <div className="mt-2 text-base text-slate-600">
+                                                                            <div className="mt-2 text-base text-slate-600 break-words">
                                                                                 {item.descriptions.slice(0, 2).map((desc, idx) => (
-                                                                                    <div key={`${item.category}_${idx}`} className="truncate">• {desc}</div>
+                                                                                    <div key={`${item.category}_${idx}`} className="whitespace-normal break-words">• {desc}</div>
                                                                                 ))}
                                                                                 {item.descriptions.length > 2 && (
                                                                                     <div className="text-sm text-slate-400">и еще {item.descriptions.length - 2}</div>
