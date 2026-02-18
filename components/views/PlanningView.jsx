@@ -4,7 +4,7 @@ import { STORAGE_KEYS, debounce, isLineMatch, expandCompositeLineKey } from '../
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
-import { DEFAULT_LINE_EVENTS, PLANNING_EVENT_CATEGORIES } from '../../data/planningLineEvents';
+import { DEFAULT_LINE_EVENTS, PLANNING_EVENT_CATEGORIES, migrateLineEventsCategories } from '../../data/planningLineEvents';
 
 const DEFAULT_LINE_OPTIONS = [
     'Линия 1',
@@ -407,9 +407,11 @@ const PlanningView = () => {
             ? storedPlanning.transitionRules || TRANSITION_RULES_BASE
             : TRANSITION_RULES_BASE)
     );
-    const [lineEvents, setLineEvents] = useState(
-        () => storedPlanning.lineEvents || DEFAULT_LINE_EVENTS
-    );
+    const [lineEvents, setLineEvents] = useState(() => {
+        const raw = storedPlanning?.lineEvents;
+        if (Array.isArray(raw)) return migrateLineEventsCategories(raw);
+        return DEFAULT_LINE_EVENTS;
+    });
     const [expandedCipIndex, setExpandedCipIndex] = useState(null);
     const [transitionSearch, setTransitionSearch] = useState({});
     const [transitionResult, setTransitionResult] = useState(null);
@@ -727,7 +729,7 @@ const PlanningView = () => {
             if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
             if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
             if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
-            if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
+            if (Array.isArray(loaded.lineEvents)) setLineEvents(migrateLineEventsCategories(loaded.lineEvents));
             if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
             if (loaded.exportType) setExportType(loaded.exportType);
             if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);
@@ -752,7 +754,7 @@ const PlanningView = () => {
             if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
             if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
             if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
-            if (Array.isArray(loaded.lineEvents)) setLineEvents(loaded.lineEvents);
+            if (Array.isArray(loaded.lineEvents)) setLineEvents(migrateLineEventsCategories(loaded.lineEvents));
             if (Array.isArray(loaded.exportLines)) setExportLines(loaded.exportLines.filter(l => lineOptions.includes(l)));
             if (loaded.exportType) setExportType(loaded.exportType);
             if (Array.isArray(loaded.displacementRules)) setDisplacementRules(loaded.displacementRules);

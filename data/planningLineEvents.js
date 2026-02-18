@@ -12,6 +12,38 @@ export const PLANNING_EVENT_CATEGORIES = {
     vytesnenie: 'Вытеснение'
 };
 
+/**
+ * Приводит старые названия категорий в загруженных событиях к новым.
+ * При загрузке состояния/плана со старыми именами (CIP1 (холодная вода), Переналадка формата и т.д.)
+ * подставляет PLANNING_EVENT_CATEGORIES, чтобы getCipDuration и оптимизатор находили длительности.
+ * @param {Array<{ category: string, durations?: object }>} events
+ * @returns {Array<{ category: string, durations?: object }>}
+ */
+export function migrateLineEventsCategories(events) {
+    if (!Array.isArray(events)) return [];
+    return events.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const c = item.category;
+        if (c == null || c === '') return item;
+        let newCategory = null;
+        if (/CIP\s*1/i.test(c) || /CIP1/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.cip1;
+        } else if (/CIP\s*2/i.test(c) || /CIP2/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.cip2;
+        } else if (/CIP\s*3/i.test(c) || /CIP3/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.cip3;
+        } else if (/Переналадка/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.perenaladka;
+        } else if (/Смена ассортимента/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.smenaAssortimenta;
+        } else if (/Вытеснение/i.test(c)) {
+            newCategory = PLANNING_EVENT_CATEGORIES.vytesnenie;
+        }
+        if (newCategory) return { ...item, category: newCategory };
+        return item;
+    });
+}
+
 export const DEFAULT_LINE_EVENTS = [
     {
         category: PLANNING_EVENT_CATEGORIES.smenaAssortimenta,
