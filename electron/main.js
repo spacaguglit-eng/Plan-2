@@ -9,7 +9,7 @@ ipcMain.handle('production:selectFiles', async () => {
     properties: ['openFile', 'multiSelections'],
     filters: [
       { name: 'Все файлы', extensions: ['*'] },
-      { name: 'Excel', extensions: ['xlsx', 'xls'] },
+      { name: 'Excel', extensions: ['xlsx', 'xls', 'xlsm'] },
     ],
   });
   return filePaths || [];

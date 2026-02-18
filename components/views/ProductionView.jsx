@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw, Clock } from 'lucide-react';
-import { generateProductionReportHtml } from './productionReportHtml';
+import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw, Clock, Printer } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS } from '../../utils';
 import {
@@ -241,22 +240,21 @@ const ProductionView = () => {
     const [isUpdating, setIsUpdating] = useState(false);
     const [parseError, setParseError] = useState('');
     const [filterLine, setFilterLine] = useState('');
-    const [filterDate, setFilterDate] = useState('');
+    const [filterDates, setFilterDates] = useState([]);
+    const [isDateFilterOpen, setIsDateFilterOpen] = useState(false);
     const [filterProduct, setFilterProduct] = useState('');
     const [activeTab, setActiveTab] = useState('production');
     const [debugPlanModalOpen, setDebugPlanModalOpen] = useState(false);
     const [debugPlanLineKey, setDebugPlanLineKey] = useState('all');
     const [debugPlanDate, setDebugPlanDate] = useState('all');
     const debugPlanPreRef = useRef(null);
-    const [reportError, setReportError] = useState('');
-    const [reportDates, setReportDates] = useState([]);
-    const [reportTargets, setReportTargets] = useState({});
     const excludedDowntimeTypes = useMemo(
         () => new Set(productionExcludedDowntimeTypes || []),
         [productionExcludedDowntimeTypes]
     );
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
+    const dateFilterRef = useRef(null);
     
     // Worker state
     const productionWorkerRef = useRef(null);
@@ -448,16 +446,16 @@ const ProductionView = () => {
     const filteredRows = useMemo(() => {
         return flatRows.filter(row => {
             if (filterLine && row.line !== filterLine) return false;
-            if (filterDate && row.date !== filterDate) return false;
+            if (filterDates.length > 0 && !filterDates.includes(row.date)) return false;
             if (filterProduct && !row.product.toLowerCase().includes(filterProduct.toLowerCase())) return false;
             return true;
         });
-    }, [flatRows, filterLine, filterDate, filterProduct]);
+    }, [flatRows, filterLine, filterDates, filterProduct]);
 
     const filteredDowntimeRows = useMemo(() => {
         return flatDowntimeRows.filter(row => {
             if (filterLine && row.line !== filterLine) return false;
-            if (filterDate && row.date !== filterDate) return false;
+            if (filterDates.length > 0 && !filterDates.includes(row.date)) return false;
             if (filterProduct) {
                 const search = filterProduct.toLowerCase();
                 const match = [
@@ -470,7 +468,7 @@ const ProductionView = () => {
             }
             return true;
         });
-    }, [flatDowntimeRows, filterLine, filterDate, filterProduct]);
+    }, [flatDowntimeRows, filterLine, filterDates, filterProduct]);
 
     const buildLineSlidesForDates = useCallback((dates) => {
         if (!dates || dates.length === 0) return [];
@@ -559,163 +557,20 @@ const ProductionView = () => {
     }, [flatRows, flatDowntimeRows, excludedDowntimeTypes, planByLineDate, factByLineDate]);
 
     const lineSlides = useMemo(() => {
-        const datesToUse = filterDate ? [filterDate] : uniqueDates;
+        const datesToUse = filterDates.length > 0 ? filterDates : uniqueDates;
         if (!datesToUse || datesToUse.length === 0) return [];
         return buildLineSlidesForDates(datesToUse);
-    }, [buildLineSlidesForDates, filterDate, uniqueDates]);
-
-    const sortedReportDates = useMemo(() => {
-        if (reportDates.length === 0) return [];
-        const dateSet = new Set(reportDates);
-        return uniqueDates.filter(date => dateSet.has(date));
-    }, [reportDates, uniqueDates]);
-
-    const reportLineSlides = useMemo(() => {
-        return buildLineSlidesForDates(sortedReportDates);
-    }, [buildLineSlidesForDates, sortedReportDates]);
-
-    const lineDailySeries = useMemo(() => {
-        if (sortedReportDates.length === 0 || reportLineSlides.length === 0) return {};
-        const lineMap = new Map();
-        reportLineSlides.forEach((slide) => {
-            const lineKey = getLineNumberFromRow({ line: slide.line });
-            if (!lineMap.has(slide.line)) lineMap.set(slide.line, new Map());
-            const dateMap = lineMap.get(slide.line);
-            for (const date of sortedReportDates) {
-                const planVal = lineKey && planByLineDate[lineKey] ? (planByLineDate[lineKey][date] ?? 0) : 0;
-                const factVal = lineKey && factByLineDate[lineKey] ? (factByLineDate[lineKey][date] ?? 0) : 0;
-                dateMap.set(date, { plan: planVal, fact: factVal });
-            }
-        });
-
-        const getDayLabel = (date) => {
-            const parts = String(date).split(/[\.\-\/]/).filter(Boolean);
-            if (parts.length > 0) {
-                if (parts[0].length <= 2) {
-                    return String(parseInt(parts[0], 10));
-                }
-                if (parts.length >= 3) {
-                    return String(parseInt(parts[2], 10));
-                }
-            }
-            const match = String(date).match(/(\d{1,2})/);
-            return match ? String(parseInt(match[1], 10)) : String(date);
-        };
-
-        return reportLineSlides.reduce((acc, line) => {
-            const dateMap = lineMap.get(line.line) || new Map();
-            acc[line.line] = sortedReportDates.map((date) => {
-                const entry = dateMap.get(date) || { plan: 0, fact: 0 };
-                const efficiency = entry.plan > 0 ? Math.round((entry.fact / entry.plan) * 100) : 0;
-                return {
-                    date,
-                    dayLabel: getDayLabel(date),
-                    plan: Math.round(entry.plan),
-                    fact: Math.round(entry.fact),
-                    efficiency
-                };
-            });
-            return acc;
-        }, {});
-    }, [reportLineSlides, sortedReportDates, planByLineDate, factByLineDate]);
-
-    useEffect(() => {
-        if (reportLineSlides.length === 0) return;
-        setReportTargets((prev) => {
-            const next = { ...prev };
-            reportLineSlides.forEach((line) => {
-                if (next[line.line] === undefined || next[line.line] === null || next[line.line] === '') {
-                    next[line.line] = 85;
-                }
-            });
-            return next;
-        });
-    }, [reportLineSlides]);
+    }, [buildLineSlidesForDates, filterDates, uniqueDates]);
 
     useEffect(() => {
         setLineSlideIndex(0);
-    }, [filterDate, lineSlides.length]);
+    }, [filterDates, lineSlides.length]);
 
     useEffect(() => {
         setIsLineSlideVisible(false);
         const id = setTimeout(() => setIsLineSlideVisible(true), 50);
         return () => clearTimeout(id);
-    }, [lineSlideIndex, filterDate]);
-
-    useEffect(() => {
-        if (!filterDate) {
-            setReportError('');
-        }
-    }, [filterDate]);
-
-    useEffect(() => {
-        if (reportDates.length === 0) {
-            setReportError('');
-        }
-    }, [reportDates]);
-
-    useEffect(() => {
-        if (reportDates.length === 0) return;
-        const allowed = new Set(uniqueDates);
-        const nextDates = reportDates.filter(date => allowed.has(date));
-        if (nextDates.length !== reportDates.length) {
-            setReportDates(nextDates);
-        }
-    }, [reportDates, uniqueDates]);
-
-    const getReportPayload = useCallback(() => {
-        if (sortedReportDates.length === 0) {
-            setReportError('Выберите даты для формирования отчета.');
-            return;
-        }
-        if (reportLineSlides.length === 0) {
-            setReportError('Нет данных для выбранного периода.');
-            return;
-        }
-
-        setReportError('');
-        try {
-            const normalizedTargets = reportLineSlides.reduce((acc, line) => {
-                const rawValue = reportTargets[line.line];
-                const numericValue = typeof rawValue === 'number' ? rawValue : parseFloat(rawValue);
-                const safeValue = Number.isFinite(numericValue) ? numericValue : 85;
-                acc[line.line] = Math.max(0, Math.min(100, safeValue));
-                return acc;
-            }, {});
-            return generateProductionReportHtml({
-                dates: sortedReportDates,
-                lineSlides: reportLineSlides,
-                lineDailySeries,
-                lineTargets: normalizedTargets
-            });
-        } catch (error) {
-            console.error('Ошибка генерации отчета HTML', error);
-            setReportError('Не удалось сформировать HTML-отчет. Попробуйте еще раз.');
-        }
-    }, [lineDailySeries, reportLineSlides, reportTargets, sortedReportDates]);
-
-    const openHtmlReport = useCallback(() => {
-        const payload = getReportPayload();
-        if (!payload) return;
-        const blob = new Blob([payload.html], { type: 'text/html;charset=utf-8' });
-        const url = window.URL.createObjectURL(blob);
-        window.open(url, '_blank', 'noopener,noreferrer');
-        setTimeout(() => window.URL.revokeObjectURL(url), 30000);
-    }, [getReportPayload]);
-
-    const downloadHtmlReport = useCallback(() => {
-        const payload = getReportPayload();
-        if (!payload) return;
-        const blob = new Blob([payload.html], { type: 'text/html;charset=utf-8' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = payload.fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-    }, [getReportPayload]);
+    }, [lineSlideIndex, filterDates]);
 
     // Данные для графиков — план/факт из planByLineDate/factByLineDate
     const chartData = useMemo(() => {
@@ -862,7 +717,8 @@ const ProductionView = () => {
                                 type: downtime.type || '',
                                 description: description || '',
                                 durationMinutes: duration,
-                                line: downtime.line
+                                line: downtime.line,
+                                comment: downtime.comment || ''
                             });
                         }
                     }
@@ -886,7 +742,8 @@ const ProductionView = () => {
                                 type: downtime.type || '',
                                 description: description || '',
                                 durationMinutes: duration,
-                                date: downtime.date
+                                date: downtime.date,
+                                comment: downtime.comment || ''
                             });
                         }
                     }
@@ -912,7 +769,8 @@ const ProductionView = () => {
                                     description: description || '',
                                     durationMinutes: duration,
                                     date: downtime.date,
-                                    line: downtime.line
+                                    line: downtime.line,
+                                    comment: downtime.comment || ''
                                 });
                             }
                         }
@@ -1017,7 +875,97 @@ const ProductionView = () => {
         };
     }, [filteredRows, filteredDowntimeRows, excludedDowntimeTypes, planByLineDate, factByLineDate, workTimeByLineDate, availableByLineDate, normsBreakdownByLineDate, chartsDetailMode]);
 
+    /** Экспорт отчёта «Доля неплановых простоев» в оформленном виде для печати */
+    const openUnplannedReportPrint = useCallback(() => {
+        const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const parts = [];
 
+        parts.push('<div class="report">');
+        parts.push('<h1 class="report-title">Доля неплановых простоев</h1>');
+        parts.push('<div class="report-meta">Сформировано: ' + esc(new Date().toLocaleString('ru')) + '</div>');
+
+        const renderItem = (item, keyLabel) => {
+            const keyValue = item[keyLabel];
+            const buf = [];
+            buf.push('<div class="item-block">');
+            buf.push('<div class="item-header">');
+            buf.push('<div class="item-date"><strong>' + esc(keyValue) + '</strong></div>');
+            buf.push('<div class="item-kpis">');
+            buf.push('<span class="kpi"><span class="kpi-label">План</span> ' + (item.plan || 0).toLocaleString('ru') + '</span>');
+            buf.push('<span class="kpi"><span class="kpi-label">Факт</span> ' + (item.fact || 0).toLocaleString('ru') + '</span>');
+            buf.push('<span class="kpi kpi-eff"><span class="kpi-label">Эфф.</span> <strong>' + (item.efficiency ?? 0) + '%</strong></span>');
+            buf.push('</div>');
+            buf.push('</div>');
+            if (item.downtimeCategories && item.downtimeCategories.length > 0) {
+                buf.push('<div class="item-detail-title">Детализация простоев</div>');
+                for (const d of item.downtimeCategories) {
+                    buf.push('<div class="item-category-row"><div class="item-category-name"><strong>' + esc(d.category) + '</strong></div><div class="item-category-min">' + (d.minutes || 0) + ' мин</div><div class="item-category-pct">' + (d.percent ?? 0).toFixed(2) + '%</div></div>');
+                    const unplanned = (item.unplannedByCategory && item.unplannedByCategory[d.category]) || [];
+                    if (unplanned.length > 0) {
+                        const byLine = new Map();
+                        for (const s of unplanned) {
+                            const lineKey = s.line != null && String(s.line).trim() !== '' ? String(s.line).trim() : '—';
+                            if (!byLine.has(lineKey)) byLine.set(lineKey, []);
+                            byLine.get(lineKey).push(s);
+                        }
+                        const sortedLines = Array.from(byLine.keys()).sort((a, b) => (a === '—' ? 1 : b === '—' ? -1 : String(a).localeCompare(b, undefined, { numeric: true })));
+                        for (const lineKey of sortedLines) {
+                            const stops = byLine.get(lineKey);
+                            buf.push('<div class="item-line-group"><strong>Линия ' + esc(lineKey) + '</strong></div>');
+                            for (const s of stops) {
+                                const desc = [s.type, s.description].filter(Boolean).map((x) => esc(x)).join(' — ') || '';
+                                const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
+                                buf.push('<div class="item-unplanned-line">— ' + esc(d.category) + ' — ' + desc + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                            }
+                        }
+                    }
+                }
+            }
+            buf.push('</div>');
+            return buf.join('\n');
+        };
+
+        parts.push('<section class="report-section">');
+        parts.push('<h2 class="section-title">Простои по датам</h2>');
+        for (const item of chartData.byDate) {
+            parts.push(renderItem(item, 'date'));
+        }
+        parts.push('</section>');
+        parts.push('</div>');
+
+        const bodyHtml = parts.join('\n');
+        const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Доля неплановых простоев</title>'
+            + '<style>'
+            + 'body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:18px;font-size:13px;line-height:1.45;color:#111827;background:#fff;}'
+            + '.report{max-width:980px;margin:0 auto;}'
+            + '.report-title{font-size:22px;font-weight:700;margin:0 0 6px;color:#0f172a;}'
+            + '.report-meta{font-size:12px;color:#475569;margin-bottom:14px;}'
+            + '.report-section{margin-top:10px;}'
+            + '.section-title{font-size:16px;font-weight:700;margin:0 0 10px;padding:0 0 6px;border-bottom:2px solid #1f2937;color:#111827;}'
+            + '.item-block{margin-bottom:10px;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;break-inside:avoid;}'
+            + '.item-header{display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:6px;}'
+            + '.item-date{font-size:15px;color:#0f172a;}'
+            + '.item-kpis{display:flex;gap:8px;flex-wrap:wrap;}'
+            + '.kpi{display:inline-block;padding:2px 8px;border:1px solid #d1d5db;border-radius:999px;font-size:12px;color:#0f172a;background:#f8fafc;}'
+            + '.kpi-label{color:#334155;font-weight:600;margin-right:4px;}'
+            + '.kpi-eff{border-color:#94a3b8;}'
+            + '.item-detail-title{font-weight:700;color:#1f2937;margin:8px 0 4px;}'
+            + '.item-category-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:baseline;padding:2px 0;border-bottom:1px dotted #d1d5db;}'
+            + '.item-category-name{color:#111827;}'
+            + '.item-category-min,.item-category-pct{font-variant-numeric:tabular-nums;color:#334155;}'
+            + '.item-line-group{margin:6px 0 2px 10px;color:#0f172a;}'
+            + '.item-unplanned-line{margin:2px 0 2px 20px;padding-left:8px;border-left:2px solid #9ca3af;color:#1f2937;}'
+            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;}}</style></head><body>'
+            + bodyHtml
+            + '</body></html>';
+        const w = window.open('', '_blank');
+        if (w) {
+            w.document.write(html);
+            w.document.close();
+            w.focus();
+            setTimeout(() => w.print(), 300);
+        }
+    }, [chartData]);
 
     useEffect(() => {
         if (!isElectron) return;
@@ -1333,12 +1281,26 @@ const ProductionView = () => {
             if (downtimeSelectorRef.current && !downtimeSelectorRef.current.contains(event.target)) {
                 setIsDowntimeSelectorOpen(false);
             }
+            if (dateFilterRef.current && !dateFilterRef.current.contains(event.target)) {
+                setIsDateFilterOpen(false);
+            }
         };
         if (isDowntimeSelectorOpen) {
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
         }
     }, [isDowntimeSelectorOpen]);
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (dateFilterRef.current && !dateFilterRef.current.contains(event.target)) {
+                setIsDateFilterOpen(false);
+            }
+        };
+        if (isDateFilterOpen) {
+            document.addEventListener('mousedown', handleClickOutside);
+            return () => document.removeEventListener('mousedown', handleClickOutside);
+        }
+    }, [isDateFilterOpen]);
 
     // Добавляем CSS анимацию для пирога
     useEffect(() => {
@@ -1479,11 +1441,61 @@ const ProductionView = () => {
                                 Синхронизация
                             </button>
                         )}
+                        {uniqueDowntimeTypes.length > 0 && (
+                            <div className="relative" ref={downtimeSelectorRef}>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsDowntimeSelectorOpen(!isDowntimeSelectorOpen)}
+                                    className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                                    title="Виды простоев, не влияющие на план"
+                                >
+                                    <Filter size={16} className="text-slate-400 flex-shrink-0" />
+                                    <span className="whitespace-nowrap">
+                                        {excludedDowntimeTypes.size > 0
+                                            ? `Искл.: ${excludedDowntimeTypes.size}`
+                                            : 'Простои (искл.)'}
+                                    </span>
+                                    <ChevronDown size={14} className={`text-slate-400 flex-shrink-0 transition-transform ${isDowntimeSelectorOpen ? 'rotate-180' : ''}`} />
+                                </button>
+                                {isDowntimeSelectorOpen && (
+                                    <div className="absolute z-50 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg min-w-[220px] max-h-60 overflow-y-auto">
+                                        <div className="p-2 border-b border-slate-100 text-xs font-semibold text-slate-500">Не влияющие на план</div>
+                                        <div className="p-2">
+                                            {uniqueDowntimeTypes.map(type => {
+                                                const isSelected = excludedDowntimeTypes.has(type);
+                                                return (
+                                                    <label
+                                                        key={type}
+                                                        className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer rounded transition-colors"
+                                                    >
+                                                        <div className={`flex-shrink-0 w-4 h-4 border-2 rounded flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-slate-300 bg-white'}`}>
+                                                            {isSelected && <Check size={12} className="text-white" />}
+                                                        </div>
+                                                        <span className="text-sm text-slate-700 flex-1">{type}</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={isSelected}
+                                                            onChange={(e) => {
+                                                                const newSet = new Set(excludedDowntimeTypes);
+                                                                if (e.target.checked) newSet.add(type);
+                                                                else newSet.delete(type);
+                                                                setProductionExcludedDowntimeTypes(Array.from(newSet));
+                                                            }}
+                                                            className="hidden"
+                                                        />
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                     <input
                         ref={fileInputRef}
                         type="file"
-                        accept=".xls,.xlsx"
+                        accept=".xls,.xlsx,.xlsm"
                         multiple
                         className="hidden"
                         onChange={handleFileChange}
@@ -1526,88 +1538,67 @@ const ProductionView = () => {
                             ))}
                         </select>
                     </div>
-                    <div className="relative">
-                        <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <select
-                            value={filterDate}
-                            onChange={(e) => setFilterDate(e.target.value)}
-                            className="pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px]"
+                    <div className="relative" ref={dateFilterRef}>
+                        <button
+                            type="button"
+                            onClick={() => setIsDateFilterOpen(!isDateFilterOpen)}
+                            className="pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px] flex items-center justify-between hover:bg-slate-50"
                         >
-                            <option value="">Все даты</option>
-                            {uniqueDates.length > 0 ? uniqueDates.map(date => (
-                                <option key={date} value={date}>{date}</option>
-                            )) : (
-                                <option value="" disabled>Нет доступных дат</option>
-                            )}
-                        </select>
+                            <span className="flex items-center gap-2">
+                                <Filter size={16} className="text-slate-400 flex-shrink-0" />
+                                {filterDates.length === 0
+                                    ? 'Все даты'
+                                    : filterDates.length === 1
+                                        ? filterDates[0]
+                                        : `Выбрано: ${filterDates.length} дат`}
+                            </span>
+                            <ChevronDown size={16} className={`text-slate-400 flex-shrink-0 transition-transform ${isDateFilterOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                        {isDateFilterOpen && (
+                            <div className="absolute z-50 left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg min-w-[200px] max-h-56 overflow-y-auto">
+                                <div className="p-2 border-b border-slate-100 flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setFilterDates([...uniqueDates])}
+                                        className="px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded"
+                                    >
+                                        Выбрать все
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setFilterDates([])}
+                                        className="px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded"
+                                    >
+                                        Сбросить
+                                    </button>
+                                </div>
+                                <div className="p-2 grid grid-cols-1 gap-0.5">
+                                    {uniqueDates.length === 0 ? (
+                                        <div className="text-xs text-slate-500 py-2">Нет доступных дат</div>
+                                    ) : (
+                                        uniqueDates.map((date) => {
+                                            const isSelected = filterDates.includes(date);
+                                            return (
+                                                <label key={date} className="flex items-center gap-2 py-1.5 px-2 hover:bg-slate-50 rounded cursor-pointer text-sm text-slate-700">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        onChange={() => {
+                                                            setFilterDates((prev) =>
+                                                                prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date]
+                                                            );
+                                                        }}
+                                                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                                    />
+                                                    <span>{date}</span>
+                                                </label>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    {activeTab === 'production' && uniqueDowntimeTypes.length > 0 && (
-                        <div className="relative w-full" ref={downtimeSelectorRef}>
-                            <button
-                                type="button"
-                                onClick={() => setIsDowntimeSelectorOpen(!isDowntimeSelectorOpen)}
-                                className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 min-w-[250px] flex items-center justify-between hover:bg-slate-50 transition-colors"
-                            >
-                                <div className="flex items-center gap-2">
-                                    <Filter size={16} className="text-slate-400" />
-                                    <span className="text-left">
-                                        {excludedDowntimeTypes.size > 0 
-                                            ? `Исключено: ${excludedDowntimeTypes.size} вид(ов)`
-                                            : 'Виды простоев, не влияющие на план'
-                                        }
-                                    </span>
-                                </div>
-                                <ChevronDown 
-                                    size={16} 
-                                    className={`text-slate-400 transition-transform ${isDowntimeSelectorOpen ? 'rotate-180' : ''}`} 
-                                />
-                            </button>
-                            {isDowntimeSelectorOpen && (
-                                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                                    <div className="p-2">
-                                        {uniqueDowntimeTypes.length === 0 ? (
-                                            <div className="px-3 py-2 text-sm text-slate-500 text-center">
-                                                Нет доступных видов простоев
-                                            </div>
-                                        ) : (
-                                            uniqueDowntimeTypes.map(type => {
-                                                const isSelected = excludedDowntimeTypes.has(type);
-                                                return (
-                                                    <label
-                                                        key={type}
-                                                        className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer rounded transition-colors"
-                                                    >
-                                                        <div className={`flex-shrink-0 w-4 h-4 border-2 rounded flex items-center justify-center transition-colors ${
-                                                            isSelected 
-                                                                ? 'bg-blue-600 border-blue-600' 
-                                                                : 'border-slate-300 bg-white'
-                                                        }`}>
-                                                            {isSelected && <Check size={12} className="text-white" />}
-                                                        </div>
-                                                        <span className="text-sm text-slate-700 flex-1">{type}</span>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={isSelected}
-                                                            onChange={(e) => {
-                                                                const newSet = new Set(excludedDowntimeTypes);
-                                                                if (e.target.checked) {
-                                                                    newSet.add(type);
-                                                                } else {
-                                                                    newSet.delete(type);
-                                                                }
-                                                                setProductionExcludedDowntimeTypes(Array.from(newSet));
-                                                            }}
-                                                            className="hidden"
-                                                        />
-                                                    </label>
-                                                );
-                                            })
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    )}
                 </div>
             </div>
             {isParsing && (
@@ -1669,16 +1660,6 @@ const ProductionView = () => {
                                 Линии
                             </button>
                             <button
-                                onClick={() => setActiveTab('reports')}
-                                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
-                                    activeTab === 'reports'
-                                        ? 'bg-blue-600 text-white shadow-sm'
-                                        : 'bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600'
-                                }`}
-                            >
-                                Отчеты
-                            </button>
-                            <button
                                 onClick={() => setActiveTab('norms')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'norms'
@@ -1710,16 +1691,13 @@ const ProductionView = () => {
                                             <th className="px-4 py-3 border-b">Время начала</th>
                                             <th className="px-4 py-3 border-b">Время конца</th>
                                             <th className="px-4 py-3 border-b text-center">Количество</th>
-                                            <th className="px-4 py-3 border-b text-center">Доступное время (мин)</th>
-                                            <th className="px-4 py-3 border-b text-center">Время простоев (мин)</th>
-                                            <th className="px-4 py-3 border-b text-center">План</th>
                                             <th className="px-4 py-3 border-b text-center">Смена</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
                                         {filteredRows.length === 0 ? (
                                             <tr>
-                                                <td colSpan={11} className="px-4 py-8 text-center text-slate-400">
+                                                <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
                                                     Нет данных для отображения
                                                 </td>
                                             </tr>
@@ -1734,27 +1712,6 @@ const ProductionView = () => {
                                                     <td className="px-4 py-3 text-slate-600">{row.end || '—'}</td>
                                                     <td className="px-4 py-3 text-center text-slate-700 font-semibold">
                                                         {typeof row.qty === 'number' ? Math.round(row.qty) : row.qty}
-                                                    </td>
-                                                    <td className="px-4 py-3 text-center text-slate-600">
-                                                        {row.availableMinutes !== null && row.availableMinutes !== undefined 
-                                                            ? <span>{Math.round(row.availableMinutes)}</span>
-                                                            : <span className="text-slate-400">—</span>
-                                                        }
-                                                    </td>
-                                                    <td className="px-4 py-3 text-center text-slate-600">
-                                                        {row.downtimeMinutes !== null && row.downtimeMinutes !== undefined 
-                                                            ? <span>{Math.round(row.downtimeMinutes)}</span>
-                                                            : <span className="text-slate-400">—</span>
-                                                        }
-                                                    </td>
-                                                    <td className="px-4 py-3 text-center text-slate-700">
-                                                        {(() => {
-                                                            const lineKey = getLineNumberFromRow(row);
-                                                            const planVal = lineKey && planByLineDate[lineKey] ? planByLineDate[lineKey][row.date] : undefined;
-                                                            return planVal != null
-                                                                ? <span className="font-semibold">{Math.round(planVal)}</span>
-                                                                : <span className="text-slate-400">—</span>;
-                                                        })()}
                                                     </td>
                                                     <td className="px-4 py-3 text-center">
                                                         <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${
@@ -1874,6 +1831,17 @@ const ProductionView = () => {
                                                 <span className="text-xs text-slate-500">
                                                     {chartsDetailMode === 'summary' ? 'Полоски и детализация по нормативным (плановым) категориям.' : 'Полоски по сырым категориям; раскройте дату или линию (▶) для списка неплановых остановок.'}
                                                 </span>
+                                                {chartsDetailMode === 'unplanned' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={openUnplannedReportPrint}
+                                                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg text-sm font-semibold hover:bg-slate-800 transition-colors"
+                                                        title="Сформировать текстовый отчёт и открыть в новом окне для печати"
+                                                    >
+                                                        <Printer size={16} />
+                                                        Печать (текстовый отчёт)
+                                                    </button>
+                                                )}
                                             </div>
                                             {/* Общая статистика */}
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2040,49 +2008,23 @@ const ProductionView = () => {
                                                                                             {chartsDetailMode === 'unplanned' && unplannedList && unplannedList.length > 0 && (
                                                                                                 <div className="mt-2 space-y-1">
                                                                                                     <div className="text-xs font-medium text-slate-600 mb-1">Неплановые остановки:</div>
-                                                                                                    {unplannedList.map((stop, sIdx) => (
+                                                                                                    {unplannedList.map((stop, sIdx) => {
+                                                                                                        const showType = stop.type && stop.type !== downtime.category;
+                                                                                                        return (
                                                                                                         <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
-                                                                                                            {stop.type && <span className="text-amber-700">{stop.type}</span>}
-                                                                                                            {stop.description && <span> — {stop.description}</span>}
+                                                                                                            {showType && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                            {showType && stop.description && <span> — </span>}
+                                                                                                            {stop.description && <span>{stop.description}</span>}
                                                                                                             <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
                                                                                                             {stop.line && <span className="text-slate-400"> · линия {stop.line}</span>}
+                                                                                                            {stop.comment && String(stop.comment).trim() && <span className="text-slate-500 italic"> — {stop.comment}</span>}
                                                                                                         </div>
-                                                                                                    ))}
+                                                                                                        ); })}
                                                                                                 </div>
                                                                                             )}
                                                                                         </div>
                                                                                     ); })}
                                                                                 </div>
-                                                                                {chartsDetailMode === 'unplanned' && item.unplannedByCategory && (
-                                                                                    <div className="mt-3 pt-3 border-t border-amber-200">
-                                                                                        <div className="text-xs font-semibold text-amber-800 mb-2">Неплановые остановки по категориям</div>
-                                                                                        {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).length === 0 ? (
-                                                                                            <p className="text-xs text-slate-500">Нет неплановых остановок по этой дате.</p>
-                                                                                        ) : (
-                                                                                            <div className="space-y-2">
-                                                                                                {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).map(([cat, stops]) => (
-                                                                                                    <div key={cat} className="bg-amber-50/70 p-3 rounded border border-amber-200">
-                                                                                                        <div className="flex items-center gap-2 mb-1">
-                                                                                                            <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(cat) }} />
-                                                                                                            <span className="text-sm font-semibold text-slate-700">{cat}</span>
-                                                                                                            <span className="text-xs text-slate-500">({stops.length} шт.)</span>
-                                                                                                        </div>
-                                                                                                        <div className="space-y-0.5 pl-5">
-                                                                                                            {stops.map((stop, sIdx) => (
-                                                                                                                <div key={sIdx} className="text-xs text-slate-600 border-l-2 border-amber-300 py-0.5 pl-2">
-                                                                                                                    {stop.type && <span className="text-amber-700">{stop.type}</span>}
-                                                                                                                    {stop.description && <span> — {stop.description}</span>}
-                                                                                                                    <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
-                                                                                                                    {stop.line && <span className="text-slate-400"> · линия {stop.line}</span>}
-                                                                                                                </div>
-                                                                                                            ))}
-                                                                                                        </div>
-                                                                                                    </div>
-                                                                                                ))}
-                                                                                            </div>
-                                                                                        )}
-                                                                                    </div>
-                                                                                )}
                                                                             </div>
                                                                         )}
                                                                     </div>
@@ -2225,49 +2167,23 @@ const ProductionView = () => {
                                                                                             {chartsDetailMode === 'unplanned' && unplannedListLine && unplannedListLine.length > 0 && (
                                                                                                 <div className="mt-2 space-y-1">
                                                                                                     <div className="text-xs font-medium text-slate-600 mb-1">Неплановые остановки:</div>
-                                                                                                    {unplannedListLine.map((stop, sIdx) => (
+                                                                                                    {unplannedListLine.map((stop, sIdx) => {
+                                                                                                        const showType = stop.type && stop.type !== downtime.category;
+                                                                                                        return (
                                                                                                         <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
-                                                                                                            {stop.type && <span className="text-amber-700">{stop.type}</span>}
-                                                                                                            {stop.description && <span> — {stop.description}</span>}
+                                                                                                            {showType && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                            {showType && stop.description && <span> — </span>}
+                                                                                                            {stop.description && <span>{stop.description}</span>}
                                                                                                             <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
                                                                                                             {stop.date && <span className="text-slate-400"> · {stop.date}</span>}
+                                                                                                            {stop.comment && String(stop.comment).trim() && <span className="text-slate-500 italic"> — {stop.comment}</span>}
                                                                                                         </div>
-                                                                                                    ))}
+                                                                                                        ); })}
                                                                                                 </div>
                                                                                             )}
                                                                                         </div>
-                                                                                    ); })}
-                                                                                </div>
-                                                                                {chartsDetailMode === 'unplanned' && item.unplannedByCategory && (
-                                                                                    <div className="mt-3 pt-3 border-t border-amber-200">
-                                                                                        <div className="text-xs font-semibold text-amber-800 mb-2">Неплановые остановки по категориям</div>
-                                                                                        {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).length === 0 ? (
-                                                                                            <p className="text-xs text-slate-500">Нет неплановых остановок по этой линии.</p>
-                                                                                        ) : (
-                                                                                            <div className="space-y-2">
-                                                                                                {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).map(([cat, stops]) => (
-                                                                                                    <div key={cat} className="bg-amber-50/70 p-3 rounded border border-amber-200">
-                                                                                                        <div className="flex items-center gap-2 mb-1">
-                                                                                                            <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(cat) }} />
-                                                                                                            <span className="text-sm font-semibold text-slate-700">{cat}</span>
-                                                                                                            <span className="text-xs text-slate-500">({stops.length} шт.)</span>
-                                                                                                        </div>
-                                                                                                        <div className="space-y-0.5 pl-5">
-                                                                                                            {stops.map((stop, sIdx) => (
-                                                                                                                <div key={sIdx} className="text-xs text-slate-600 border-l-2 border-amber-300 py-0.5 pl-2">
-                                                                                                                    {stop.type && <span className="text-amber-700">{stop.type}</span>}
-                                                                                                                    {stop.description && <span> — {stop.description}</span>}
-                                                                                                                    <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
-                                                                                                                    {stop.date && <span className="text-slate-400"> · {stop.date}</span>}
-                                                                                                                </div>
-                                                                                                            ))}
-                                                                                                        </div>
-                                                                                                    </div>
-                                                                                                ))}
-                                                                                            </div>
-                                                                                        )}
-                                                                                    </div>
-                                                                                )}
+                                                                                            ); })}
+                                                                                                </div>
                                                                             </div>
                                                                         )}
                                                                     </div>
@@ -2279,139 +2195,6 @@ const ProductionView = () => {
                                             </div>
                                         </>
                                     )}
-                                </div>
-                            )}
-                            {activeTab === 'reports' && (
-                                <div className="p-6 space-y-6">
-                                    <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-                                        <div className="space-y-3 mb-6">
-                                            <div className="flex flex-wrap items-center justify-between gap-3">
-                                                <div className="text-sm font-semibold text-slate-700">Выбор дат для отчета</div>
-                                                <div className="flex items-center gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setReportDates(uniqueDates)}
-                                                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
-                                                        disabled={uniqueDates.length === 0}
-                                                    >
-                                                        Выбрать все
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setReportDates([])}
-                                                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
-                                                        disabled={reportDates.length === 0}
-                                                    >
-                                                        Сбросить
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            {uniqueDates.length === 0 ? (
-                                                <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
-                                                    Нет доступных дат для выбора.
-                                                </div>
-                                            ) : (
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-40 overflow-auto border border-slate-200 rounded-lg p-3">
-                                                    {uniqueDates.map((date) => {
-                                                        const isSelected = reportDates.includes(date);
-                                                        return (
-                                                            <label key={date} className="flex items-center gap-2 text-sm text-slate-700">
-                                                                <input
-                                                                    type="checkbox"
-                                                                    checked={isSelected}
-                                                                    onChange={() => {
-                                                                        setReportDates((prev) => (
-                                                                            prev.includes(date)
-                                                                                ? prev.filter(item => item !== date)
-                                                                                : [...prev, date]
-                                                                        ));
-                                                                    }}
-                                                                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                                                />
-                                                                <span>{date}</span>
-                                                            </label>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
-                                            {sortedReportDates.length > 0 && (
-                                                <div className="text-xs text-slate-500">
-                                                    Выбрано дат: {sortedReportDates.length}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="space-y-3 mb-6">
-                                            <div className="text-sm font-semibold text-slate-700">Цель эффективности (MTD) по линиям</div>
-                                            {reportLineSlides.length === 0 ? (
-                                                <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
-                                                    Выберите даты, чтобы задать цели по линиям.
-                                                </div>
-                                            ) : (
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                                                    {reportLineSlides.map((line) => (
-                                                        <label key={line.line} className="flex items-center gap-3 text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                                                            <span className="flex-1 font-medium">{line.line}</span>
-                                                            <input
-                                                                type="number"
-                                                                min="0"
-                                                                max="100"
-                                                                step="1"
-                                                                value={reportTargets[line.line] ?? 85}
-                                                                onChange={(e) => {
-                                                                    const value = e.target.value;
-                                                                    setReportTargets((prev) => ({
-                                                                        ...prev,
-                                                                        [line.line]: value === '' ? '' : Number(value)
-                                                                    }));
-                                                                }}
-                                                                className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm"
-                                                            />
-                                                            <span className="text-xs text-slate-500">%</span>
-                                                        </label>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                                            <div>
-                                                <h3 className="text-lg font-bold text-slate-800">HTML-отчет</h3>
-                                                <p className="text-sm text-slate-500 mt-1">
-                                                    Скачайте отчет по эффективности за выбранный период.
-                                                </p>
-                                            </div>
-                                            <div className="flex flex-wrap gap-2">
-                                                <button
-                                                    onClick={openHtmlReport}
-                                                    disabled={sortedReportDates.length === 0 || reportLineSlides.length === 0}
-                                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                >
-                                                    Открыть отчет
-                                                </button>
-                                                <button
-                                                    onClick={downloadHtmlReport}
-                                                    disabled={sortedReportDates.length === 0 || reportLineSlides.length === 0}
-                                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                >
-                                                    Скачать HTML
-                                                </button>
-                                            </div>
-                                        </div>
-                                        {sortedReportDates.length === 0 && (
-                                            <div className="mt-4 text-sm text-amber-600 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
-                                                Выберите хотя бы одну дату, чтобы сформировать отчет.
-                                            </div>
-                                        )}
-                                        {sortedReportDates.length > 0 && reportLineSlides.length === 0 && (
-                                            <div className="mt-4 text-sm text-slate-500 bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg">
-                                                Нет данных по линиям для выбранного периода.
-                                            </div>
-                                        )}
-                                        {reportError && (
-                                            <div className="mt-4 text-sm text-red-600 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
-                                                {reportError}
-                                            </div>
-                                        )}
-                                    </div>
                                 </div>
                             )}
                             {activeTab === 'norms' && (
@@ -2434,7 +2217,7 @@ const ProductionView = () => {
                                             <div className="text-center py-12 text-slate-400">
                                                 <BarChart3 size={48} className="mx-auto mb-4 opacity-50" />
                                                 <p className="text-lg font-medium">Нет линий</p>
-                                                <p className="text-sm mt-2">{filterDate ? 'На выбранную дату нет данных по линиям' : 'Нет данных по линиям'}</p>
+                                                <p className="text-sm mt-2">{filterDates.length > 0 ? 'На выбранные даты нет данных по линиям' : 'Нет данных по линиям'}</p>
                                             </div>
                                         )
                                     ) : (
@@ -2442,7 +2225,7 @@ const ProductionView = () => {
                                             <div className="flex items-center justify-between mb-6">
                                                 <div>
                                                     <h3 className="text-lg font-bold text-slate-800">Линия: {lineSlides[lineSlideIndex]?.line}</h3>
-                                                    <div className="text-xs text-slate-500">Дата: {filterDate || 'Все даты'}</div>
+                                                    <div className="text-xs text-slate-500">Даты: {filterDates.length === 0 ? 'Все даты' : filterDates.length === 1 ? filterDates[0] : `${filterDates.length} дат`}</div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <button
@@ -2474,7 +2257,7 @@ const ProductionView = () => {
                                                     <div className="flex flex-col items-center">
                                                         <div className="relative h-96 w-96">
                                                             <div
-                                                                key={`pie-${lineSlideIndex}-${filterDate}`}
+                                                                key={`pie-${lineSlideIndex}-${filterDates.join(',')}`}
                                                                 className="h-96 w-96 rounded-full border border-slate-200 shadow-sm"
                                                                 style={{ 
                                                                     background: buildConicGradient(lineSlides[lineSlideIndex]?.segments || []),

@@ -4,6 +4,7 @@ import { STORAGE_KEYS, debounce, isLineMatch, expandCompositeLineKey } from '../
 import { TRANSITION_RULES_BASE } from './transitionRulesBase';
 import { openReportPreview, exportReportAsPdf } from '../../export/reportExport';
 import { useData } from '../../context/DataContext';
+import { DEFAULT_LINE_EVENTS, PLANNING_EVENT_CATEGORIES } from '../../data/planningLineEvents';
 
 const DEFAULT_LINE_OPTIONS = [
     'Линия 1',
@@ -247,185 +248,6 @@ const DEFAULT_CIP_BETWEEN = [
         manualStart: false,
         manualEnd: false,
         type: 'CIP 3'
-    }
-];
-
-const DEFAULT_LINE_EVENTS = [
-    {
-        category: 'Передача смены',
-        durations: {
-            'Линия 1': 20,
-            'Линия 2': 20,
-            'Линия 3': 20,
-            'Линия 4': 20,
-            'Линия 5 (Сиропы)': 20,
-            'Линия 6 (Bag-in-Box)': 20,
-            'Линия 7 (Топпинги)': 20,
-            'Линия 8 (Соусы)': 20,
-            'Линия 9 (Пюре)': 20,
-            'Линия 10 (ПЭТ)': 20,
-            'Линия 11 (Лимонады)': 20
-        }
-    },
-    {
-        category: 'Запуск линии',
-        durations: {
-            'Линия 1': 30,
-            'Линия 2': 30,
-            'Линия 3': 30,
-            'Линия 4': 30,
-            'Линия 5 (Сиропы)': 30,
-            'Линия 6 (Bag-in-Box)': 30,
-            'Линия 7 (Топпинги)': 10,
-            'Линия 8 (Соусы)': 30,
-            'Линия 9 (Пюре)': 30,
-            'Линия 10 (ПЭТ)': 30,
-            'Линия 11 (Лимонады)': 30
-        }
-    },
-    {
-        category: 'Смена ассортимента',
-        durations: {
-            'Линия 1': 15,
-            'Линия 2': 15,
-            'Линия 3': 15,
-            'Линия 4': 15,
-            'Линия 5 (Сиропы)': 15,
-            'Линия 6 (Bag-in-Box)': 0,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 15,
-            'Линия 9 (Пюре)': 0,
-            'Линия 10 (ПЭТ)': 15,
-            'Линия 11 (Лимонады)': 15
-        }
-    },
-    {
-        category: 'Переналадка формата',
-        durations: {
-            'Линия 1': 120,
-            'Линия 2': 120,
-            'Линия 3': 60,
-            'Линия 4': 60,
-            'Линия 5 (Сиропы)': 240,
-            'Линия 6 (Bag-in-Box)': 0,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 0,
-            'Линия 9 (Пюре)': 0,
-            'Линия 10 (ПЭТ)': 0,
-            'Линия 11 (Лимонады)': 0
-        }
-    },
-    {
-        category: 'Стерилизация',
-        durations: {
-            'Линия 1': 0,
-            'Линия 2': 0,
-            'Линия 3': 0,
-            'Линия 4': 0,
-            'Линия 5 (Сиропы)': 0,
-            'Линия 6 (Bag-in-Box)': 0,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 40,
-            'Линия 9 (Пюре)': 40,
-            'Линия 10 (ПЭТ)': 0,
-            'Линия 11 (Лимонады)': 0
-        }
-    },
-    {
-        category: 'CIP1 (холодная вода)',
-        durations: {
-            'Линия 1': 40,
-            'Линия 2': 40,
-            'Линия 3': 40,
-            'Линия 4': 150,
-            'Линия 5 (Сиропы)': 20,
-            'Линия 6 (Bag-in-Box)': 0,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 0,
-            'Линия 9 (Пюре)': 0,
-            'Линия 10 (ПЭТ)': 0,
-            'Линия 11 (Лимонады)': 0
-        }
-    },
-    {
-        category: 'CIP1 (горячая вода)',
-        durations: {
-            'Линия 1': 0,
-            'Линия 2': 0,
-            'Линия 3': 0,
-            'Линия 4': 0,
-            'Линия 5 (Сиропы)': 40,
-            'Линия 6 (Bag-in-Box)': 30,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 0,
-            'Линия 9 (Пюре)': 0,
-            'Линия 10 (ПЭТ)': 40,
-            'Линия 11 (Лимонады)': 0
-        }
-    },
-    {
-        category: 'CIP2 (щелочная)',
-        durations: {
-            'Линия 1': 240,
-            'Линия 2': 240,
-            'Линия 3': 240,
-            'Линия 4': 240,
-            'Линия 5 (Сиропы)': 240,
-            'Линия 6 (Bag-in-Box)': 120,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 240,
-            'Линия 9 (Пюре)': 240,
-            'Линия 10 (ПЭТ)': 240,
-            'Линия 11 (Лимонады)': 240
-        }
-    },
-    {
-        category: 'CIP3 (щелочь, кислота)',
-        durations: {
-            'Линия 1': 300,
-            'Линия 2': 300,
-            'Линия 3': 300,
-            'Линия 4': 300,
-            'Линия 5 (Сиропы)': 300,
-            'Линия 6 (Bag-in-Box)': 180,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 300,
-            'Линия 9 (Пюре)': 300,
-            'Линия 10 (ПЭТ)': 300,
-            'Линия 11 (Лимонады)': 300
-        }
-    },
-    {
-        category: 'Настройка ЧЗ',
-        durations: {
-            'Линия 1': 0,
-            'Линия 2': 0,
-            'Линия 3': 0,
-            'Линия 4': 0,
-            'Линия 5 (Сиропы)': 0,
-            'Линия 6 (Bag-in-Box)': 0,
-            'Линия 7 (Топпинги)': 0,
-            'Линия 8 (Соусы)': 0,
-            'Линия 9 (Пюре)': 0,
-            'Линия 10 (ПЭТ)': 0,
-            'Линия 11 (Лимонады)': 0
-        }
-    },
-    {
-        category: 'Вытеснение',
-        durations: {
-            'Линия 1': 30,
-            'Линия 2': 30,
-            'Линия 3': 30,
-            'Линия 4': 30,
-            'Линия 5 (Сиропы)': 30,
-            'Линия 6 (Bag-in-Box)': 30,
-            'Линия 7 (Топпинги)': 30,
-            'Линия 8 (Соусы)': 30,
-            'Линия 9 (Пюре)': 30,
-            'Линия 10 (ПЭТ)': 30,
-            'Линия 11 (Лимонады)': 30
-        }
     }
 ];
 
@@ -716,10 +538,9 @@ const PlanningView = () => {
 
     const transitionAnalytics = useMemo(() => {
         const getCipDuration = (cipKey) => {
-            const patternByCip = { cip1: /CIP1/i, cip2: /CIP2/i, cip3: /CIP3/i };
-            const re = patternByCip[cipKey];
-            if (!re) return null;
-            const event = lineEvents.find(e => re.test(e.category));
+            const category = PLANNING_EVENT_CATEGORIES[cipKey];
+            if (!category) return null;
+            const event = lineEvents.find(e => e.category === category);
             if (!event) return null;
             const templateKey = getTemplateKeyForLine(selectedPlanLine);
             const raw = event.durations?.[selectedPlanLine] ?? event.durations?.[templateKey];
@@ -1392,12 +1213,12 @@ const PlanningView = () => {
         const dur = (event) => event?.durations?.[selectedPlanLine] ?? event?.durations?.[templateKey] ?? 0;
         const timeBudgetMs = 2500;
         const cipDurationsForOptimization = {
-            cip1: dur(lineEvents.find(e => /CIP1/i.test(e.category))) || 0,
-            cip2: dur(lineEvents.find(e => /CIP2/i.test(e.category))) || 0,
-            cip3: dur(lineEvents.find(e => /CIP3/i.test(e.category))) || 0,
-            perenaladka: dur(lineEvents.find(e => e.category && e.category.includes('Переналадка'))) || 0,
-            smenaAssortimenta: dur(lineEvents.find(e => e.category && e.category.includes('Смена ассортимента'))) || 0,
-            vytesnenie: dur(lineEvents.find(e => e.category && e.category.includes('Вытеснение'))) || 0
+            cip1: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.cip1)) || 0,
+            cip2: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.cip2)) || 0,
+            cip3: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.cip3)) || 0,
+            perenaladka: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.perenaladka)) || 0,
+            smenaAssortimenta: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.smenaAssortimenta)) || 0,
+            vytesnenie: dur(lineEvents.find(e => e.category === PLANNING_EVENT_CATEGORIES.vytesnenie)) || 0
         };
         if (lineProducts.length === 0) {
             setTransitionError('Нет продуктов для выбранной линии.');
@@ -1678,11 +1499,10 @@ const PlanningView = () => {
     }, [eventOptions]);
 
     const getEventKeyForCipKey = (cipKey) => {
-        const patternByCip = { cip1: /CIP1/i, cip2: /CIP2/i, cip3: /CIP3/i };
-        const re = patternByCip[cipKey];
-        if (!re) return eventOptions[0]?.key || '';
-        const match = lineEvents.find((item) => re.test(item.category));
-        return match ? match.category : (eventOptions[0]?.key || '');
+        const category = PLANNING_EVENT_CATEGORIES[cipKey];
+        if (!category) return eventOptions[0]?.key || '';
+        const hasEvent = lineEvents.some((item) => item.category === category);
+        return hasEvent ? category : (eventOptions[0]?.key || '');
     };
 
     const getEventKeyForCategoryName = (categoryName) => {
@@ -1699,7 +1519,7 @@ const PlanningView = () => {
         const volTo = normalizeVolumeForCompare(toParts.volume);
 
         if (volFrom !== volTo) {
-            const key = getEventKeyForCategoryName('Переналадка формата');
+            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.perenaladka);
             if (key) return key;
         }
 
@@ -1711,7 +1531,7 @@ const PlanningView = () => {
         const differentBrand = brandFrom !== brandTo;
 
         if (sameType && sameFlavor && sameVolume && differentBrand) {
-            const key = getEventKeyForCategoryName('Смена ассортимента');
+            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.smenaAssortimenta);
             if (key) return key;
         }
 
@@ -1724,7 +1544,7 @@ const PlanningView = () => {
             const excSub = (r.exception || '').toLowerCase().trim();
             if (!fromSub || !toSub) continue;
             if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
-                const key = getEventKeyForCategoryName('Вытеснение');
+                const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.vytesnenie);
                 if (key) return key;
                 break;
             }
@@ -3686,7 +3506,7 @@ const PlanningView = () => {
                                             </div>
                                             <ol className="mt-2 space-y-1">
                                                 {((transitionResult?.transitionRows?.length) ? transitionResult.transitionRows : transitionAnalytics.now.rows).map((row, idx) => {
-                                                    const cipLabel = row.cipKey === 'perenaladka' ? 'Переналадка' : row.cipKey === 'smenaAssortimenta' ? 'Смена ассортимента' : row.cipKey === 'vytesnenie' ? 'Вытеснение' : row.cipKey ? row.cipKey.toUpperCase() : 'НЕТ ПРАВИЛ';
+                                                    const cipLabel = PLANNING_EVENT_CATEGORIES[row.cipKey] || (row.cipKey ? row.cipKey.toUpperCase() : 'НЕТ ПРАВИЛ');
                                                     return (
                                                         <li key={`${row.from}_${row.to}_${idx}`} className="text-sm">
                                                             {idx + 1}. {row.from} → {row.to} — {cipLabel} (
