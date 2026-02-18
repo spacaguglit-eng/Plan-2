@@ -1,8 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw } from 'lucide-react';
+import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw, Clock } from 'lucide-react';
 import { generateProductionReportHtml } from './productionReportHtml';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS } from '../../utils';
+import {
+    ALL_CATEGORIES,
+    NORM_CHOICES,
+    getDefaultLineNorms,
+    getLineNumberFromRow,
+    compareDowntimesToNorms,
+    computePlanByLineDate,
+    isPlannedDowntime
+} from '../../utils/normsComparison';
 // Палитра отчёта: цвет и HEX для категорий простоев
 // Полуночный синий #003366 — база/план | Стальной серый #546E7A — нейтральный | Темный изумруд #00695C — успех
 // Винный #880E4F — риски | Глубокий охристый #B8860B — умеренные результаты | Темный индиго #283593 — инновации | Аспидно-сизый #37474F — итоги
@@ -23,6 +32,9 @@ const FALLBACK_CATEGORY_HEX = {
     'bg-red-400': '#f87171', 'bg-pink-400': '#f472b6', 'bg-cyan-400': '#22d3ee',
     'bg-yellow-400': '#facc15', 'bg-gray-400': '#9ca3af'
 };
+
+/** Цвет сегмента «Доступное время» на графиках (100% = work time) */
+const AVAILABLE_TIME_COLOR = '#22c55e';
 
 const CATEGORY_KEYS = Object.keys(DOWNTIME_CATEGORY_COLORS);
 
@@ -48,6 +60,7 @@ const getCategoryColor = (category) => {
 };
 
 const getCategoryColorHex = (category) => {
+    if (category === 'Доступное время') return AVAILABLE_TIME_COLOR;
     const key = resolveCategoryKey(category);
     if (key) return DOWNTIME_CATEGORY_COLORS[key].hex;
     const className = getCategoryColor(category);
@@ -87,21 +100,154 @@ const buildConicGradient = (segments) => {
     return `conic-gradient(${parts.join(', ')})`;
 };
 
+const LINE_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+function NormsTab({ productionLineNorms, setProductionLineNorms, flatDowntimeRows }) {
+    const [currentLine, setCurrentLine] = useState('1');
+    const lineNorms = productionLineNorms || getDefaultLineNorms(LINE_NUMBERS);
+    const normsForLine = lineNorms[currentLine] || {};
+    const lineOptions = useMemo(() => {
+        const fromData = new Set();
+        (flatDowntimeRows || []).forEach((row) => {
+            const num = getLineNumberFromRow(row);
+            if (num) fromData.add(num);
+        });
+        const combined = new Set([...LINE_NUMBERS.map(String), ...fromData]);
+        return Array.from(combined).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    }, [flatDowntimeRows]);
+
+    const handleNormChange = (cat, value) => {
+        const num = parseInt(value, 10);
+        setProductionLineNorms((prev) => {
+            const base = prev ?? getDefaultLineNorms(LINE_NUMBERS);
+            return {
+                ...base,
+                [currentLine]: { ...(base[currentLine] || {}), [cat]: Number.isNaN(num) ? 0 : num },
+            };
+        });
+    };
+
+    const { comparison, other } = useMemo(
+        () => compareDowntimesToNorms(flatDowntimeRows || [], lineNorms),
+        [flatDowntimeRows, lineNorms]
+    );
+
+    const choiceValues = useMemo(() => {
+        const s = new Set(NORM_CHOICES.map(String));
+        ALL_CATEGORIES.forEach((cat) => {
+            LINE_NUMBERS.forEach((n) => {
+                const v = lineNorms[String(n)]?.[cat];
+                if (v != null) s.add(String(v));
+            });
+        });
+        return Array.from(s).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    }, [lineNorms]);
+
+    return (
+        <div className="p-6 space-y-6">
+            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-4">Нормативы плановых остановок (мин)</h3>
+                <div className="flex items-center gap-4 mb-4">
+                    <label className="text-sm font-medium text-slate-700">Линия:</label>
+                    <select
+                        value={currentLine}
+                        onChange={(e) => setCurrentLine(e.target.value)}
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm bg-white text-slate-800 min-w-[100px]"
+                    >
+                        {lineOptions.map((n) => (
+                            <option key={n} value={n}>
+                                {n}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+                <div className="overflow-x-auto max-h-[320px] overflow-y-auto border border-slate-200 rounded-lg">
+                    <table className="w-full text-sm">
+                        <thead className="bg-slate-50 sticky top-0">
+                            <tr>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Категория</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Норма (мин)</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {ALL_CATEGORIES.map((cat) => (
+                                <tr key={cat}>
+                                    <td className="px-4 py-2 text-slate-700">{cat}</td>
+                                    <td className="px-4 py-2">
+                                        <select
+                                            value={String(normsForLine[cat] ?? 0)}
+                                            onChange={(e) => handleNormChange(cat, e.target.value)}
+                                            className="rounded border border-slate-300 px-2 py-1 text-sm bg-white text-slate-800 w-24"
+                                        >
+                                            {choiceValues.map((v) => (
+                                                <option key={v} value={v}>
+                                                    {v}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">Нормативы сохраняются при изменении.</p>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+                <h3 className="text-lg font-bold text-slate-800 mb-4">Сравнение с нормативами</h3>
+                {!flatDowntimeRows || flatDowntimeRows.length === 0 ? (
+                    <p className="text-sm text-slate-500">Загрузите файлы производства, чтобы увидеть сравнение простоев с нормативами.</p>
+                ) : (
+                    <div className="space-y-4">
+                        <div>
+                            <h4 className="text-sm font-semibold text-slate-700 mb-2">Факт / норма (мин)</h4>
+                            {comparison.length === 0 ? (
+                                <p className="text-sm text-slate-500">Нет плановых простоев с заданным нормативом и известной длительностью.</p>
+                            ) : (
+                                <pre className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-4 overflow-auto max-h-60 font-sans whitespace-pre-wrap">
+                                    {comparison.join('\n')}
+                                </pre>
+                            )}
+                        </div>
+                        <div>
+                            <h4 className="text-sm font-semibold text-slate-700 mb-2">Без нормы или не распознаны</h4>
+                            {other.length === 0 ? (
+                                <p className="text-sm text-slate-500">Нет таких простоев.</p>
+                            ) : (
+                                <pre className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-4 overflow-auto max-h-60 font-sans whitespace-pre-wrap">
+                                    {other.join('\n')}
+                                </pre>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 const ProductionView = () => {
     const {
         productionResults,
         setProductionResults,
         productionExcludedDowntimeTypes,
-        setProductionExcludedDowntimeTypes
+        setProductionExcludedDowntimeTypes,
+        productionLineNorms,
+        setProductionLineNorms
     } = useData();
     const fileInputRef = useRef(null);
     const results = productionResults ?? [];
     const [isParsing, setIsParsing] = useState(false);
+    const [isUpdating, setIsUpdating] = useState(false);
     const [parseError, setParseError] = useState('');
     const [filterLine, setFilterLine] = useState('');
     const [filterDate, setFilterDate] = useState('');
     const [filterProduct, setFilterProduct] = useState('');
     const [activeTab, setActiveTab] = useState('production');
+    const [debugPlanModalOpen, setDebugPlanModalOpen] = useState(false);
+    const [debugPlanLineKey, setDebugPlanLineKey] = useState('all');
+    const [debugPlanDate, setDebugPlanDate] = useState('all');
+    const debugPlanPreRef = useRef(null);
     const [reportError, setReportError] = useState('');
     const [reportDates, setReportDates] = useState([]);
     const [reportTargets, setReportTargets] = useState({});
@@ -119,6 +265,7 @@ const ProductionView = () => {
     const [flatDowntimeRows, setFlatDowntimeRows] = useState([]);
     
     // Состояние для раскрытых графиков
+    const [chartsDetailMode, setChartsDetailMode] = useState('summary'); // 'summary' | 'unplanned' — во втором режиме в категориях показываем вклад неплановых остановок
     const [expandedCharts, setExpandedCharts] = useState({
         byDate: new Set(),
         byLine: new Set(),
@@ -129,6 +276,21 @@ const ProductionView = () => {
 
     // Выбранные файлы: ref для сессии, state для отображения и кнопки «Обновить»
     const lastSelectedFilesRef = useRef([]);
+    /** Последние известные mtime по путям (для автопроверки изменений в Electron) */
+    const lastMtimesRef = useRef({});
+    const productionCheckIntervalRef = useRef(null);
+    const runCheckRef = useRef(null);
+    /** Для фонового слияния: при получении parseFiles ответа мержим только эти файлы */
+    const pendingBackgroundMergeRef = useRef(null);
+    const [showSyncModal, setShowSyncModal] = useState(false);
+    const [syncStatus, setSyncStatus] = useState({
+        lastCheckAt: null,
+        nextCheckAt: null,
+        fileStats: [],
+        lastReloadAt: null,
+        error: null,
+        checking: false,
+    });
     const [selectedFileNames, setSelectedFileNames] = useState(() => {
         try {
             const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES) : null;
@@ -145,20 +307,25 @@ const ProductionView = () => {
     const isElectron = typeof window !== 'undefined' && window.electronAPI;
     const basename = (p) => String(p).replace(/^.*[/\\]/, '');
 
-    const processFiles = useCallback(async (files) => {
+    const processFiles = useCallback(async (files, options = {}) => {
         if (!files || files.length === 0) return;
+        const silent = options.silent === true;
+        setIsUpdating(true);
 
-        setIsParsing(true);
-        setParseError('');
-        setProductionResults([]);
-        setFlatRows([]);
-        setFlatDowntimeRows([]);
+        if (!silent) {
+            setIsParsing(true);
+            setParseError('');
+            setProductionResults([]);
+            setFlatRows([]);
+            setFlatDowntimeRows([]);
+        }
 
         try {
             const worker = productionWorkerRef.current;
             if (!worker) {
                 setParseError('Worker не инициализирован');
-                setIsParsing(false);
+                setIsUpdating(false);
+                if (!silent) setIsParsing(false);
                 return;
             }
 
@@ -194,11 +361,12 @@ const ProductionView = () => {
                 throw new Error('Нет файлов для обработки');
             }
 
-            // Устанавливаем таймаут для обнаружения зависаний
+            // Таймаут для обнаружения зависаний (в silent-режиме спиннер не показываем)
             const timeoutId = setTimeout(() => {
                 console.error('Таймаут при обработке файлов');
                 setParseError('Таймаут: обработка файлов занимает слишком много времени. Попробуйте загрузить файлы по одному.');
-                setIsParsing(false);
+                setIsUpdating(false);
+                if (!silent) setIsParsing(false);
             }, 120000); // 2 минуты
 
             const requestId = ++productionWorkerReqIdRef.current;
@@ -234,7 +402,8 @@ const ProductionView = () => {
         } catch (err) {
             console.error('Ошибка при загрузке файлов:', err);
             setParseError(err?.message || 'Ошибка чтения Excel файла');
-            setIsParsing(false);
+            setIsUpdating(false);
+            if (!silent) setIsParsing(false);
         }
     }, []);
 
@@ -267,6 +436,14 @@ const ProductionView = () => {
         });
         return Array.from(dates).sort(naturalCompare);
     }, [results]);
+
+    const { planByLineDate, factByLineDate, debugByLineDate, workTimeByLineDate, availableByLineDate, normsBreakdownByLineDate } = useMemo(() => {
+        return computePlanByLineDate(
+            flatRows,
+            flatDowntimeRows,
+            productionLineNorms ?? getDefaultLineNorms(LINE_NUMBERS)
+        );
+    }, [flatRows, flatDowntimeRows, productionLineNorms]);
 
     const filteredRows = useMemo(() => {
         return flatRows.filter(row => {
@@ -302,10 +479,17 @@ const ProductionView = () => {
         const downtimesForDates = flatDowntimeRows.filter(row => dateSet.has(row.date));
         const lines = Array.from(new Set(rowsForDates.map(r => r.line))).sort(naturalCompare);
         return lines.map((line) => {
+            const lineKey = getLineNumberFromRow({ line });
             const lineRows = rowsForDates.filter(r => r.line === line);
             const lineDowntimes = downtimesForDates.filter(d => d.line === line);
-            const plan = lineRows.reduce((sum, r) => sum + (r.plan || 0), 0);
-            const fact = lineRows.reduce((sum, r) => sum + (typeof r.qty === 'number' ? r.qty : 0), 0);
+            let plan = 0;
+            let fact = 0;
+            if (lineKey && planByLineDate[lineKey]) {
+                for (const date of dates) {
+                    plan += planByLineDate[lineKey][date] ?? 0;
+                    fact += factByLineDate[lineKey] ? (factByLineDate[lineKey][date] ?? 0) : 0;
+                }
+            }
 
             // Рассчитываем среднюю скорость линии (среднее арифметическое всех скоростей продуктов)
             const speeds = lineRows.map(r => r.speed || 0).filter(s => s > 0);
@@ -314,29 +498,44 @@ const ProductionView = () => {
                 : 0;
 
             const downtimeMap = new Map();
-            const downtimeDescriptions = new Map();
+            /** По категории: описание -> { minutes, comments[] } */
+            const descriptionDataMap = new Map();
             lineDowntimes
                 .filter(d => !excludedDowntimeTypes.has(String(d.type || '').trim()))
                 .forEach((d) => {
                     const category = d.category || 'Без категории';
                     const prev = downtimeMap.get(category) || 0;
-                    downtimeMap.set(category, prev + (d.durationMinutes || 0));
-                    const descList = downtimeDescriptions.get(category) || new Set();
-                    if (d.description) descList.add(String(d.description));
-                    downtimeDescriptions.set(category, descList);
+                    const dur = d.durationMinutes || 0;
+                    downtimeMap.set(category, prev + dur);
+                    const desc = (d.description && String(d.description).trim()) || 'Без описания';
+                    if (!descriptionDataMap.has(category)) descriptionDataMap.set(category, new Map());
+                    const catDesc = descriptionDataMap.get(category);
+                    if (!catDesc.has(desc)) catDesc.set(desc, { minutes: 0, comments: [] });
+                    const data = catDesc.get(desc);
+                    data.minutes += dur;
+                    const comment = (d.comment && String(d.comment).trim()) || '';
+                    if (comment && !data.comments.includes(comment)) data.comments.push(comment);
                 });
             const downtimeList = Array.from(downtimeMap.entries())
                 .map(([category, minutes]) => {
-                    // Рассчитываем недовыпуск: минуты / 60 * средняя скорость
                     const underproduction = avgSpeed > 0
                         ? Math.round((minutes / 60) * avgSpeed)
                         : 0;
+                    const descToData = descriptionDataMap.get(category) || new Map();
+                    const descriptionsWithMinutes = Array.from(descToData.entries())
+                        .map(([description, data]) => ({
+                            description: description || 'Без описания',
+                            minutes: Math.round(data.minutes),
+                            comments: (data.comments || []).filter(Boolean)
+                        }))
+                        .sort((a, b) => b.minutes - a.minutes);
                     return {
                         category,
                         minutes: Math.round(minutes),
                         underproduction,
                         color: getCategoryColorHex(category),
-                        descriptions: Array.from(downtimeDescriptions.get(category) || []).filter(Boolean)
+                        descriptions: descriptionsWithMinutes.map(({ description }) => description),
+                        descriptionsWithMinutes
                     };
                 })
                 .filter(item => item.minutes > 0)
@@ -357,7 +556,7 @@ const ProductionView = () => {
                 totalDowntimeMinutes
             };
         });
-    }, [flatRows, flatDowntimeRows, excludedDowntimeTypes]);
+    }, [flatRows, flatDowntimeRows, excludedDowntimeTypes, planByLineDate, factByLineDate]);
 
     const lineSlides = useMemo(() => {
         const datesToUse = filterDate ? [filterDate] : uniqueDates;
@@ -377,19 +576,16 @@ const ProductionView = () => {
 
     const lineDailySeries = useMemo(() => {
         if (sortedReportDates.length === 0 || reportLineSlides.length === 0) return {};
-        const dateSet = new Set(sortedReportDates);
-        const rowsForDates = flatRows.filter(row => dateSet.has(row.date));
         const lineMap = new Map();
-
-        rowsForDates.forEach((row) => {
-            if (!lineMap.has(row.line)) {
-                lineMap.set(row.line, new Map());
+        reportLineSlides.forEach((slide) => {
+            const lineKey = getLineNumberFromRow({ line: slide.line });
+            if (!lineMap.has(slide.line)) lineMap.set(slide.line, new Map());
+            const dateMap = lineMap.get(slide.line);
+            for (const date of sortedReportDates) {
+                const planVal = lineKey && planByLineDate[lineKey] ? (planByLineDate[lineKey][date] ?? 0) : 0;
+                const factVal = lineKey && factByLineDate[lineKey] ? (factByLineDate[lineKey][date] ?? 0) : 0;
+                dateMap.set(date, { plan: planVal, fact: factVal });
             }
-            const dateMap = lineMap.get(row.line);
-            const entry = dateMap.get(row.date) || { plan: 0, fact: 0 };
-            entry.plan += row.plan || 0;
-            entry.fact += typeof row.qty === 'number' ? row.qty : 0;
-            dateMap.set(row.date, entry);
         });
 
         const getDayLabel = (date) => {
@@ -421,7 +617,7 @@ const ProductionView = () => {
             });
             return acc;
         }, {});
-    }, [flatRows, reportLineSlides, sortedReportDates]);
+    }, [reportLineSlides, sortedReportDates, planByLineDate, factByLineDate]);
 
     useEffect(() => {
         if (reportLineSlides.length === 0) return;
@@ -521,45 +717,110 @@ const ProductionView = () => {
         window.URL.revokeObjectURL(url);
     }, [getReportPayload]);
 
-    // Данные для графиков
+    // Данные для графиков — план/факт из planByLineDate/factByLineDate
     const chartData = useMemo(() => {
         const byDate = new Map();
         const byLine = new Map();
         const byProduct = new Map();
 
+        const lineKeysByDate = new Map();
+        const datesByLine = new Map();
         filteredRows.forEach(row => {
-            // План уже должен быть пересчитан с учетом excludedDowntimeTypes в worker
-            // Но для графиков используем план напрямую из row, так как он уже учитывает исключения
-            const plan = row.plan || 0;
-            const fact = typeof row.qty === 'number' ? row.qty : 0;
-            const efficiency = plan > 0 ? (fact / plan) * 100 : 0;
-
-            // По датам
+            const lineKey = getLineNumberFromRow(row);
             if (!byDate.has(row.date)) {
-                byDate.set(row.date, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map() });
+                byDate.set(row.date, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
             }
-            const dateData = byDate.get(row.date);
-            dateData.plan += plan;
-            dateData.fact += fact;
-            dateData.count += 1;
-
-            // По линиям
+            if (!lineKeysByDate.has(row.date)) lineKeysByDate.set(row.date, new Set());
+            if (lineKey) lineKeysByDate.get(row.date).add(lineKey);
             if (!byLine.has(row.line)) {
-                byLine.set(row.line, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map() });
+                byLine.set(row.line, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
             }
-            const lineData = byLine.get(row.line);
-            lineData.plan += plan;
-            lineData.fact += fact;
-            lineData.count += 1;
-
-            // По продуктам
+            if (!datesByLine.has(row.line)) datesByLine.set(row.line, new Set());
+            datesByLine.get(row.line).add(row.date);
             if (!byProduct.has(row.product)) {
-                byProduct.set(row.product, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map() });
+                byProduct.set(row.product, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
             }
+            byDate.get(row.date).count += 1;
+            byLine.get(row.line).count += 1;
+            byProduct.get(row.product).count += 1;
+        });
+
+        byDate.forEach((data, date) => {
+            const lineKeys = lineKeysByDate.get(date);
+            if (lineKeys) {
+                lineKeys.forEach(lk => {
+                    data.plan += planByLineDate[lk]?.[date] ?? 0;
+                    data.fact += factByLineDate[lk]?.[date] ?? 0;
+                });
+            }
+        });
+        byLine.forEach((data, line) => {
+            const lineKey = getLineNumberFromRow({ line });
+            const dates = datesByLine.get(line);
+            if (lineKey && dates) {
+                dates.forEach(date => {
+                    data.plan += planByLineDate[lineKey]?.[date] ?? 0;
+                    data.fact += factByLineDate[lineKey]?.[date] ?? 0;
+                });
+            }
+        });
+
+        byDate.forEach((data, date) => {
+            const lineKeys = lineKeysByDate.get(date);
+            if (!lineKeys || !workTimeByLineDate) return;
+            data.workTime = 0;
+            data.available = 0;
+            data.normsBreakdown = {};
+            lineKeys.forEach(lk => {
+                data.workTime += workTimeByLineDate[lk]?.[date] ?? 0;
+                data.available += availableByLineDate[lk]?.[date] ?? 0;
+                const nb = normsBreakdownByLineDate[lk]?.[date];
+                if (nb && typeof nb === 'object') {
+                    Object.entries(nb).forEach(([cat, mins]) => {
+                        data.normsBreakdown[cat] = (data.normsBreakdown[cat] || 0) + mins;
+                    });
+                }
+            });
+        });
+        byLine.forEach((data, line) => {
+            const lineKey = getLineNumberFromRow({ line });
+            const dates = datesByLine.get(line);
+            if (!lineKey || !dates || !workTimeByLineDate?.[lineKey]) return;
+            data.workTime = 0;
+            data.available = 0;
+            data.normsBreakdown = {};
+            dates.forEach(date => {
+                data.workTime += workTimeByLineDate[lineKey][date] ?? 0;
+                data.available += availableByLineDate[lineKey]?.[date] ?? 0;
+                const nb = normsBreakdownByLineDate[lineKey]?.[date];
+                if (nb && typeof nb === 'object') {
+                    Object.entries(nb).forEach(([cat, mins]) => {
+                        data.normsBreakdown[cat] = (data.normsBreakdown[cat] || 0) + mins;
+                    });
+                }
+            });
+        });
+
+        const rowCountByLineDate = new Map();
+        filteredRows.forEach(row => {
+            const lineKey = getLineNumberFromRow(row);
+            if (!lineKey) return;
+            const key = `${lineKey}\t${row.date}`;
+            rowCountByLineDate.set(key, (rowCountByLineDate.get(key) || 0) + 1);
+        });
+        filteredRows.forEach(row => {
+            const lineKey = getLineNumberFromRow(row);
+            const fact = typeof row.qty === 'number' ? row.qty : 0;
+            const key = lineKey ? `${lineKey}\t${row.date}` : null;
+            const count = key ? rowCountByLineDate.get(key) || 1 : 1;
+            const planShare = (lineKey && planByLineDate[lineKey]?.[row.date] != null)
+                ? planByLineDate[lineKey][row.date] / count
+                : 0;
             const productData = byProduct.get(row.product);
-            productData.plan += plan;
-            productData.fact += fact;
-            productData.count += 1;
+            if (productData) {
+                productData.plan += planShare;
+                productData.fact += fact;
+            }
         });
 
             // Добавляем простои по категориям
@@ -593,6 +854,17 @@ const ProductionView = () => {
                         if (description && !catData.descriptions.includes(description)) {
                             catData.descriptions.push(description);
                         }
+                        if (!isPlannedDowntime(downtime)) {
+                            if (!dateData.unplannedByCategory.has(category)) {
+                                dateData.unplannedByCategory.set(category, []);
+                            }
+                            dateData.unplannedByCategory.get(category).push({
+                                type: downtime.type || '',
+                                description: description || '',
+                                durationMinutes: duration,
+                                line: downtime.line
+                            });
+                        }
                     }
 
                     // По линиям
@@ -605,6 +877,17 @@ const ProductionView = () => {
                         catData.minutes += duration;
                         if (description && !catData.descriptions.includes(description)) {
                             catData.descriptions.push(description);
+                        }
+                        if (!isPlannedDowntime(downtime)) {
+                            if (!lineData.unplannedByCategory.has(category)) {
+                                lineData.unplannedByCategory.set(category, []);
+                            }
+                            lineData.unplannedByCategory.get(category).push({
+                                type: downtime.type || '',
+                                description: description || '',
+                                durationMinutes: duration,
+                                date: downtime.date
+                            });
                         }
                     }
 
@@ -620,48 +903,100 @@ const ProductionView = () => {
                             if (description && !catData.descriptions.includes(description)) {
                                 catData.descriptions.push(description);
                             }
+                            if (!isPlannedDowntime(downtime)) {
+                                if (!productData.unplannedByCategory.has(category)) {
+                                    productData.unplannedByCategory.set(category, []);
+                                }
+                                productData.unplannedByCategory.get(category).push({
+                                    type: downtime.type || '',
+                                    description: description || '',
+                                    durationMinutes: duration,
+                                    date: downtime.date,
+                                    line: downtime.line
+                                });
+                            }
                         }
                     });
                 });
 
-        // Функция для преобразования данных с простоями
         const processData = (keyValue, data, key) => {
             const efficiency = data.plan > 0 ? Math.round((data.fact / data.plan) * 100) : 0;
-            const downtimeCategoriesRaw = Array.from(data.downtimeByCategory.entries())
-                .map(([category, catData]) => ({
-                    category,
-                    minutes: Math.round(catData.minutes || 0),
-                    descriptions: catData.descriptions || []
-                }))
-                .filter(d => d.minutes > 0);
-
-            const totalDowntimeMinutes = downtimeCategoriesRaw.reduce((sum, d) => sum + d.minutes, 0);
-            const downtimeCategories = downtimeCategoriesRaw
-                .map(d => ({
-                    ...d,
-                    percent: totalDowntimeMinutes > 0 
-                        ? Math.round((d.minutes / totalDowntimeMinutes) * 10000) / 100
-                        : 0
-                }))
-                .sort((a, b) => b.percent - a.percent);
-
-            // Ограничиваем сумму простоев, чтобы не превышать 100% - efficiency
-            const totalDowntimePercent = downtimeCategories.reduce((sum, d) => sum + d.percent, 0);
-            const maxDowntimePercent = Math.max(0, 100 - efficiency);
-            const scale = totalDowntimePercent > maxDowntimePercent && totalDowntimePercent > 0 
-                ? maxDowntimePercent / totalDowntimePercent 
-                : 1;
-
+            let downtimeCategories;
+            if ((key === 'date' || key === 'line') && data.workTime != null && data.workTime > 0 && data.available != null && data.normsBreakdown) {
+                const workTime = data.workTime;
+                if (chartsDetailMode === 'summary') {
+                    const available = Math.round(data.available);
+                    const normsBreakdown = data.normsBreakdown;
+                    const segments = [
+                        { category: 'Доступное время', minutes: available, percent: workTime > 0 ? Math.round((available / workTime) * 10000) / 100 : 0, descriptions: [] }
+                    ];
+                    Object.entries(normsBreakdown)
+                        .filter(([, mins]) => mins > 0)
+                        .sort((a, b) => b[1] - a[1])
+                        .forEach(([category, mins]) => {
+                            segments.push({
+                                category,
+                                minutes: Math.round(mins),
+                                percent: workTime > 0 ? Math.round((mins / workTime) * 10000) / 100 : 0,
+                                descriptions: []
+                            });
+                        });
+                    downtimeCategories = segments;
+                } else {
+                    // Режим «С вкладом неплановых»: полоски по сырым категориям (КИПиА, Механические и т.д.)
+                    const rawEntries = Array.from((data.downtimeByCategory || new Map()).entries())
+                        .map(([category, catData]) => ({
+                            category,
+                            minutes: Math.round(catData.minutes || 0),
+                            descriptions: catData.descriptions || []
+                        }))
+                        .filter(d => d.minutes > 0)
+                        .sort((a, b) => b.minutes - a.minutes);
+                    const totalRawDowntime = rawEntries.reduce((sum, d) => sum + d.minutes, 0);
+                    const availableMinutes = Math.max(0, workTime - totalRawDowntime);
+                    const segments = [
+                        { category: 'Доступное время', minutes: availableMinutes, percent: workTime > 0 ? Math.round((availableMinutes / workTime) * 10000) / 100 : 0, descriptions: [] }
+                    ];
+                    rawEntries.forEach(({ category, minutes, descriptions }) => {
+                        segments.push({
+                            category,
+                            minutes,
+                            percent: workTime > 0 ? Math.round((minutes / workTime) * 10000) / 100 : 0,
+                            descriptions
+                        });
+                    });
+                    downtimeCategories = segments;
+                }
+            } else {
+                const downtimeCategoriesRaw = Array.from((data.downtimeByCategory || new Map()).entries())
+                    .map(([category, catData]) => ({
+                        category,
+                        minutes: Math.round(catData.minutes || 0),
+                        descriptions: catData.descriptions || []
+                    }))
+                    .filter(d => d.minutes > 0);
+                const totalDowntimeMinutes = downtimeCategoriesRaw.reduce((sum, d) => sum + d.minutes, 0);
+                downtimeCategories = downtimeCategoriesRaw
+                    .map(d => ({
+                        ...d,
+                        percent: totalDowntimeMinutes > 0 ? Math.round((d.minutes / totalDowntimeMinutes) * 10000) / 100 : 0
+                    }))
+                    .sort((a, b) => b.percent - a.percent);
+                const totalDowntimePercent = downtimeCategories.reduce((sum, d) => sum + d.percent, 0);
+                const maxDowntimePercent = Math.max(0, 100 - efficiency);
+                const scale = totalDowntimePercent > maxDowntimePercent && totalDowntimePercent > 0 ? maxDowntimePercent / totalDowntimePercent : 1;
+                downtimeCategories = downtimeCategories.map(d => ({ ...d, percent: Math.round(d.percent * scale * 100) / 100 }));
+            }
             return {
                 [key]: keyValue,
                 plan: Math.round(data.plan),
                 fact: Math.round(data.fact),
                 efficiency,
                 count: data.count,
-                downtimeCategories: downtimeCategories.map(d => ({
-                    ...d,
-                    percent: Math.round(d.percent * scale * 100) / 100
-                }))
+                downtimeCategories,
+                unplannedByCategory: data.unplannedByCategory
+                    ? Object.fromEntries(Array.from(data.unplannedByCategory.entries()))
+                    : {}
             };
         };
 
@@ -680,7 +1015,7 @@ const ProductionView = () => {
                 .sort((a, b) => b.fact - a.fact)
                 .slice(0, 15) // Топ 15 продуктов
         };
-    }, [filteredRows, filteredDowntimeRows, excludedDowntimeTypes]);
+    }, [filteredRows, filteredDowntimeRows, excludedDowntimeTypes, planByLineDate, factByLineDate, workTimeByLineDate, availableByLineDate, normsBreakdownByLineDate, chartsDetailMode]);
 
 
 
@@ -735,19 +1070,160 @@ const ProductionView = () => {
     }, [isElectron]);
 
     const handleRefresh = useCallback(async () => {
-        if (isElectron && window.electronAPI && selectedFilePaths.length > 0) {
-            try {
-                const entries = await window.electronAPI.productionReadFiles(selectedFilePaths);
-                if (entries && entries.length > 0) await processFiles(entries);
-            } catch (err) {
-                console.error('productionReadFiles', err);
-                setParseError(err?.message || 'Ошибка чтения файлов');
+        if (isElectron && window.electronAPI) {
+            let pathsToUse = selectedFilePaths;
+            if (pathsToUse.length === 0) {
+                try {
+                    const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            pathsToUse = parsed;
+                            setSelectedFilePaths(parsed);
+                            setSelectedFileNames(parsed.map(basename));
+                            setHasFilesInRef(true);
+                        }
+                    }
+                } catch (_) {}
+            }
+            if (pathsToUse.length > 0) {
+                try {
+                    const entries = await window.electronAPI.productionReadFiles(pathsToUse);
+                    if (entries && entries.length > 0) await processFiles(entries, { silent: true });
+                    else setParseError('Не удалось прочитать файлы');
+                } catch (err) {
+                    console.error('productionReadFiles', err);
+                    setParseError(err?.message || 'Ошибка чтения файлов');
+                }
+            } else {
+                setParseError('Сначала выберите файлы');
             }
         } else {
             const files = lastSelectedFilesRef.current;
-            if (files && files.length > 0) processFiles(files);
+            if (files && files.length > 0) processFiles(files, { silent: true });
+            else setParseError('Сначала выберите файлы');
         }
-    }, [processFiles, isElectron, selectedFilePaths.length]);
+    }, [processFiles, isElectron, selectedFilePaths]);
+
+    /** Фоновое обновление только изменённых файлов: парсим entries и мержим в productionResults по fileName */
+    const runBackgroundMerge = useCallback(async (entries, changedFileNames) => {
+        const worker = productionWorkerRef.current;
+        if (!worker || !entries?.length || !changedFileNames?.length) return;
+        const filesData = [];
+        const transferables = [];
+        for (const file of entries) {
+            const data = file.arrayBuffer != null
+                ? (file.arrayBuffer instanceof ArrayBuffer ? file.arrayBuffer : file.arrayBuffer)
+                : null;
+            const fileName = file.fileName || (file.path && basename(file.path)) || '';
+            if (!data || data.byteLength === 0) continue;
+            filesData.push({ data, fileName });
+            transferables.push(data);
+        }
+        if (filesData.length === 0) return;
+        pendingBackgroundMergeRef.current = { changedFileNames };
+        worker.postMessage(
+            { type: 'parseFiles', requestId: 0, payload: { files: filesData } },
+            transferables
+        );
+    }, []);
+
+    // Автопроверка изменений файлов по mtime (только Electron)
+    const PRODUCTION_CHECK_INTERVAL_MS = 60000;
+    useEffect(() => {
+        if (!isElectron || !window.electronAPI?.productionGetFileStats || selectedFilePaths.length === 0) {
+            runCheckRef.current = null;
+            return;
+        }
+
+        const runCheck = async () => {
+            setSyncStatus((prev) => ({ ...prev, checking: true, error: null }));
+            try {
+                const stats = await window.electronAPI.productionGetFileStats(selectedFilePaths);
+                if (!Array.isArray(stats) || stats.length === 0) {
+                    setSyncStatus((prev) => ({ ...prev, checking: false }));
+                    return;
+                }
+                const prev = lastMtimesRef.current;
+                const changedPaths = [];
+                for (const { path: p, mtimeMs } of stats) {
+                    if (prev[p] !== mtimeMs) changedPaths.push(p);
+                }
+                for (const { path: p, mtimeMs } of stats) {
+                    lastMtimesRef.current = { ...lastMtimesRef.current, [p]: mtimeMs };
+                }
+                const now = Date.now();
+                const fileStats = stats.map(({ path: p, mtimeMs }) => ({
+                    path: p,
+                    fileName: basename(p),
+                    mtimeMs,
+                    updatedAt: mtimeMs != null ? new Date(mtimeMs).toLocaleString('ru') : '—',
+                }));
+                setSyncStatus((prev) => ({
+                    ...prev,
+                    lastCheckAt: now,
+                    nextCheckAt: now + PRODUCTION_CHECK_INTERVAL_MS,
+                    fileStats,
+                    checking: false,
+                    error: null,
+                }));
+                if (changedPaths.length > 0) {
+                    const entries = await window.electronAPI.productionReadFiles(changedPaths);
+                    if (entries && entries.length > 0) {
+                        const changedFileNames = changedPaths.map((p) => basename(p));
+                        await runBackgroundMerge(entries, changedFileNames);
+                        setSyncStatus((prev) => ({ ...prev, lastReloadAt: Date.now() }));
+                    }
+                }
+            } catch (err) {
+                console.error('production mtime check', err);
+                setSyncStatus((prev) => ({
+                    ...prev,
+                    checking: false,
+                    error: err?.message || 'Ошибка проверки',
+                }));
+            }
+        };
+
+        runCheckRef.current = runCheck;
+
+        const initAndSchedule = async () => {
+            try {
+                const stats = await window.electronAPI.productionGetFileStats(selectedFilePaths);
+                if (Array.isArray(stats)) {
+                    const next = {};
+                    stats.forEach(({ path: p, mtimeMs }) => { next[p] = mtimeMs; });
+                    lastMtimesRef.current = next;
+                    const now = Date.now();
+                    setSyncStatus((prev) => ({
+                        ...prev,
+                        lastCheckAt: now,
+                        nextCheckAt: now + PRODUCTION_CHECK_INTERVAL_MS,
+                        fileStats: stats.map(({ path: p, mtimeMs }) => ({
+                            path: p,
+                            fileName: basename(p),
+                            mtimeMs,
+                            updatedAt: mtimeMs != null ? new Date(mtimeMs).toLocaleString('ru') : '—',
+                        })),
+                    }));
+                }
+            } catch (_) {}
+            return setInterval(runCheck, PRODUCTION_CHECK_INTERVAL_MS);
+        };
+
+        initAndSchedule().then((id) => { productionCheckIntervalRef.current = id; });
+        return () => {
+            runCheckRef.current = null;
+            if (productionCheckIntervalRef.current != null) {
+                clearInterval(productionCheckIntervalRef.current);
+                productionCheckIntervalRef.current = null;
+            }
+        };
+    }, [isElectron, selectedFilePaths, runBackgroundMerge]);
+
+    const handleCheckNow = useCallback(() => {
+        runCheckRef.current?.();
+    }, []);
 
     // Инициализация воркера
     useEffect(() => {
@@ -764,14 +1240,25 @@ const ProductionView = () => {
                 if (error) {
                     console.error('Ошибка от воркера:', error);
                     setParseError(error);
+                    setIsUpdating(false);
                     setIsParsing(false);
                     return;
                 }
 
                 if (type === 'parseFiles') {
-                    setProductionResults(results || []);
+                    const pending = pendingBackgroundMergeRef.current;
+                    if (pending) {
+                        pendingBackgroundMergeRef.current = null;
+                        setProductionResults((prev) => {
+                            const base = prev ?? [];
+                            const without = base.filter((r) => !pending.changedFileNames.includes(r.fileName));
+                            return [...without, ...(results || [])];
+                        });
+                    } else {
+                        setProductionResults(results || []);
+                    }
+                    setIsUpdating(false);
                     setIsParsing(false);
-                    // Пересчет flatRows произойдет автоматически через useEffect при изменении results
                 } else if (type === 'calculateFlatRows') {
                     setFlatRows(workerFlatRows || []);
                     setFlatDowntimeRows(workerFlatDowntimeRows || []);
@@ -781,6 +1268,7 @@ const ProductionView = () => {
             worker.onerror = (err) => {
                 console.error('Worker error:', err);
                 setParseError(err?.message || 'Ошибка воркера при обработке файлов');
+                setIsUpdating(false);
                 setIsParsing(false);
             };
 
@@ -864,8 +1352,86 @@ const ProductionView = () => {
         };
     }, []);
 
+    const formatTime = (ms) => (ms != null ? new Date(ms).toLocaleString('ru') : '—');
+    const [countdownTick, setCountdownTick] = useState(0);
+    useEffect(() => {
+        if (!showSyncModal || syncStatus.nextCheckAt == null) return;
+        const id = setInterval(() => setCountdownTick((t) => t + 1), 1000);
+        return () => clearInterval(id);
+    }, [showSyncModal, syncStatus.nextCheckAt]);
+    const nextCheckIn = syncStatus.nextCheckAt != null
+        ? Math.max(0, Math.ceil((syncStatus.nextCheckAt - Date.now()) / 1000))
+        : null;
+
     return (
         <div className="h-full flex flex-col bg-slate-50">
+            {showSyncModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowSyncModal(false)}>
+                    <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-lg w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+                            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                <Clock size={20} className="text-slate-500" />
+                                Синхронизация файлов
+                            </h3>
+                            <button type="button" onClick={() => setShowSyncModal(false)} className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="px-6 py-4 overflow-y-auto space-y-4">
+                            {syncStatus.error && (
+                                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+                                    {syncStatus.error}
+                                </div>
+                            )}
+                            <div className="grid grid-cols-1 gap-2 text-sm">
+                                <div className="flex justify-between text-slate-600">
+                                    <span>Последняя проверка:</span>
+                                    <span className="font-medium text-slate-800">{formatTime(syncStatus.lastCheckAt)}</span>
+                                </div>
+                                {nextCheckIn !== null && (
+                                    <div className="flex justify-between text-slate-600">
+                                        <span>Следующая проверка через:</span>
+                                        <span className="font-medium text-slate-800">{nextCheckIn} с</span>
+                                    </div>
+                                )}
+                                {syncStatus.lastReloadAt != null && (
+                                    <div className="flex justify-between text-slate-600">
+                                        <span>Данные обновлены:</span>
+                                        <span className="font-medium text-green-700">{formatTime(syncStatus.lastReloadAt)}</span>
+                                    </div>
+                                )}
+                            </div>
+                            {syncStatus.fileStats.length > 0 && (
+                                <div>
+                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Время изменения файлов</div>
+                                    <ul className="space-y-2 border border-slate-200 rounded-lg divide-y divide-slate-100 overflow-hidden">
+                                        {syncStatus.fileStats.map(({ fileName, updatedAt, path }) => (
+                                            <li key={path} className="px-4 py-2 bg-slate-50 flex justify-between items-center text-sm">
+                                                <span className="font-medium text-slate-700 truncate mr-2" title={path}>{fileName}</span>
+                                                <span className="text-slate-600 flex-shrink-0">{updatedAt}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-6 py-4 border-t border-slate-200 flex justify-between gap-3">
+                            <button
+                                type="button"
+                                onClick={handleCheckNow}
+                                disabled={syncStatus.checking}
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                            >
+                                {syncStatus.checking ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                                {syncStatus.checking ? 'Проверка…' : 'Проверить сейчас'}
+                            </button>
+                            <button type="button" onClick={() => setShowSyncModal(false)} className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200">
+                                Закрыть
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="bg-white border-b border-slate-200 px-6 py-4 flex-shrink-0">
                 <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-3">
@@ -880,6 +1446,12 @@ const ProductionView = () => {
                         </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                        {(isUpdating || isParsing || syncStatus?.checking) && (
+                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-medium border border-slate-200">
+                                <Loader2 size={14} className="animate-spin flex-shrink-0" />
+                                <span>Обновление…</span>
+                            </div>
+                        )}
                         <button
                             onClick={handleSelectFiles}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
@@ -896,6 +1468,17 @@ const ProductionView = () => {
                             <RefreshCw size={16} />
                             Обновить
                         </button>
+                        {isElectron && selectedFilePaths.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setShowSyncModal(true)}
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200 transition-colors border border-slate-200"
+                                title="Статус синхронизации файлов"
+                            >
+                                <Clock size={16} />
+                                Синхронизация
+                            </button>
+                        )}
                     </div>
                     <input
                         ref={fileInputRef}
@@ -1095,6 +1678,25 @@ const ProductionView = () => {
                             >
                                 Отчеты
                             </button>
+                            <button
+                                onClick={() => setActiveTab('norms')}
+                                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
+                                    activeTab === 'norms'
+                                        ? 'bg-teal-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-teal-50 hover:text-teal-600'
+                                }`}
+                            >
+                                Нормативы
+                            </button>
+                            {(flatRows.length > 0 || results.length > 0) && (
+                                <button
+                                    type="button"
+                                    onClick={() => setDebugPlanModalOpen(true)}
+                                    className="ml-2 px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                >
+                                    Дебаг плана
+                                </button>
+                            )}
                         </div>
                         <div className="flex-1 overflow-auto">
                             {activeTab === 'production' && (
@@ -1146,10 +1748,13 @@ const ProductionView = () => {
                                                         }
                                                     </td>
                                                     <td className="px-4 py-3 text-center text-slate-700">
-                                                        {row.plan !== null && row.plan !== undefined 
-                                                            ? <span className="font-semibold">{Math.round(row.plan)}</span>
-                                                            : <span className="text-slate-400">—</span>
-                                                        }
+                                                        {(() => {
+                                                            const lineKey = getLineNumberFromRow(row);
+                                                            const planVal = lineKey && planByLineDate[lineKey] ? planByLineDate[lineKey][row.date] : undefined;
+                                                            return planVal != null
+                                                                ? <span className="font-semibold">{Math.round(planVal)}</span>
+                                                                : <span className="text-slate-400">—</span>;
+                                                        })()}
                                                     </td>
                                                     <td className="px-4 py-3 text-center">
                                                         <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${
@@ -1247,6 +1852,29 @@ const ProductionView = () => {
                                                     ))}
                                                 </div>
                                             </div>
+                                            {/* Режим детализации под графиками */}
+                                            <div className="flex items-center gap-3 flex-wrap">
+                                                <span className="text-sm font-medium text-slate-600">Режим детализации:</span>
+                                                <div className="flex rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setChartsDetailMode('summary')}
+                                                        className={`px-4 py-2 text-sm font-medium transition-colors ${chartsDetailMode === 'summary' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                    >
+                                                        Доля плановых простоев
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setChartsDetailMode('unplanned')}
+                                                        className={`px-4 py-2 text-sm font-medium transition-colors ${chartsDetailMode === 'unplanned' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                    >
+                                                        Доля неплановых простоев
+                                                    </button>
+                                                </div>
+                                                <span className="text-xs text-slate-500">
+                                                    {chartsDetailMode === 'summary' ? 'Полоски и детализация по нормативным (плановым) категориям.' : 'Полоски по сырым категориям; раскройте дату или линию (▶) для списка неплановых остановок.'}
+                                                </span>
+                                            </div>
                                             {/* Общая статистика */}
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 border border-blue-200">
@@ -1292,7 +1920,8 @@ const ProductionView = () => {
                                                         const isOverPlan = item.fact >= item.plan;
                                                         const isGreen = item.efficiency >= 95;
                                                         const isExpanded = expandedCharts.byDate.has(item.date);
-                                                        let leftOffset = efficiencyPercent;
+                                                        const isTimeBreakdown = item.downtimeCategories?.[0]?.category === 'Доступное время';
+                                                        let leftOffset = isTimeBreakdown ? 0 : efficiencyPercent;
                                                         
                                                         return (
                                                             <div key={idx} className="space-y-2 border border-slate-200 rounded-lg p-3 hover:bg-slate-50 transition-colors">
@@ -1329,21 +1958,23 @@ const ProductionView = () => {
                                                                     </div>
                                                                 </div>
                                                                 <div className="relative h-10 bg-slate-100 rounded-lg overflow-hidden border border-slate-200">
-                                                                    {/* Факт - процент от плана */}
-                                                                    <div 
-                                                                        className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
-                                                                            isGreen
-                                                                                ? 'bg-gradient-to-r from-green-400 to-green-500' 
-                                                                                : isOverPlan 
-                                                                                    ? 'bg-gradient-to-r from-green-400 to-green-500'
-                                                                                    : 'bg-gradient-to-r from-orange-400 to-orange-500'
-                                                                        }`}
-                                                                        style={{ width: `${efficiencyPercent}%` }}
-                                                                    />
-                                                                    {/* Простои по категориям */}
+                                                                    {!isTimeBreakdown && (
+                                                                        /* Факт - процент от плана (только для режима без разбивки времени) */
+                                                                        <div 
+                                                                            className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
+                                                                                isGreen
+                                                                                    ? 'bg-gradient-to-r from-green-400 to-green-500' 
+                                                                                    : isOverPlan 
+                                                                                        ? 'bg-gradient-to-r from-green-400 to-green-500'
+                                                                                        : 'bg-gradient-to-r from-orange-400 to-orange-500'
+                                                                            }`}
+                                                                            style={{ width: `${efficiencyPercent}%` }}
+                                                                        />
+                                                                    )}
+                                                                    {/* Доступное время + нормативные категории (byDate) или простои по категориям */}
                                                                     {item.downtimeCategories && item.downtimeCategories.map((downtime, dIdx) => {
-                                                                        const maxAvailable = 100 - efficiencyPercent;
-                                                                        const usedSoFar = leftOffset - efficiencyPercent;
+                                                                        const maxAvailable = isTimeBreakdown ? 100 : (100 - efficiencyPercent);
+                                                                        const usedSoFar = leftOffset - (isTimeBreakdown ? 0 : efficiencyPercent);
                                                                         const remainingAvailable = maxAvailable - usedSoFar;
                                                                         const width = Math.min(downtime.percent, remainingAvailable);
                                                                         const currentLeft = leftOffset;
@@ -1384,7 +2015,9 @@ const ProductionView = () => {
                                                                             <div className="mt-2">
                                                                                 <div className="text-xs font-semibold text-slate-700 mb-2">Детализация простоев:</div>
                                                                                 <div className="space-y-2">
-                                                                                    {item.downtimeCategories.map((downtime, dIdx) => (
+                                                                                    {item.downtimeCategories.map((downtime, dIdx) => {
+                                                                                        const unplannedList = chartsDetailMode === 'unplanned' && item.unplannedByCategory?.[downtime.category];
+                                                                                        return (
                                                                                         <div key={dIdx} className="bg-slate-50 p-3 rounded border border-slate-200">
                                                                                             <div className="flex items-center justify-between mb-2">
                                                                                                 <div className="flex items-center gap-2">
@@ -1395,7 +2028,7 @@ const ProductionView = () => {
                                                                                                     {downtime.minutes || 0} мин · {downtime.percent.toFixed(2)}%
                                                                                                 </span>
                                                                                             </div>
-                                                                                            {downtime.descriptions && downtime.descriptions.length > 0 && (
+                                                                                            {chartsDetailMode === 'summary' && downtime.descriptions && downtime.descriptions.length > 0 && (
                                                                                                 <div className="mt-2 space-y-1">
                                                                                                     {downtime.descriptions.map((desc, descIdx) => (
                                                                                                         <div key={descIdx} className="text-xs text-slate-600 pl-5">
@@ -1404,9 +2037,52 @@ const ProductionView = () => {
                                                                                                     ))}
                                                                                                 </div>
                                                                                             )}
+                                                                                            {chartsDetailMode === 'unplanned' && unplannedList && unplannedList.length > 0 && (
+                                                                                                <div className="mt-2 space-y-1">
+                                                                                                    <div className="text-xs font-medium text-slate-600 mb-1">Неплановые остановки:</div>
+                                                                                                    {unplannedList.map((stop, sIdx) => (
+                                                                                                        <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
+                                                                                                            {stop.type && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                            {stop.description && <span> — {stop.description}</span>}
+                                                                                                            <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
+                                                                                                            {stop.line && <span className="text-slate-400"> · линия {stop.line}</span>}
+                                                                                                        </div>
+                                                                                                    ))}
+                                                                                                </div>
+                                                                                            )}
                                                                                         </div>
-                                                                                    ))}
+                                                                                    ); })}
                                                                                 </div>
+                                                                                {chartsDetailMode === 'unplanned' && item.unplannedByCategory && (
+                                                                                    <div className="mt-3 pt-3 border-t border-amber-200">
+                                                                                        <div className="text-xs font-semibold text-amber-800 mb-2">Неплановые остановки по категориям</div>
+                                                                                        {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).length === 0 ? (
+                                                                                            <p className="text-xs text-slate-500">Нет неплановых остановок по этой дате.</p>
+                                                                                        ) : (
+                                                                                            <div className="space-y-2">
+                                                                                                {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).map(([cat, stops]) => (
+                                                                                                    <div key={cat} className="bg-amber-50/70 p-3 rounded border border-amber-200">
+                                                                                                        <div className="flex items-center gap-2 mb-1">
+                                                                                                            <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(cat) }} />
+                                                                                                            <span className="text-sm font-semibold text-slate-700">{cat}</span>
+                                                                                                            <span className="text-xs text-slate-500">({stops.length} шт.)</span>
+                                                                                                        </div>
+                                                                                                        <div className="space-y-0.5 pl-5">
+                                                                                                            {stops.map((stop, sIdx) => (
+                                                                                                                <div key={sIdx} className="text-xs text-slate-600 border-l-2 border-amber-300 py-0.5 pl-2">
+                                                                                                                    {stop.type && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                                    {stop.description && <span> — {stop.description}</span>}
+                                                                                                                    <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
+                                                                                                                    {stop.line && <span className="text-slate-400"> · линия {stop.line}</span>}
+                                                                                                                </div>
+                                                                                                            ))}
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                ))}
+                                                                                            </div>
+                                                                                        )}
+                                                                                    </div>
+                                                                                )}
                                                                             </div>
                                                                         )}
                                                                     </div>
@@ -1429,7 +2105,8 @@ const ProductionView = () => {
                                                         const isOverPlan = item.fact >= item.plan;
                                                         const isGreen = item.efficiency >= 95;
                                                         const isExpanded = expandedCharts.byLine.has(item.line);
-                                                        let leftOffset = efficiencyPercent;
+                                                        const isTimeBreakdown = item.downtimeCategories?.[0]?.category === 'Доступное время';
+                                                        let leftOffset = isTimeBreakdown ? 0 : efficiencyPercent;
                                                         
                                                         return (
                                                             <div key={idx} className="space-y-2 border border-slate-200 rounded-lg p-3 hover:bg-slate-50 transition-colors">
@@ -1466,21 +2143,23 @@ const ProductionView = () => {
                                                                     </div>
                                                                 </div>
                                                                 <div className="relative h-10 bg-slate-100 rounded-lg overflow-hidden border border-slate-200">
-                                                                    {/* Факт - процент от плана */}
-                                                                    <div 
-                                                                        className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
-                                                                            isGreen
-                                                                                ? 'bg-gradient-to-r from-green-400 to-green-500' 
-                                                                                : isOverPlan 
-                                                                                    ? 'bg-gradient-to-r from-green-400 to-green-500'
-                                                                                    : 'bg-gradient-to-r from-orange-400 to-orange-500'
-                                                                        }`}
-                                                                        style={{ width: `${efficiencyPercent}%` }}
-                                                                    />
-                                                                    {/* Простои по категориям */}
+                                                                    {!isTimeBreakdown && (
+                                                                        /* Факт - процент от плана (только для режима без разбивки времени) */
+                                                                        <div 
+                                                                            className={`absolute left-0 top-0 h-full rounded-lg transition-all duration-500 ${
+                                                                                isGreen
+                                                                                    ? 'bg-gradient-to-r from-green-400 to-green-500' 
+                                                                                    : isOverPlan 
+                                                                                        ? 'bg-gradient-to-r from-green-400 to-green-500'
+                                                                                        : 'bg-gradient-to-r from-orange-400 to-orange-500'
+                                                                            }`}
+                                                                            style={{ width: `${efficiencyPercent}%` }}
+                                                                        />
+                                                                    )}
+                                                                    {/* Доступное время + нормативные категории (byLine) или простои по категориям */}
                                                                     {item.downtimeCategories && item.downtimeCategories.map((downtime, dIdx) => {
-                                                                        const maxAvailable = 100 - efficiencyPercent;
-                                                                        const usedSoFar = leftOffset - efficiencyPercent;
+                                                                        const maxAvailable = isTimeBreakdown ? 100 : (100 - efficiencyPercent);
+                                                                        const usedSoFar = leftOffset - (isTimeBreakdown ? 0 : efficiencyPercent);
                                                                         const remainingAvailable = maxAvailable - usedSoFar;
                                                                         const width = Math.min(downtime.percent, remainingAvailable);
                                                                         const currentLeft = leftOffset;
@@ -1521,7 +2200,9 @@ const ProductionView = () => {
                                                                             <div className="mt-2">
                                                                                 <div className="text-xs font-semibold text-slate-700 mb-2">Детализация простоев:</div>
                                                                                 <div className="space-y-2">
-                                                                                    {item.downtimeCategories.map((downtime, dIdx) => (
+                                                                                    {item.downtimeCategories.map((downtime, dIdx) => {
+                                                                                        const unplannedListLine = chartsDetailMode === 'unplanned' && item.unplannedByCategory?.[downtime.category];
+                                                                                        return (
                                                                                         <div key={dIdx} className="bg-slate-50 p-3 rounded border border-slate-200">
                                                                                             <div className="flex items-center justify-between mb-2">
                                                                                                 <div className="flex items-center gap-2">
@@ -1532,7 +2213,7 @@ const ProductionView = () => {
                                                                                                     {downtime.minutes || 0} мин · {downtime.percent.toFixed(2)}%
                                                                                                 </span>
                                                                                             </div>
-                                                                                            {downtime.descriptions && downtime.descriptions.length > 0 && (
+                                                                                            {chartsDetailMode === 'summary' && downtime.descriptions && downtime.descriptions.length > 0 && (
                                                                                                 <div className="mt-2 space-y-1">
                                                                                                     {downtime.descriptions.map((desc, descIdx) => (
                                                                                                         <div key={descIdx} className="text-xs text-slate-600 pl-5">
@@ -1541,9 +2222,52 @@ const ProductionView = () => {
                                                                                                     ))}
                                                                                                 </div>
                                                                                             )}
+                                                                                            {chartsDetailMode === 'unplanned' && unplannedListLine && unplannedListLine.length > 0 && (
+                                                                                                <div className="mt-2 space-y-1">
+                                                                                                    <div className="text-xs font-medium text-slate-600 mb-1">Неплановые остановки:</div>
+                                                                                                    {unplannedListLine.map((stop, sIdx) => (
+                                                                                                        <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
+                                                                                                            {stop.type && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                            {stop.description && <span> — {stop.description}</span>}
+                                                                                                            <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
+                                                                                                            {stop.date && <span className="text-slate-400"> · {stop.date}</span>}
+                                                                                                        </div>
+                                                                                                    ))}
+                                                                                                </div>
+                                                                                            )}
                                                                                         </div>
-                                                                                    ))}
+                                                                                    ); })}
                                                                                 </div>
+                                                                                {chartsDetailMode === 'unplanned' && item.unplannedByCategory && (
+                                                                                    <div className="mt-3 pt-3 border-t border-amber-200">
+                                                                                        <div className="text-xs font-semibold text-amber-800 mb-2">Неплановые остановки по категориям</div>
+                                                                                        {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).length === 0 ? (
+                                                                                            <p className="text-xs text-slate-500">Нет неплановых остановок по этой линии.</p>
+                                                                                        ) : (
+                                                                                            <div className="space-y-2">
+                                                                                                {Object.entries(item.unplannedByCategory).filter(([, arr]) => arr && arr.length > 0).map(([cat, stops]) => (
+                                                                                                    <div key={cat} className="bg-amber-50/70 p-3 rounded border border-amber-200">
+                                                                                                        <div className="flex items-center gap-2 mb-1">
+                                                                                                            <div className="w-3 h-3 rounded" style={{ backgroundColor: getCategoryColorHex(cat) }} />
+                                                                                                            <span className="text-sm font-semibold text-slate-700">{cat}</span>
+                                                                                                            <span className="text-xs text-slate-500">({stops.length} шт.)</span>
+                                                                                                        </div>
+                                                                                                        <div className="space-y-0.5 pl-5">
+                                                                                                            {stops.map((stop, sIdx) => (
+                                                                                                                <div key={sIdx} className="text-xs text-slate-600 border-l-2 border-amber-300 py-0.5 pl-2">
+                                                                                                                    {stop.type && <span className="text-amber-700">{stop.type}</span>}
+                                                                                                                    {stop.description && <span> — {stop.description}</span>}
+                                                                                                                    <span className="text-slate-500"> · {stop.durationMinutes} мин</span>
+                                                                                                                    {stop.date && <span className="text-slate-400"> · {stop.date}</span>}
+                                                                                                                </div>
+                                                                                                            ))}
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                ))}
+                                                                                            </div>
+                                                                                        )}
+                                                                                    </div>
+                                                                                )}
                                                                             </div>
                                                                         )}
                                                                     </div>
@@ -1690,6 +2414,13 @@ const ProductionView = () => {
                                     </div>
                                 </div>
                             )}
+                            {activeTab === 'norms' && (
+                                <NormsTab
+                                    productionLineNorms={productionLineNorms ?? getDefaultLineNorms([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])}
+                                    setProductionLineNorms={setProductionLineNorms}
+                                    flatDowntimeRows={flatDowntimeRows}
+                                />
+                            )}
                             {activeTab === 'lines' && (
                                 <div className="p-6 space-y-6">
                                     {lineSlides.length === 0 ? (
@@ -1820,25 +2551,101 @@ const ProductionView = () => {
                                                             <div className="space-y-3 pr-1">
                                                                 {lineSlides[lineSlideIndex].downtimeList.slice(0, 6).map((item) => (
                                                                     <div key={item.category} className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 min-w-0">
-                                                                        <div className="flex items-center justify-between text-lg flex-wrap gap-y-1">
+                                                                        <div className="flex items-center gap-4 text-lg flex-wrap">
                                                                             <div className="flex items-center gap-2 min-w-0">
                                                                                 <div className="w-4 h-4 rounded flex-shrink-0" style={{ backgroundColor: item.color }} />
                                                                                 <span className="text-slate-700 font-semibold truncate">{item.category}</span>
                                                                             </div>
-                                                                            <div className="flex flex-col items-end flex-shrink-0">
-                                                                                <span className="font-semibold text-slate-600 text-lg">{item.minutes} мин</span>
-                                                                                <span className="text-base text-slate-500 mt-0.5">
+                                                                            <div className="flex items-baseline gap-3 flex-shrink-0">
+                                                                                <span className="font-semibold text-slate-600">{item.minutes} мин</span>
+                                                                                <span className="text-slate-500 text-base">
                                                                                     {item.underproduction?.toLocaleString() || 0} шт
                                                                                 </span>
                                                                             </div>
                                                                         </div>
-                                                                        {item.descriptions?.length ? (
-                                                                            <div className="mt-2 text-base text-slate-600 break-words">
-                                                                                {item.descriptions.slice(0, 2).map((desc, idx) => (
-                                                                                    <div key={`${item.category}_${idx}`} className="whitespace-normal break-words">• {desc}</div>
+                                                                        {(item.descriptionsWithMinutes?.length || item.timeRanges?.length || item.comments?.length) ? (
+                                                                            <div className="mt-2 text-base text-slate-600 break-words space-y-1.5">
+                                                                                {item.descriptionsWithMinutes?.slice(0, 2).map((entry, idx) => (
+                                                                                    <div key={`${item.category}_d_${idx}`} className="whitespace-normal break-words">
+                                                                                        <div className="flex items-baseline gap-3 flex-wrap">
+                                                                                            <span className="min-w-0">• {entry.description}</span>
+                                                                                            <span className="text-slate-700 font-semibold whitespace-nowrap flex-shrink-0">{entry.minutes} мин</span>
+                                                                                        </div>
+                                                                                        {entry.comments?.length > 0 && (
+                                                                                            <details className="mt-0.5 group/c">
+                                                                                                <summary className="text-sm text-slate-500 cursor-pointer list-none inline-flex items-center gap-1 hover:text-slate-700">
+                                                                                                    <ChevronDown size={12} className="inline group-open/c:rotate-180 transition-transform" />
+                                                                                                    Комментарии ({entry.comments.length})
+                                                                                                </summary>
+                                                                                                <div className="mt-0.5 pl-4 text-sm text-slate-500">
+                                                                                                    {entry.comments.map((c, cIdx) => (
+                                                                                                        <div key={cIdx}>↳ {c}</div>
+                                                                                                    ))}
+                                                                                                </div>
+                                                                                            </details>
+                                                                                        )}
+                                                                                    </div>
                                                                                 ))}
-                                                                                {item.descriptions.length > 2 && (
-                                                                                    <div className="text-sm text-slate-400">и еще {item.descriptions.length - 2}</div>
+                                                                                {item.descriptionsWithMinutes?.length > 2 ? (
+                                                                                    <details className="group mt-1.5">
+                                                                                        <summary className="text-sm text-emerald-600 hover:text-emerald-700 cursor-pointer list-none inline-flex items-center gap-1 font-medium">
+                                                                                            <ChevronDown size={14} className="inline group-open:rotate-180 transition-transform" />
+                                                                                            Показать все простои (ещё {item.descriptionsWithMinutes.length - 2})
+                                                                                        </summary>
+                                                                                        <div className="mt-2 pl-4 space-y-1 border-l-2 border-slate-200">
+                                                                                            {item.descriptionsWithMinutes.slice(2).map((entry, idx) => (
+                                                                                                <div key={`${item.category}_full_${idx}`} className="whitespace-normal break-words text-sm">
+                                                                                                    <div className="flex items-baseline gap-3 flex-wrap">
+                                                                                                        <span className="min-w-0">• {entry.description}</span>
+                                                                                                        <span className="font-semibold text-slate-700 whitespace-nowrap flex-shrink-0">{entry.minutes} мин</span>
+                                                                                                    </div>
+                                                                                                    {entry.comments?.length > 0 && (
+                                                                                                        <details className="mt-0.5 group/c">
+                                                                                                            <summary className="text-xs text-slate-500 cursor-pointer list-none inline-flex items-center gap-1 hover:text-slate-700">
+                                                                                                                <ChevronDown size={10} className="inline group-open/c:rotate-180 transition-transform" />
+                                                                                                                Комментарии ({entry.comments.length})
+                                                                                                            </summary>
+                                                                                                            <div className="mt-0.5 pl-4 text-xs text-slate-500">
+                                                                                                                {entry.comments.map((c, cIdx) => (
+                                                                                                                    <div key={cIdx}>↳ {c}</div>
+                                                                                                                ))}
+                                                                                                            </div>
+                                                                                                        </details>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            ))}
+                                                                                            {item.timeRanges?.length > 0 && (
+                                                                                                <div className="pt-2 text-xs">
+                                                                                                    <span className="font-medium text-slate-500">Промежутки: </span>
+                                                                                                    {item.timeRanges.join(', ')}
+                                                                                                </div>
+                                                                                            )}
+                                                                                            {item.comments?.length > 0 && (
+                                                                                                <div className="pt-1 text-xs space-y-0.5">
+                                                                                                    <span className="font-medium text-slate-500">Комментарии: </span>
+                                                                                                    {item.comments.map((c, idx) => (
+                                                                                                        <div key={`${item.category}_c_${idx}`}>• {c}</div>
+                                                                                                    ))}
+                                                                                                </div>
+                                                                                            )}
+                                                                                        </div>
+                                                                                    </details>
+                                                                                ) : (
+                                                                                    item.timeRanges?.length > 0 && (
+                                                                                        <div className="text-sm text-slate-500">Промежутки: {item.timeRanges.slice(0, 3).join(', ')}{item.timeRanges.length > 3 ? ` +${item.timeRanges.length - 3}` : ''}</div>
+                                                                                    )
+                                                                                )}
+                                                                                {item.descriptionsWithMinutes?.length <= 2 && item.descriptionsWithMinutes?.length > 0 && (item.timeRanges?.length > 0 || item.comments?.length > 0) && (
+                                                                                    <details className="group mt-1.5">
+                                                                                        <summary className="text-sm text-emerald-600 hover:text-emerald-700 cursor-pointer list-none inline-flex items-center gap-1 font-medium">
+                                                                                            <ChevronDown size={14} className="inline group-open:rotate-180 transition-transform" />
+                                                                                            Промежутки и комментарии
+                                                                                        </summary>
+                                                                                        <div className="mt-2 pl-4 space-y-1 border-l-2 border-slate-200 text-sm">
+                                                                                            {item.timeRanges?.length > 0 && <div><span className="text-slate-500">Промежутки: </span>{item.timeRanges.join(', ')}</div>}
+                                                                                            {item.comments?.map((c, idx) => <div key={idx}>• {c}</div>)}
+                                                                                        </div>
+                                                                                    </details>
                                                                                 )}
                                                                             </div>
                                                                         ) : (
@@ -1913,6 +2720,89 @@ const ProductionView = () => {
                     </div>
                 </div>
             )}
+            {debugPlanModalOpen && (() => {
+                const lineKeys = Object.keys(debugByLineDate).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+                const lineOptions = ['all', ...lineKeys];
+                const datesForLine = debugPlanLineKey === 'all' ? [] : Object.keys(debugByLineDate[debugPlanLineKey] || {}).sort(naturalCompare);
+                const dateOptions = debugPlanLineKey === 'all' ? ['all'] : ['all', ...datesForLine];
+                let debugText = '';
+                if (debugPlanLineKey === 'all') {
+                    const parts = [];
+                    lineKeys.forEach((lk) => {
+                        Object.keys(debugByLineDate[lk] || {}).sort(naturalCompare).forEach((dt) => {
+                            parts.push((debugByLineDate[lk][dt] || []).join('\n'));
+                        });
+                    });
+                    debugText = parts.join('\n\n');
+                } else if (debugPlanDate === 'all') {
+                    debugText = datesForLine.map((dt) => (debugByLineDate[debugPlanLineKey][dt] || []).join('\n')).join('\n\n');
+                } else {
+                    debugText = (debugByLineDate[debugPlanLineKey] && debugByLineDate[debugPlanLineKey][debugPlanDate])
+                        ? debugByLineDate[debugPlanLineKey][debugPlanDate].join('\n')
+                        : '';
+                }
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setDebugPlanModalOpen(false)}>
+                        <div className="bg-white rounded-xl shadow-xl w-max max-w-[90vw] min-w-0 max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                                <h3 className="text-lg font-bold text-slate-800">Расчёт плана по нормативам (отладка)</h3>
+                                <button type="button" onClick={() => setDebugPlanModalOpen(false)} className="p-1 rounded hover:bg-slate-100 text-slate-500" aria-label="Закрыть">
+                                    <X size={20} />
+                                </button>
+                            </div>
+                            <div className="px-4 py-3 flex flex-wrap gap-3 items-center border-b border-slate-100">
+                                <label className="flex items-center gap-2">
+                                    <span className="text-sm text-slate-600">Линия:</span>
+                                    <select
+                                        value={debugPlanLineKey}
+                                        onChange={(e) => { setDebugPlanLineKey(e.target.value); setDebugPlanDate('all'); }}
+                                        className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+                                    >
+                                        {lineOptions.map((k) => (
+                                            <option key={k} value={k}>{k === 'all' ? 'Все' : `Линия ${k}`}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="flex items-center gap-2">
+                                    <span className="text-sm text-slate-600">Дата:</span>
+                                    <select
+                                        value={debugPlanDate}
+                                        onChange={(e) => setDebugPlanDate(e.target.value)}
+                                        className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm"
+                                    >
+                                        {dateOptions.map((d) => (
+                                            <option key={d} value={d}>{d === 'all' ? 'Все' : d}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const el = debugPlanPreRef.current;
+                                        if (el) {
+                                            const text = el.textContent || '';
+                                            navigator.clipboard.writeText(text).then(() => {}, () => {});
+                                        }
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200"
+                                >
+                                    Копировать
+                                </button>
+                            </div>
+                            <div className="flex-1 overflow-auto p-4">
+                                <pre ref={debugPlanPreRef} className="text-sm font-mono bg-slate-900 text-slate-100 p-4 rounded-lg whitespace-pre overflow-x-auto leading-relaxed">
+                                    {debugText || 'Нет данных для выбранного контекста.'}
+                                </pre>
+                            </div>
+                            <div className="px-4 py-3 border-t border-slate-200 flex justify-end">
+                                <button type="button" onClick={() => setDebugPlanModalOpen(false)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-200 text-slate-700 hover:bg-slate-300">
+                                    Закрыть
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 };

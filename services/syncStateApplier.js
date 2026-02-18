@@ -45,6 +45,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         setPlanningState,
         setProductionResults,
         setProductionExcludedDowntimeTypes,
+        setProductionLineNorms,
         applyPlanData,
         getCurrentPlans,
         hydrateWorkerRegistry,
@@ -211,6 +212,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
     if (setPlanningState) applyField(STORAGE_KEYS.PLANNING_STATE, setPlanningState);
     if (setProductionResults) applyField(STORAGE_KEYS.PRODUCTION_RESULTS, setProductionResults);
     if (setProductionExcludedDowntimeTypes) applyField(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, setProductionExcludedDowntimeTypes);
+    if (setProductionLineNorms) applyField(STORAGE_KEYS.PRODUCTION_LINE_NORMS, setProductionLineNorms);
 
     const serializedRegistry = snapshot[STORAGE_KEYS.WORKER_REGISTRY];
     if (serializedRegistry) {

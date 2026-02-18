@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "check": "node check-setup.js",
     "electron": "electron electron/main.js",
-    "electron:dev": "cross-env NODE_ENV=development electron electron/main.js"
+    "electron:dev": "cross-env NODE_ENV=development electron electron/main.js",
+    "dev:electron": "concurrently -k \"npm run dev\" \"npm run electron:dev\""
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.20",
@@ -27,6 +28,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "concurrently": "^8.2.2",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
     "cross-env": "^7.0.3",

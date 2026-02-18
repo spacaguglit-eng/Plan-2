@@ -484,14 +484,7 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
             // Время простоев для этого продукта (только те, которые пересекаются и НЕ исключены)
             const downtimeMinutes = Math.round(relatedDowntimeMinutes);
             
-            // План = (доступное время в часах) * скорость (скорость указана в час)
-            // Доступное время в минутах, переводим в часы: availableMinutes / 60
-            let plan = 0;
-            if (availableMinutes > 0 && speed > 0) {
-                const availableHours = availableMinutes / 60;
-                plan = Math.round(availableHours * speed);
-            }
-            
+            // План по строке не считается — используется расчёт по нормативам на клиенте (planByLineDate)
             if (line || product || qty > 0) {
                 flatRows.push({
                     date: result.date,
@@ -499,7 +492,7 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
                     line: line || 'Не указано',
                     product: product || 'Не указано',
                     qty: Math.round(qty),
-                    plan: Math.round(plan),
+                    plan: 0,
                     availableMinutes: Math.round(availableMinutes),
                     downtimeMinutes: Math.round(downtimeMinutes),
                     speed: speed,

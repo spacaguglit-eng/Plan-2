@@ -7,7 +7,10 @@ const isDev = process.env.NODE_ENV === 'development';
 ipcMain.handle('production:selectFiles', async () => {
   const { filePaths } = await dialog.showOpenDialog({
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Excel', extensions: ['xlsx', 'xls'] }],
+    filters: [
+      { name: 'Все файлы', extensions: ['*'] },
+      { name: 'Excel', extensions: ['xlsx', 'xls'] },
+    ],
   });
   return filePaths || [];
 });
@@ -26,6 +29,20 @@ ipcMain.handle('production:readFiles', async (_, filePaths) => {
       });
     } catch (err) {
       console.error('production:readFiles error', filePath, err);
+    }
+  }
+  return result;
+});
+
+ipcMain.handle('production:getFileStats', async (_, filePaths) => {
+  if (!Array.isArray(filePaths) || filePaths.length === 0) return [];
+  const result = [];
+  for (const filePath of filePaths) {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      result.push({ path: filePath, mtimeMs: stat.mtimeMs });
+    } catch (err) {
+      result.push({ path: filePath, mtimeMs: null });
     }
   }
   return result;

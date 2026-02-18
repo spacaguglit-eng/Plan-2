@@ -22,7 +22,8 @@ export const STORAGE_KEYS = {
     PRODUCTION_RESULTS: 'productionParsedResults',
     PRODUCTION_EXCLUDED_DOWNTIME_TYPES: 'productionExcludedDowntimeTypes',
     PRODUCTION_SELECTED_FILE_NAMES: 'productionSelectedFileNames',
-    PRODUCTION_SELECTED_FILE_PATHS: 'productionSelectedFilePaths'
+    PRODUCTION_SELECTED_FILE_PATHS: 'productionSelectedFilePaths',
+    PRODUCTION_LINE_NORMS: 'productionLineNorms'
 };
 
 // --- GENERAL HELPERS ---

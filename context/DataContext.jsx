@@ -18,6 +18,7 @@ import {
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
+import { getDefaultLineNorms } from '../utils/normsComparison';
 import { setRemoteFlushErrorCallback } from '../services/remoteStorage';
 import { applyRemoteSnapshot as applyRemoteSnapshotFromService } from '../services/syncStateApplier';
 import { useSync } from './SyncContext';
@@ -154,6 +155,7 @@ export const DataProvider = ({ children }) => {
     const [planningState, setPlanningStateState] = useState({});
     const [productionResults, setProductionResultsState] = useState(null);
     const [productionExcludedDowntimeTypes, setProductionExcludedDowntimeTypesState] = useState(null);
+    const [productionLineNorms, setProductionLineNormsState] = useState(null);
 
     const setAllEmployees = useCallback((value) => {
         const next = typeof value === 'function' ? value(allEmployees) : value;
@@ -180,6 +182,11 @@ export const DataProvider = ({ children }) => {
         setProductionExcludedDowntimeTypesState(next);
         if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, next);
     }, [productionExcludedDowntimeTypes, restoring, persistStateKey]);
+    const setProductionLineNorms = useCallback((value) => {
+        const next = typeof value === 'function' ? value(productionLineNorms) : value;
+        setProductionLineNormsState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, next);
+    }, [productionLineNorms, restoring, persistStateKey]);
 
     // Ошибка синхронизации: откат к кэшу из remote (вызывается из remoteStorage)
     useEffect(() => {
@@ -388,6 +395,7 @@ export const DataProvider = ({ children }) => {
             setPlanningState: setPlanningStateState,
             setProductionResults: setProductionResultsState,
             setProductionExcludedDowntimeTypes: setProductionExcludedDowntimeTypesState,
+            setProductionLineNorms: setProductionLineNormsState,
             applyPlanData,
             getCurrentPlans: () => savedPlansRef.current,
             hydrateWorkerRegistry,
@@ -3101,13 +3109,14 @@ export const DataProvider = ({ children }) => {
         departmentMasterList: pendingUpdates[STORAGE_KEYS.DEPARTMENT_MASTER_LIST] ?? departmentMasterList,
         planningState: pendingUpdates[STORAGE_KEYS.PLANNING_STATE] ?? planningState,
         productionResults: pendingUpdates[STORAGE_KEYS.PRODUCTION_RESULTS] ?? productionResults,
-        productionExcludedDowntimeTypes: pendingUpdates[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES] ?? productionExcludedDowntimeTypes
+        productionExcludedDowntimeTypes: pendingUpdates[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES] ?? productionExcludedDowntimeTypes,
+        productionLineNorms: pendingUpdates[STORAGE_KEYS.PRODUCTION_LINE_NORMS] ?? productionLineNorms ?? getDefaultLineNorms([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     }), [
         pendingUpdates,
         manualAssignments, manualLines, assignmentClones, savedPlans, currentPlanId,
         autoReassignEnabled, factData, factDates, rawTables, scheduleDates, planHashes,
         lineTemplates, floaters, workerRegistry,
-        allEmployees, departmentMasterList, planningState, productionResults, productionExcludedDowntimeTypes
+        allEmployees, departmentMasterList, planningState, productionResults, productionExcludedDowntimeTypes, productionLineNorms
     ]);
 
     const workersValue = useMemo(() => ({
@@ -3170,6 +3179,7 @@ export const DataProvider = ({ children }) => {
         planningState: display.planningState, setPlanningState,
         productionResults: display.productionResults, setProductionResults,
         productionExcludedDowntimeTypes: display.productionExcludedDowntimeTypes, setProductionExcludedDowntimeTypes,
+        productionLineNorms: display.productionLineNorms, setProductionLineNorms,
         targetScrollBrigadeId, setTargetScrollBrigadeId,
         draggedWorker, setDraggedWorker,
         updateReport, setUpdateReport,
