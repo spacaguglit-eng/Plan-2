@@ -16,7 +16,7 @@ function applyUIScale(scale) {
     document.documentElement.style.fontSize = `${BASE_FONT_SIZE_PX * scale}px`;
 }
 
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2 } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, AlertCircle, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2, Plug } from 'lucide-react';
 import { useData } from './context/DataContext';
 import { UpdateReportModal, EditWorkerModal } from './UIComponents';
 
@@ -33,6 +33,7 @@ import ProductionView from './components/views/ProductionView';
 import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
 import ShiftReportsView from './components/views/ShiftReportsView';
+import OneCTestView from './components/views/OneCTestView';
 export default function App() {
     const [openNavMenu, setOpenNavMenu] = useState(null); // 'staff' | 'plans' | 'reports' | 'extra' | null — только одно меню открыто
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
@@ -305,7 +306,7 @@ export default function App() {
                                                 e.stopPropagation();
                                                 setOpenNavMenu((prev) => (prev === 'extra' ? null : 'extra'));
                                             }}
-                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', false)}`}
+                                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${getTabStyle('extra', viewMode === 'onec_test')}`}
                                         >
                                             <Activity size={16} /> Дополнительно
                                             <ChevronDown size={14} className={`transition-transform ${openNavMenu === 'extra' ? 'rotate-180' : ''}`} />
@@ -315,6 +316,16 @@ export default function App() {
                                                 className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 rounded-lg shadow-lg z-50 overflow-hidden"
                                                 onClick={(e) => e.stopPropagation()}
                                             >
+                                                <button
+                                                    onClick={() => {
+                                                        setViewMode('onec_test');
+                                                        setOpenNavMenu(null);
+                                                    }}
+                                                    className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                                                >
+                                                    <Plug size={16} />
+                                                    Тест связи с 1С (COM)
+                                                </button>
                                                 <div className="px-4 py-2 border-b border-slate-100">
                                                     <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Масштаб интерфейса</span>
                                                     <div className="flex flex-wrap gap-1 mt-1.5">
@@ -363,6 +374,7 @@ export default function App() {
                         {viewMode === 'shift_reports' && <ShiftReportsView />}
                         {viewMode === 'production' && <ProductionView />}
                         {viewMode === 'planning' && <PlanningView />}
+                        {viewMode === 'onec_test' && <OneCTestView />}
                     </div>
                 </>
         </div>

@@ -349,7 +349,7 @@ export function getDefaultLineNorms(lineNumbers) {
 const PLAN_DEBUG_W = { val: 40, t: 12, n: 8, num: 9, time: 18, dur: 14, catFile: 18, recognized: 10, cat: 22, desc: 36, norm: 10 };
 
 /**
- * Расчёт плана по (линия, дата) с учётом нормативов: work_time, norms_sum, available_min, план = avg_speed * (available_min/60) * (10/12).
+ * Расчёт плана по (линия, дата) с учётом нормативов: work_time, norms_sum, available_min, план = avg_speed * (available_min/60).
  * @param {Array<{ line?: string, fileName?: string, date?: string, shift?: string, start?: string, end?: string, speed?: number, product?: string, qty?: number }>} flatRows
  * @param {Array<{ line?: string, fileName?: string, date?: string, shift?: string, start?: string, end?: string, durationMinutes?: number|null, category?: string, type?: string, description?: string }>} flatDowntimeRows
  * @param {Record<string, Record<string, number>>} lineNorms
@@ -432,7 +432,7 @@ export function computePlanByLineDate(flatRows, flatDowntimeRows, lineNorms) {
         }
         const available_min = work_time_min != null ? Math.max(0, work_time_min - norms_sum) : 0;
         const plan = avg_speed != null && available_min > 0
-            ? Math.round(avg_speed * (available_min / 60) * (10 / 12))
+            ? Math.round(avg_speed * (available_min / 60))
             : 0;
         const fact = rows.reduce((acc, r) => acc + (typeof r.qty === 'number' ? r.qty : parseFloat(r.qty) || 0), 0);
 
@@ -497,7 +497,7 @@ export function computePlanByLineDate(flatRows, flatDowntimeRows, lineNorms) {
         } else if (avg_speed == null) {
             debug.push(`Линия ${lineKey}, день ${date}: не удалось посчитать среднюю скорость`);
         } else {
-            debug.push(`  Норм. простои: ${norms_sum} мин. Доступно: ${available_min} мин. План = ${avg_speed.toFixed(1)} * (${available_min}/60) * (10/12) = ${plan}`);
+            debug.push(`  Норм. простои: ${norms_sum} мин. Доступно: ${available_min} мин. План = ${avg_speed.toFixed(1)} * (${available_min}/60) = ${plan}`);
             debug.push(`  Факт (столбец K) = ${Math.round(fact)}`);
             debug.push(`Линия ${lineKey}, день ${date}: скорость ${avg_speed.toFixed(1)} шт/ч, время ${work_time_min} мин, норм. простои ${norms_sum} мин, доступно ${available_min} мин → план = ${plan}, факт = ${Math.round(fact)}`);
         }

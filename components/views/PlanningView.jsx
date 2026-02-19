@@ -20,146 +20,20 @@ const DEFAULT_LINE_OPTIONS = [
     'Линия 11 (Лимонады)'
 ];
 
-const DEFAULT_CIP_DURATIONS = {
-    line1: { cip1: '', cip2: '', cip3: '' }
-};
-
-const DEFAULT_SPEED_LINES = [
-    {
-        id: 'line_1',
-        name: 'Линия 1',
-        entries: [
-            { id: 'line_1_0', format: '1,8 л', speed: '1000' }
-        ]
-    },
-    {
-        id: 'line_2',
-        name: 'Линия 2',
-        entries: [
-            { id: 'line_2_0', format: '0,25 л', speed: '6500' }
-        ]
-    },
-    {
-        id: 'line_3',
-        name: 'Линия 3',
-        entries: [
-            { id: 'line_3_0', format: '0,75 л', speed: '3700' },
-            { id: 'line_3_1', format: '1,0 л', speed: '4600' }
-        ]
-    },
-    {
-        id: 'line_4',
-        name: 'Линия 4',
-        entries: [
-            { id: 'line_4_0', format: '0,25 л / 0,33 л', speed: '5600' }
-        ]
-    },
-    {
-        id: 'line_5',
-        name: 'Линия 5 (Сиропы)',
-        entries: [
-            { id: 'line_5_0', format: '0,25 л', speed: '2900' },
-            { id: 'line_5_1', format: '0,7 л', speed: '1600' },
-            { id: 'line_5_2', format: '1,0 л', speed: '2200' }
-        ]
-    },
-    {
-        id: 'line_6',
-        name: 'Линия 6 (Bag-in-Box)',
-        entries: [
-            { id: 'line_6_0', format: '3,0 л', speed: '300' }
-        ]
-    },
-    {
-        id: 'line_7',
-        name: 'Линия 7 (Топпинги)',
-        entries: [
-            { id: 'line_7_0', format: '1,0 кг', speed: '200' },
-            { id: 'line_7_1', format: '25 кг', speed: '8' }
-        ]
-    },
-    {
-        id: 'line_8',
-        name: 'Линия 8 (Соусы)',
-        entries: [
-            { id: 'line_8_0', format: '10,0 кг', speed: '210' }
-        ]
-    },
-    {
-        id: 'line_9',
-        name: 'Линия 9 (Пюре)',
-        entries: [
-            { id: 'line_9_0', format: 'Налив (Кеги/Бочки?)', speed: '15' }
-        ]
-    },
-    {
-        id: 'line_10',
-        name: 'Линия 10 (ПЭТ)',
-        entries: [
-            { id: 'line_10_0', format: '1,0 л', speed: '450' }
-        ]
-    },
-    {
-        id: 'line_11',
-        name: 'Линия 11 (Лимонады)',
-        entries: [
-            { id: 'line_11_0', format: 'Банка/Бутылка', speed: '3000' }
-        ]
-    }
-];
-
-const DEFAULT_PRODUCTS = [
-    {
-        id: 1,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '08:00',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        name: 'Лимонад классический 0.5л',
-        qty: '18 000',
-        speed: '6 000'
-    },
-    {
-        id: 2,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        name: 'Кола 0.5л',
-        qty: '22 000',
-        speed: '7 500'
-    },
-    {
-        id: 3,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        name: 'Вода газ. 1.5л',
-        qty: '12 500',
-        speed: '4 200'
-    },
-    {
-        id: 4,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        name: 'Сок яблочный 1л',
-        qty: '9 800',
-        speed: '3 300'
-    }
-];
-
 const TRANSITION_RULES_VERSION = 'rules_sets_2026_01_27';
+
+/** Распознаёт строку как событие CIP/перехода. Возвращает eventKey или null. */
+const parseCipLine = (line) => {
+    const s = String(line || '').trim();
+    if (!s) return null;
+    if (/^CIP\s*1\s*$/i.test(s) || /^CIP1\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.cip1;
+    if (/^CIP\s*2\s*$/i.test(s) || /^CIP2\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.cip2;
+    if (/^CIP\s*3\s*$/i.test(s) || /^CIP3\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.cip3;
+    if (/^Смена\s+ассортимента\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.smenaAssortimenta;
+    if (/^Переналадка\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.perenaladka;
+    if (/^Вытеснение\s*$/i.test(s)) return PLANNING_EVENT_CATEGORIES.vytesnenie;
+    return null;
+};
 
 const PRODUCT_PARSE_PATTERN = /^(?<type>Сироп|Нектар|Сок|Топпинг|Основа|Концентрат|Морс|Лимонад|Пюре|Переборка|соус|Тоник|Энергетический напиток|Напиток(?: с витаминами| тонизирующий)?)\s+(?<flavor>.+?)(?=\s+\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|\s+0,33|\s+ТМ\s*[«"]?|\s*[-–—]\s*\d|\s*$)(?:\s+(?<volume>\d+(?:[,.]\d+)?\s*(?:л|кг|мл|г)|0,33))?(?:\s+(?:ПЭТ|ст|бут))?(?:\s+ТМ\s*(?<brand>(?:[«"][^"»]+[»"])|(?:[^\s\t]+)))?(?:\s*(?:[-–—])?\s*(?<qty>[\d\s]+)(?:\s*(?:шт|шт\.|штук))?)?/iu;
 
@@ -195,7 +69,7 @@ const extractProductParts = (value) => {
     if (!match?.groups?.type || !match?.groups?.flavor) {
         return { type: '', flavor: '', volume: '', brand: '' };
     }
-    const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
+    const volume = match.groups.volume ? normalizeVolumeToCanonical(match.groups.volume) : '';
     let brand = match.groups.brand ? match.groups.brand.trim() : '';
     if (brand && (/^[«"]/.test(brand))) brand = brand.replace(/^[«"](.*)[»"]$/, '$1').trim();
     return {
@@ -211,45 +85,18 @@ const normalizeVolumeForCompare = (vol) => {
     return vol.replace(/\s+/g, ' ').replace(',', '.').trim().toLowerCase();
 };
 
+/** Вернуть объём в каноническом формате: точка как десятичный разделитель, единица измерения при необходимости */
+const normalizeVolumeToCanonical = (vol) => {
+    if (!vol || typeof vol !== 'string') return '';
+    return String(vol).trim().replace(/,/g, '.').replace(/\s+/g, ' ');
+};
+
 const splitTransitionList = (value) => (
     String(value || '')
         .split(/[,;\n]+/)
         .map(item => item.trim())
         .filter(Boolean)
 );
-
-const DEFAULT_CIP_BETWEEN = [
-    {
-        id: 101,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        type: 'CIP 1'
-    },
-    {
-        id: 102,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        type: 'CIP 2'
-    },
-    {
-        id: 103,
-        date: '27.01.2026',
-        manualDate: false,
-        start: '',
-        end: '',
-        manualStart: false,
-        manualEnd: false,
-        type: 'CIP 3'
-    }
-];
 
 const PlanningView = () => {
     const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState, productionResults } = useData();
@@ -354,14 +201,14 @@ const PlanningView = () => {
         return result;
     };
 
-    const initialTab = storedPlanning.activeTab || 'schedule';
+    const initialTab = storedPlanning?.activeTab || 'schedule';
     const [activeTab, setActiveTab] = useState(initialTab);
     const [visitedTabs, setVisitedTabs] = useState(() => ({ [initialTab]: true }));
     const [cipDurations, setCipDurations] = useState(
-        () => storedPlanning.cipDurations || DEFAULT_CIP_DURATIONS
+        () => storedPlanning?.cipDurations || {}
     );
     const [baseProducts, setBaseProducts] = useState(
-        () => storedPlanning.baseProducts || []
+        () => storedPlanning?.baseProducts || []
     );
     const [productImportError, setProductImportError] = useState('');
     const [planImportError, setPlanImportError] = useState('');
@@ -375,19 +222,19 @@ const PlanningView = () => {
     const [isLineWorkPlanOpen, setIsLineWorkPlanOpen] = useState(false);
     const [lineWorkDraft, setLineWorkDraft] = useState({});
     const [selectedPlanLine, setSelectedPlanLine] = useState(
-        () => resolveLineOption(storedPlanning.selectedPlanLine)
+        () => resolveLineOption(storedPlanning?.selectedPlanLine)
     );
     const [speedLines, setSpeedLines] = useState(
-        () => storedPlanning.speedLines || DEFAULT_SPEED_LINES
+        () => storedPlanning?.speedLines || []
     );
     const [products, setProducts] = useState(
-        () => storedPlanning.products || DEFAULT_PRODUCTS
+        () => storedPlanning?.products || []
     );
     const [cipBetween, setCipBetween] = useState(
-        () => storedPlanning.cipBetween || DEFAULT_CIP_BETWEEN
+        () => storedPlanning?.cipBetween || []
     );
     const [lineWorkDates, setLineWorkDates] = useState(
-        () => storedPlanning.lineWorkDates || {}
+        () => storedPlanning?.lineWorkDates || {}
     );
 
     const eventCountByLine = useMemo(() => {
@@ -401,10 +248,10 @@ const PlanningView = () => {
     }, [lineOptions, products, cipBetween, lineMatchesSelected]);
 
     const [dragIndex, setDragIndex] = useState(null);
-    const useStoredTransitionRules = storedPlanning.transitionRulesVersion === TRANSITION_RULES_VERSION;
+    const useStoredTransitionRules = storedPlanning?.transitionRulesVersion === TRANSITION_RULES_VERSION;
     const [transitionRules, setTransitionRules] = useState(
         () => (useStoredTransitionRules
-            ? storedPlanning.transitionRules || TRANSITION_RULES_BASE
+            ? (storedPlanning?.transitionRules || TRANSITION_RULES_BASE)
             : TRANSITION_RULES_BASE)
     );
     const [lineEvents, setLineEvents] = useState(() => {
@@ -422,7 +269,7 @@ const PlanningView = () => {
     const [transitionSaveStatus, setTransitionSaveStatus] = useState('');
     const [transitionSearchQuery, setTransitionSearchQuery] = useState('');
     const [displacementRules, setDisplacementRules] = useState(
-        () => storedPlanning.displacementRules || []
+        () => storedPlanning?.displacementRules || []
     );
     const [hoveredTransitionRuleId, setHoveredTransitionRuleId] = useState(null);
     const [activeTransitionCell, setActiveTransitionCell] = useState(null);
@@ -432,13 +279,13 @@ const PlanningView = () => {
     const [isTransitionModalOpen, setIsTransitionModalOpen] = useState(false);
     const [isExportModalOpen, setIsExportModalOpen] = useState(false);
     const [planSaveName, setPlanSaveName] = useState('');
-    const [exportType, setExportType] = useState(() => storedPlanning.exportType || 'html');
+    const [exportType, setExportType] = useState(() => storedPlanning?.exportType || 'html');
     const [exportLines, setExportLines] = useState(() => {
-        const stored = (storedPlanning.exportLines || [])
+        const stored = (storedPlanning?.exportLines || [])
             .map(resolveLineOption)
             .filter(Boolean);
         if (stored.length > 0) return stored;
-        return [resolveLineOption(storedPlanning.selectedPlanLine || lineOptions[0])];
+        return [resolveLineOption(storedPlanning?.selectedPlanLine || lineOptions[0])];
     });
     const transitionWorkerRef = useRef(null);
     const transitionSaveTimeoutRef = useRef(null);
@@ -505,23 +352,116 @@ const PlanningView = () => {
             .map(product => getTransitionKeyForName(product.name))
     ), [products, selectedPlanLine, getTransitionKeyForName, lineMatchesSelected]);
 
+    const eventOptionsForRules = useMemo(() => (
+        lineEvents.map((item) => ({ key: item.category, label: item.category }))
+    ), [lineEvents]);
+
+    const getEventKeyForCategoryName = useCallback((categoryName) => {
+        const match = lineEvents.find(
+            (item) => item.category === categoryName || (categoryName && item.category.includes(categoryName))
+        );
+        return match ? match.category : '';
+    }, [lineEvents]);
+
+    const getEventKeyForCipKey = useCallback((cipKey) => {
+        const category = PLANNING_EVENT_CATEGORIES[cipKey];
+        if (!category) return eventOptionsForRules[0]?.key || '';
+        const hasEvent = lineEvents.some((item) => item.category === category);
+        return hasEvent ? category : (eventOptionsForRules[0]?.key || '');
+    }, [lineEvents, eventOptionsForRules]);
+
+    const getEventKeyBetweenProducts = useCallback((fromProduct, toProduct) => {
+        const fromParts = extractProductParts(fromProduct?.name);
+        const toParts = extractProductParts(toProduct?.name);
+        const volFrom = normalizeVolumeForCompare(fromParts.volume);
+        const volTo = normalizeVolumeForCompare(toParts.volume);
+
+        if (volFrom !== volTo) {
+            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.perenaladka);
+            if (key) return key;
+        }
+
+        const sameType = (fromParts.type || '').toLowerCase() === (toParts.type || '').toLowerCase();
+        const sameFlavor = (fromParts.flavor || '').toLowerCase() === (toParts.flavor || '').toLowerCase();
+        const sameVolume = volFrom === volTo;
+        const brandFrom = (fromParts.brand || '').toLowerCase().trim();
+        const brandTo = (toParts.brand || '').toLowerCase().trim();
+        const differentBrand = brandFrom !== brandTo;
+
+        if (sameType && sameFlavor && sameVolume && differentBrand) {
+            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.smenaAssortimenta);
+            if (key) return key;
+        }
+
+        const fromFlavor = (fromParts.flavor || '').toLowerCase();
+        const toFlavor = (toParts.flavor || '').toLowerCase();
+        for (let i = 0; i < displacementRules.length; i += 1) {
+            const r = displacementRules[i];
+            const fromSub = (r.from || '').toLowerCase().trim();
+            const toSub = (r.to || '').toLowerCase().trim();
+            const excSub = (r.exception || '').toLowerCase().trim();
+            if (!fromSub || !toSub) continue;
+            if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
+                const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.vytesnenie);
+                if (key) return key;
+                break;
+            }
+        }
+
+        const fromKey = getTransitionKeyForName(fromProduct?.name);
+        const toKey = getTransitionKeyForName(toProduct?.name);
+        const rule = transitionRuleMap.get(fromKey);
+        if (!rule) return null;
+        const cipKey = getTransitionCipKey(rule, toKey);
+        return getEventKeyForCipKey(cipKey);
+    }, [lineEvents, transitionRuleMap, getTransitionKeyForName, getEventKeyForCipKey, displacementRules, getEventKeyForCategoryName]);
+
+    const hasMatchingDisplacementRule = useCallback((fromProduct, toProduct) => {
+        const fromParts = extractProductParts(fromProduct?.name);
+        const toParts = extractProductParts(toProduct?.name);
+        const fromFlavor = (fromParts.flavor || '').toLowerCase();
+        const toFlavor = (toParts.flavor || '').toLowerCase();
+        for (let i = 0; i < displacementRules.length; i += 1) {
+            const r = displacementRules[i];
+            const fromSub = (r.from || '').toLowerCase().trim();
+            const toSub = (r.to || '').toLowerCase().trim();
+            const excSub = (r.exception || '').toLowerCase().trim();
+            if (!fromSub || !toSub) continue;
+            if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
+                return true;
+            }
+        }
+        return false;
+    }, [displacementRules]);
+
     const buildMissingTransitionMap = useCallback((line) => {
         const map = new Map();
+        const vytesnenieCategory = PLANNING_EVENT_CATEGORIES.vytesnenie;
         const lineProducts = products
             .map((product, index) => ({ product, index }))
             .filter(({ product }) => lineMatchesSelected(product.line, line));
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
-            const fromKey = getTransitionKeyForName(from.product.name);
-            const toKey = getTransitionKeyForName(to.product.name);
-            const rule = transitionRuleMap.get(fromKey);
-            if (!rule) {
-                map.set(from.index, true);
+            const cip = cipBetween[from.index];
+            const userEventKey = cip?.eventKey || '';
+
+            if (userEventKey === vytesnenieCategory) {
+                if (!hasMatchingDisplacementRule(from.product, to.product)) {
+                    map.set(from.index, true);
+                }
+                continue;
             }
+
+            const fromKey = getTransitionKeyForName(from.product.name);
+            const rule = transitionRuleMap.get(fromKey);
+            if (rule) continue;
+            const suggestedEvent = getEventKeyBetweenProducts(from.product, to.product);
+            if (suggestedEvent != null) continue;
+            map.set(from.index, true);
         }
         return map;
-    }, [products, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected]);
+    }, [products, cipBetween, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected, getEventKeyBetweenProducts, hasMatchingDisplacementRule]);
 
     const missingTransitionByIndex = useMemo(
         () => buildMissingTransitionMap(selectedPlanLine),
@@ -726,7 +666,16 @@ const PlanningView = () => {
             if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
             if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
-            if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
+            if (Array.isArray(loaded.speedLines)) {
+                const normalized = loaded.speedLines.map(line => ({
+                    ...line,
+                    entries: (line.entries || []).map(entry => ({
+                        ...entry,
+                        format: entry.format ? normalizeVolumeToCanonical(entry.format) : entry.format
+                    }))
+                }));
+                setSpeedLines(normalized);
+            }
             if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
             if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
             if (Array.isArray(loaded.lineEvents)) setLineEvents(migrateLineEventsCategories(loaded.lineEvents));
@@ -746,12 +695,37 @@ const PlanningView = () => {
                 return;
             }
             const loaded = storedPlanning;
-            if (!loaded || typeof loaded !== 'object') return;
+            if (!loaded || typeof loaded !== 'object') {
+                setProducts([]);
+                setCipBetween([]);
+                setSpeedLines([]);
+                setCipDurations({});
+                setBaseProducts([]);
+                setLineWorkDates({});
+                setDisplacementRules([]);
+                setExportType('html');
+                if (lineOptions.length > 0) {
+                    const firstLine = resolveLineOption(lineOptions[0]);
+                    setSelectedPlanLine(firstLine);
+                    setExportLines([firstLine]);
+                }
+                setLineEvents(DEFAULT_LINE_EVENTS);
+                return;
+            }
             if (Array.isArray(loaded.products)) setProducts(loaded.products);
             if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
             if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
-            if (Array.isArray(loaded.speedLines)) setSpeedLines(loaded.speedLines);
+            if (Array.isArray(loaded.speedLines)) {
+                const normalized = loaded.speedLines.map(line => ({
+                    ...line,
+                    entries: (line.entries || []).map(entry => ({
+                        ...entry,
+                        format: entry.format ? normalizeVolumeToCanonical(entry.format) : entry.format
+                    }))
+                }));
+                setSpeedLines(normalized);
+            }
             if (loaded.selectedPlanLine && lineOptions.includes(loaded.selectedPlanLine)) setSelectedPlanLine(loaded.selectedPlanLine);
             if (Array.isArray(loaded.transitionRules)) setTransitionRules(loaded.transitionRules);
             if (Array.isArray(loaded.lineEvents)) setLineEvents(migrateLineEventsCategories(loaded.lineEvents));
@@ -775,13 +749,15 @@ const PlanningView = () => {
     }, [useStoredTransitionRules]);
 
     const savePlanningState = useMemo(() => debounce((nextState) => {
+        if (!currentPlanId) return;
         persistStateKey(STORAGE_KEYS.PLANNING_STATE, nextState);
         if (updatePlanPlanningState && nextState) {
             updatePlanPlanningState(nextState);
         }
-    }, 400), [persistStateKey, updatePlanPlanningState]);
+    }, 400), [persistStateKey, updatePlanPlanningState, currentPlanId]);
 
     useEffect(() => {
+        if (!currentPlanId) return;
         if (skipNextSaveRef.current) {
             skipNextSaveRef.current = false;
             return;
@@ -803,6 +779,8 @@ const PlanningView = () => {
             lineWorkDates
         });
     }, [
+        currentPlanId,
+        activeTab,
         cipDurations,
         baseProducts,
         speedLines,
@@ -873,12 +851,16 @@ const PlanningView = () => {
 
     const findSpeedForVolume = (lineName, volume) => {
         if (!lineName || !volume) return '';
-        const line = speedLines.find(item => item.name === lineName);
+        let line = speedLines.find(item => item.name === lineName);
+        if (!line) line = speedLines.find(item => isLineMatch(item.name, lineName));
         if (!line) return '';
         const target = normalizeVolume(volume);
         const exact = line.entries.find(entry => normalizeVolume(entry.format) === target);
         if (exact?.speed) return String(exact.speed);
-        const partial = line.entries.find(entry => normalizeVolume(entry.format).includes(target));
+        const partial = line.entries.find(entry => {
+            const entryNorm = normalizeVolume(entry.format);
+            return entryNorm.includes(target) || target.includes(entryNorm);
+        });
         return partial?.speed ? String(partial.speed) : '';
     };
 
@@ -961,42 +943,8 @@ const PlanningView = () => {
     };
 
     const parseProductPaste = (text, includeQty) => {
-        const trimmed = String(text || '').trim();
-        if (!trimmed) return [];
-        const pattern = PRODUCT_PARSE_PATTERN;
-        const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-        const parsed = [];
-
-        lines.forEach((line, idx) => {
-            const match = line.match(pattern);
-            if (!match?.groups?.type || !match?.groups?.flavor) return;
-            const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
-            const brand = match.groups.brand ? match.groups.brand.trim() : '';
-            const type = match.groups.type.trim();
-            const flavor = match.groups.flavor.trim();
-            const rawQty = includeQty && match.groups.qty ? match.groups.qty : '';
-            const qty = rawQty ? rawQty.replace(/\s+/g, ' ').trim() : '';
-            const name = [
-                type,
-                flavor,
-                volume ? volume : '',
-                brand ? `ТМ «${brand}»` : ''
-            ].filter(Boolean).join(' ');
-
-            parsed.push({
-                id: `p_${Date.now()}_${idx}`,
-                name,
-                type,
-                flavor,
-                volume,
-                brand,
-                speed: '',
-                qty,
-                unit: ''
-            });
-        });
-
-        return parsed;
+        const { items } = parseProductPastePreview(text, includeQty);
+        return items || [];
     };
 
     const parseProductPastePreview = (text, includeQty) => {
@@ -1006,12 +954,19 @@ const PlanningView = () => {
         const ok = [];
         const okNoQty = [];
         const partial = [];
+        const items = [];
 
         lines.forEach((line, idx) => {
+            const cipKey = parseCipLine(line);
+            if (cipKey) {
+                items.push({ kind: 'cip', eventKey: cipKey });
+                return;
+            }
             const match = line.match(pattern);
             if (match?.groups?.type && match.groups?.flavor) {
-                const volume = match.groups.volume ? match.groups.volume.replace(',', '.').trim() : '';
-                const brand = match.groups.brand ? match.groups.brand.trim() : '';
+                const volume = match.groups.volume ? normalizeVolumeToCanonical(match.groups.volume) : '';
+                let brand = match.groups.brand ? match.groups.brand.trim() : '';
+                if (brand && (/^[«"]/.test(brand))) brand = brand.replace(/^[«"](.*)[»"]$/, '$1').trim();
                 const type = match.groups.type.trim();
                 const flavor = match.groups.flavor.trim();
                 const rawQty = includeQty && match.groups.qty ? match.groups.qty : '';
@@ -1024,6 +979,7 @@ const PlanningView = () => {
                 ].filter(Boolean).join(' ');
                 const item = {
                     id: `p_${Date.now()}_${idx}`,
+                    kind: 'product',
                     name,
                     type,
                     flavor,
@@ -1033,6 +989,7 @@ const PlanningView = () => {
                     qty,
                     unit: ''
                 };
+                items.push(item);
                 if (includeQty && !qty) {
                     okNoQty.push(item);
                 } else {
@@ -1043,7 +1000,7 @@ const PlanningView = () => {
             }
         });
 
-        return { ok, okNoQty, partial };
+        return { ok, okNoQty, partial, items };
     };
 
     const addSpeedLine = () => {
@@ -1085,12 +1042,13 @@ const PlanningView = () => {
     };
 
     const updateSpeedEntry = (lineId, entryId, key, value) => {
+        const normalized = key === 'format' && value ? normalizeVolumeToCanonical(value) : value;
         setSpeedLines(prev => prev.map(line => {
             if (line.id !== lineId) return line;
             return {
                 ...line,
                 entries: line.entries.map(entry => (
-                    entry.id === entryId ? { ...entry, [key]: value } : entry
+                    entry.id === entryId ? { ...entry, [key]: normalized } : entry
                 ))
             };
         }));
@@ -1146,20 +1104,135 @@ const PlanningView = () => {
         return Array.from(keys);
     }, [products, selectedPlanLine, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected]);
 
+    const transitionsWithoutRules = useMemo(() => {
+        const list = [];
+        const vytesnenieCategory = PLANNING_EVENT_CATEGORIES.vytesnenie;
+        const lineProds = products
+            .map((p, i) => ({ product: p, index: i }))
+            .filter(({ product }) => lineMatchesSelected(product.line, selectedPlanLine) && product.name);
+        for (let i = 0; i < lineProds.length - 1; i += 1) {
+            const from = lineProds[i];
+            const to = lineProds[i + 1];
+            const cip = cipBetween[from.index];
+            const userEventKey = cip?.eventKey || eventOptionsForRules[0]?.key || '';
+            const fromKey = getTransitionKeyForName(from.product.name);
+            const toKey = getTransitionKeyForName(to.product.name);
+
+            if (userEventKey === vytesnenieCategory) {
+                if (!hasMatchingDisplacementRule(from.product, to.product)) {
+                    list.push({ fromProduct: from.product, toProduct: to.product, fromKey, toKey, eventKey: userEventKey });
+                }
+                continue;
+            }
+
+            const rule = transitionRuleMap.get(fromKey);
+            if (rule) continue;
+            const suggestedEvent = getEventKeyBetweenProducts(from.product, to.product);
+            if (suggestedEvent != null) continue;
+            list.push({ fromProduct: from.product, toProduct: to.product, fromKey, toKey, eventKey: userEventKey });
+        }
+        return list;
+    }, [products, selectedPlanLine, cipBetween, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected, eventOptionsForRules, hasMatchingDisplacementRule, getEventKeyBetweenProducts]);
+
     const addMissingProductsAsRules = () => {
-        if (productsWithoutRules.length === 0) return;
-        const now = Date.now();
-        setTransitionRules((prev) => [
-            ...prev,
-            ...productsWithoutRules.map((key, i) => ({
-                id: `tr_${now}_${prev.length + i}`,
-                productName: key,
-                baseCip: 'cip2',
-                cip1: '',
-                cip2: '',
-                cip3: ''
-            }))
-        ]);
+        if (transitionsWithoutRules.length === 0) return;
+        const vytesnenieCategory = PLANNING_EVENT_CATEGORIES.vytesnenie;
+        const cip1Category = PLANNING_EVENT_CATEGORIES.cip1;
+        const cip2Category = PLANNING_EVENT_CATEGORIES.cip2;
+        const cip3Category = PLANNING_EVENT_CATEGORIES.cip3;
+
+        const displacementToAdd = [];
+        const transitionUpdates = new Map();
+
+        for (const t of transitionsWithoutRules) {
+            if (t.eventKey === vytesnenieCategory) {
+                const fromParts = extractProductParts(t.fromProduct?.name);
+                const toParts = extractProductParts(t.toProduct?.name);
+                const fromFlavor = (fromParts.flavor || '').trim();
+                const toFlavor = (toParts.flavor || '').trim();
+                if (!fromFlavor || !toFlavor) continue;
+                const key = `${fromFlavor.toLowerCase()}|${toFlavor.toLowerCase()}`;
+                const exists = displacementRules.some(
+                    (r) => (r.from || '').toLowerCase().trim() === fromFlavor.toLowerCase()
+                        && (r.to || '').toLowerCase().trim() === toFlavor.toLowerCase()
+                );
+                if (!exists && !displacementToAdd.some((d) => d.key === key)) {
+                    displacementToAdd.push({ from: fromFlavor, to: toFlavor, key });
+                }
+                continue;
+            }
+
+            let baseCip = 'cip2';
+            let cipField = 'cip2';
+            if (t.eventKey === cip1Category) {
+                baseCip = 'cip1';
+                cipField = 'cip1';
+            } else if (t.eventKey === cip3Category) {
+                baseCip = 'cip3';
+                cipField = 'cip3';
+            }
+
+            const existing = transitionUpdates.get(t.fromKey);
+            if (existing) {
+                const arr = existing[cipField] || [];
+                if (t.toKey && !arr.includes(t.toKey)) arr.push(t.toKey);
+                existing[cipField] = arr;
+            } else {
+                const obj = { baseCip, cip1: [], cip2: [], cip3: [] };
+                if (t.toKey) obj[cipField].push(t.toKey);
+                transitionUpdates.set(t.fromKey, obj);
+            }
+        }
+
+        if (displacementToAdd.length > 0) {
+            const now = Date.now();
+            setDisplacementRules((prev) => [
+                ...prev,
+                ...displacementToAdd.map((d, i) => ({
+                    id: `dr_${now}_${prev.length + i}`,
+                    from: d.from,
+                    to: d.to,
+                    exception: ''
+                }))
+            ]);
+        }
+
+        if (transitionUpdates.size > 0) {
+            const now = Date.now();
+            setTransitionRules((prev) => {
+                const byKey = new Map();
+                prev.forEach((r) => {
+                    const k = canonicalTransitionKey(getTransitionKeyForName(r.productName));
+                    if (k) byKey.set(k, { ...r });
+                });
+                transitionUpdates.forEach((upd, fromKey) => {
+                    const canon = canonicalTransitionKey(fromKey);
+                    const existing = byKey.get(canon);
+                    const appendToList = (curr, field) => {
+                        const base = splitTransitionList(curr || '').map(getTransitionKeyForName).filter(Boolean);
+                        const extra = upd[field] || [];
+                        const combined = [...new Set([...base, ...extra])];
+                        return normalizeTransitionList(combined.join(', '));
+                    };
+                    if (existing) {
+                        existing.cip1 = appendToList(existing.cip1, 'cip1');
+                        existing.cip2 = appendToList(existing.cip2, 'cip2');
+                        existing.cip3 = appendToList(existing.cip3, 'cip3');
+                        if (upd.baseCip) existing.baseCip = upd.baseCip;
+                    } else {
+                        byKey.set(canon, {
+                            id: `tr_${now}_${byKey.size}`,
+                            productName: canon,
+                            baseCip: upd.baseCip || 'cip2',
+                            cip1: normalizeTransitionList((upd.cip1 || []).join(', ')),
+                            cip2: normalizeTransitionList((upd.cip2 || []).join(', ')),
+                            cip3: normalizeTransitionList((upd.cip3 || []).join(', '))
+                        });
+                    }
+                });
+                return Array.from(byKey.values());
+            });
+        }
     };
 
     const removeTransitionRule = (id) => {
@@ -1406,7 +1479,17 @@ const PlanningView = () => {
             }
             if (target === 'plan') {
                 const baseDate = products[0]?.date || '27.01.2026';
-                const importedProducts = items.map((item, idx) => ({
+                const hasMixedFormat = items.length > 0 && (items[0].kind === 'product' || items[0].kind === 'cip');
+                let productItems = [];
+                let cipEventKeys = [];
+                if (hasMixedFormat) {
+                    productItems = items.filter((i) => i.kind === 'product');
+                    const cipItems = items.filter((i) => i.kind === 'cip');
+                    cipEventKeys = cipItems.map((i) => i.eventKey);
+                } else {
+                    productItems = items;
+                }
+                const importedProducts = productItems.map((item, idx) => ({
                     id: `plan_${Date.now()}_${idx}`,
                     date: baseDate,
                     manualDate: false,
@@ -1419,7 +1502,10 @@ const PlanningView = () => {
                     qty: item.qty || '',
                     speed: findSpeedForVolume(selectedPlanLine, item.volume) || item.speed || ''
                 }));
-                const importedCips = importedProducts.slice(0, -1).map((_, idx) => ({
+                const defaultEventKey = eventOptions[0]?.key || '';
+                const n = importedProducts.length;
+                const nCips = Math.max(n - 1, cipEventKeys.length);
+                const importedCips = Array.from({ length: nCips }, (_, idx) => ({
                     id: `cip_${Date.now()}_${idx}`,
                     date: baseDate,
                     manualDate: false,
@@ -1428,7 +1514,7 @@ const PlanningView = () => {
                     manualStart: false,
                     manualEnd: false,
                     line: selectedPlanLine,
-                    eventKey: eventOptions[0]?.key || ''
+                    eventKey: cipEventKeys[idx] ?? defaultEventKey
                 }));
                 const byLine = {};
                 products.forEach((p, i) => {
@@ -1462,9 +1548,28 @@ const PlanningView = () => {
                 byLine[selectedPlanLine] = { products: importedProducts, cips: importedCips };
                 const nextProducts = [];
                 const nextCipBetween = [];
+                const usedByLineKeys = new Set();
                 lineOptions.forEach((line) => {
-                    const data = byLine[line];
+                    const exact = byLine[line];
+                    const matched = exact ?? Object.entries(byLine).find(([k]) => isLineMatch(k, line));
+                    const data = exact ?? matched?.[1];
+                    const byLineKey = matched ? (exact ? line : matched[0]) : null;
                     if (!data || !data.products.length) return;
+                    if (byLineKey && usedByLineKeys.has(byLineKey)) return;
+                    if (byLineKey) usedByLineKeys.add(byLineKey);
+                    if (usedByLineKeys.size > 1) {
+                        nextCipBetween.push({
+                            id: `cip_${Date.now()}_between_${line}`,
+                            date: baseDate,
+                            manualDate: false,
+                            start: '',
+                            end: '',
+                            manualStart: false,
+                            manualEnd: false,
+                            line: '__between_lines__',
+                            eventKey: eventOptions[0]?.key || ''
+                        });
+                    }
                     data.products.forEach((p, i) => {
                         nextProducts.push(p);
                         if (i < data.cips.length) nextCipBetween.push(data.cips[i]);
@@ -1499,66 +1604,6 @@ const PlanningView = () => {
             return acc;
         }, {});
     }, [eventOptions]);
-
-    const getEventKeyForCipKey = (cipKey) => {
-        const category = PLANNING_EVENT_CATEGORIES[cipKey];
-        if (!category) return eventOptions[0]?.key || '';
-        const hasEvent = lineEvents.some((item) => item.category === category);
-        return hasEvent ? category : (eventOptions[0]?.key || '');
-    };
-
-    const getEventKeyForCategoryName = (categoryName) => {
-        const match = lineEvents.find(
-            (item) => item.category === categoryName || (categoryName && item.category.includes(categoryName))
-        );
-        return match ? match.category : '';
-    };
-
-    const getEventKeyBetweenProducts = useCallback((fromProduct, toProduct) => {
-        const fromParts = extractProductParts(fromProduct?.name);
-        const toParts = extractProductParts(toProduct?.name);
-        const volFrom = normalizeVolumeForCompare(fromParts.volume);
-        const volTo = normalizeVolumeForCompare(toParts.volume);
-
-        if (volFrom !== volTo) {
-            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.perenaladka);
-            if (key) return key;
-        }
-
-        const sameType = (fromParts.type || '').toLowerCase() === (toParts.type || '').toLowerCase();
-        const sameFlavor = (fromParts.flavor || '').toLowerCase() === (toParts.flavor || '').toLowerCase();
-        const sameVolume = volFrom === volTo;
-        const brandFrom = (fromParts.brand || '').toLowerCase().trim();
-        const brandTo = (toParts.brand || '').toLowerCase().trim();
-        const differentBrand = brandFrom !== brandTo;
-
-        if (sameType && sameFlavor && sameVolume && differentBrand) {
-            const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.smenaAssortimenta);
-            if (key) return key;
-        }
-
-        const fromFlavor = (fromParts.flavor || '').toLowerCase();
-        const toFlavor = (toParts.flavor || '').toLowerCase();
-        for (let i = 0; i < displacementRules.length; i += 1) {
-            const r = displacementRules[i];
-            const fromSub = (r.from || '').toLowerCase().trim();
-            const toSub = (r.to || '').toLowerCase().trim();
-            const excSub = (r.exception || '').toLowerCase().trim();
-            if (!fromSub || !toSub) continue;
-            if (fromFlavor.includes(fromSub) && toFlavor.includes(toSub) && (!excSub || !toFlavor.includes(excSub))) {
-                const key = getEventKeyForCategoryName(PLANNING_EVENT_CATEGORIES.vytesnenie);
-                if (key) return key;
-                break;
-            }
-        }
-
-        const fromKey = getTransitionKeyForName(fromProduct?.name);
-        const toKey = getTransitionKeyForName(toProduct?.name);
-        const rule = transitionRuleMap.get(fromKey);
-        if (!rule) return null;
-        const cipKey = getTransitionCipKey(rule, toKey);
-        return getEventKeyForCipKey(cipKey);
-    }, [lineEvents, transitionRuleMap, getTransitionKeyForName, getEventKeyForCipKey, displacementRules]);
 
     const eventDurationByKey = useMemo(() => {
         return lineEvents.reduce((acc, item) => {
@@ -2886,12 +2931,12 @@ const PlanningView = () => {
                                     <button
                                         type="button"
                                         onClick={addMissingProductsAsRules}
-                                        disabled={productsWithoutRules.length === 0}
-                                        title={productsWithoutRules.length === 0 ? 'Все продукты из графика уже в матрице переходов' : `Добавить ${productsWithoutRules.length} продукт(ов) из графика без правил в матрицу с базовым CIP2`}
+                                        disabled={transitionsWithoutRules.length === 0}
+                                        title={transitionsWithoutRules.length === 0 ? 'Все переходы в очереди линии уже имеют правила' : `Добавить правила для ${transitionsWithoutRules.length} отсутствующих переходов`}
                                         className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                     >
                                         <Plus size={16} />
-                                        Добавить без правил ({productsWithoutRules.length})
+                                        Добавить переходы ({transitionsWithoutRules.length})
                                     </button>
                                     <button
                                         onClick={applyTransitionsForCurrentOrder}
@@ -3277,7 +3322,7 @@ const PlanningView = () => {
                                 onChange={(e) => { setPasteText(e.target.value); setPlanImportPreview(null); }}
                                 rows={6}
                                 className="w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
-                                placeholder="Вставьте данные сюда..."
+                                placeholder="Продукт + кол-во. Между строками — CIP 1, CIP 2, CIP 3 или Смена ассортимента"
                             />
                             <button
                                 type="button"
@@ -3287,8 +3332,8 @@ const PlanningView = () => {
                                         setPlanImportError('Вставьте данные для разбора.');
                                         return;
                                     }
-                                    const { ok, okNoQty, partial } = parseProductPastePreview(pasteText, true);
-                                    setPlanImportPreview({ ok, okNoQty, partial });
+                                    const { ok, okNoQty, partial, items } = parseProductPastePreview(pasteText, true);
+                                    setPlanImportPreview({ ok, okNoQty, partial, items });
                                     if (ok.length === 0 && okNoQty.length === 0 && partial.length === 0) {
                                         setPlanImportError('Нет строк для разбора.');
                                     } else if (ok.length === 0 && okNoQty.length === 0) {
@@ -3304,37 +3349,70 @@ const PlanningView = () => {
                             )}
                             {planImportPreview && (
                                 <div className="space-y-4 rounded-xl border border-slate-200/80 bg-slate-50/30 p-4">
-                                    {planImportPreview.ok.length > 0 && (
+                                    {planImportPreview.items?.length > 0 && (
                                         <div>
                                             <h4 className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">
-                                                Распознано полностью — будет импортировано ({planImportPreview.ok.length})
+                                                Порядок импорта ({planImportPreview.items.filter((i) => i.kind === 'product').length} продуктов, {planImportPreview.items.filter((i) => i.kind === 'cip').length} переходов)
                                             </h4>
-                                            <ul className="max-h-40 overflow-y-auto space-y-1 text-sm text-slate-700 rounded-lg bg-white/80 p-2 border border-slate-200/60">
-                                                {planImportPreview.ok.map((item, i) => (
-                                                    <li key={item.id} className="flex items-baseline gap-2">
-                                                        <span className="text-slate-400 shrink-0">{i + 1}.</span>
-                                                        <span>{item.name}</span>
-                                                        {item.qty && <span className="text-slate-500 text-xs">({item.qty} шт)</span>}
-                                                    </li>
+                                            <ul className="max-h-48 overflow-y-auto space-y-1 text-sm rounded-lg bg-white/80 p-2 border border-slate-200/60">
+                                                {planImportPreview.items.map((item, i) => (
+                                                    item.kind === 'cip' ? (
+                                                        <li key={`cip-${i}`} className="flex items-baseline gap-2 text-indigo-600 pl-4 border-l-2 border-indigo-200">
+                                                            <span className="text-indigo-400 shrink-0">{i + 1}.</span>
+                                                            <span className="font-medium">{item.eventKey}</span>
+                                                        </li>
+                                                    ) : (
+                                                        <li key={item.id} className="flex items-baseline gap-2 text-slate-700">
+                                                            <span className="text-slate-400 shrink-0">{i + 1}.</span>
+                                                            <span>{item.name}</span>
+                                                            {item.qty && <span className="text-slate-500 text-xs">({item.qty} шт)</span>}
+                                                        </li>
+                                                    )
                                                 ))}
                                             </ul>
                                         </div>
                                     )}
-                                    {planImportPreview.okNoQty?.length > 0 && (
-                                        <div>
-                                            <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
-                                                Распознано, но не указано количество ({planImportPreview.okNoQty.length}) — будет импортировано без кол-ва
-                                            </h4>
-                                            <ul className="max-h-32 overflow-y-auto space-y-1 text-sm text-slate-600 rounded-lg bg-amber-50/50 p-2 border border-amber-200/60">
-                                                {planImportPreview.okNoQty.map((item, i) => (
-                                                    <li key={item.id} className="flex items-baseline gap-2">
-                                                        <span className="text-amber-600 shrink-0">{i + 1}.</span>
-                                                        <span>{item.name}</span>
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </div>
-                                    )}
+                                    {(() => {
+                                        const productItems = planImportPreview?.items?.filter((i) => i.kind === 'product') ?? [];
+                                        if (productItems.length === 0) return null;
+                                        const speedLine = speedLines.find((l) => isLineMatch(l.name, selectedPlanLine));
+                                        const lineFormats = speedLine?.entries ?? [];
+                                        const mismatched = productItems.filter((p) => !findSpeedForVolume(selectedPlanLine, p.volume));
+                                        const hasMismatch = mismatched.length > 0;
+                                        return (
+                                            <div className={`rounded-lg p-3 border ${hasMismatch ? 'bg-amber-50/60 border-amber-200/70' : 'bg-slate-50/50 border-slate-200/60'}`}>
+                                                <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: hasMismatch ? 'var(--amber-700)' : 'var(--slate-600)' }}>
+                                                    Проверка скорости для «{selectedPlanLine}»
+                                                </h4>
+                                                <div className="space-y-1.5 text-sm">
+                                                    {productItems.map((p, idx) => {
+                                                        const speed = findSpeedForVolume(selectedPlanLine, p.volume);
+                                                        const ok = !!speed;
+                                                        return (
+                                                            <div key={p.id} className={`flex items-baseline gap-2 ${ok ? 'text-slate-700' : 'text-amber-800'}`}>
+                                                                <span className="text-slate-400 shrink-0">{idx + 1}.</span>
+                                                                <span className="font-medium">{p.volume || '(без объёма)'}</span>
+                                                                <span className="text-slate-500">→</span>
+                                                                {ok ? (
+                                                                    <span>{speed} ед/ч</span>
+                                                                ) : (
+                                                                    <span className="text-amber-700 font-medium">скорость не найдена</span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <div className="mt-2 pt-2 border-t border-slate-200/50">
+                                                    <span className="text-xs text-slate-500">Есть для линии:</span>
+                                                    <span className="text-xs text-slate-600 ml-1">
+                                                        {lineFormats.length === 0
+                                                            ? 'нет настроек'
+                                                            : lineFormats.map((e) => `${e.format || '—'} → ${e.speed || '—'} ед/ч`).join(', ')}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
                                     {planImportPreview.partial.length > 0 && (
                                         <div>
                                             <h4 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
@@ -3362,8 +3440,9 @@ const PlanningView = () => {
                             </button>
                             <button
                                 onClick={() => {
-                                    const all = [...(planImportPreview?.ok ?? []), ...(planImportPreview?.okNoQty ?? [])];
-                                    if (all.length > 0) handlePasteImport('plan', { previewItems: all });
+                                    const itemsToImport = planImportPreview?.items ?? [...(planImportPreview?.ok ?? []), ...(planImportPreview?.okNoQty ?? [])];
+                                    const hasProducts = itemsToImport.some((i) => i.kind !== 'cip');
+                                    if (itemsToImport.length > 0 && hasProducts) handlePasteImport('plan', { previewItems: itemsToImport });
                                 }}
                                 disabled={!planImportPreview || (planImportPreview.ok.length + (planImportPreview.okNoQty?.length ?? 0)) === 0}
                                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-md shadow-indigo-500/25 hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"

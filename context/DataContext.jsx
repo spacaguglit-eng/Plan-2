@@ -1522,6 +1522,7 @@ export const DataProvider = ({ children }) => {
             setLineTemplates({});
             setFloaters({ day: [], night: [] });
             setPlanningStateToLoad(null);
+            setPlanningStateState(null);
             setSelectedDate('');
         }
     }, [currentPlanId, isReadOnly]);
@@ -3090,12 +3091,14 @@ export const DataProvider = ({ children }) => {
         catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
     }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify]);
 
-    const display = useMemo(() => ({
+    const display = useMemo(() => {
+        const effectivePlanId = pendingUpdates[STORAGE_KEYS.CURRENT_PLAN_ID] ?? currentPlanId;
+        return {
         manualAssignments: pendingUpdates[STORAGE_KEYS.MANUAL_ASSIGNMENTS] ?? manualAssignments,
         manualLines: pendingUpdates[STORAGE_KEYS.MANUAL_LINES] ?? manualLines,
         assignmentClones: pendingUpdates[STORAGE_KEYS.ASSIGNMENT_CLONES] ?? assignmentClones,
         savedPlans: pendingUpdates[STORAGE_KEYS.SAVED_PLANS] ?? savedPlans,
-        currentPlanId: pendingUpdates[STORAGE_KEYS.CURRENT_PLAN_ID] ?? currentPlanId,
+        currentPlanId: effectivePlanId,
         autoReassignEnabled: pendingUpdates[STORAGE_KEYS.AUTO_REASSIGN_ENABLED] ?? autoReassignEnabled,
         factData: pendingUpdates[STORAGE_KEYS.FACT_DATA] ?? factData,
         factDates: pendingUpdates[STORAGE_KEYS.FACT_DATES] ?? factDates,
@@ -3107,11 +3110,12 @@ export const DataProvider = ({ children }) => {
         workerRegistry: pendingUpdates[STORAGE_KEYS.WORKER_REGISTRY] ?? workerRegistry,
         allEmployees: pendingUpdates[STORAGE_KEYS.ALL_EMPLOYEES] ?? allEmployees,
         departmentMasterList: pendingUpdates[STORAGE_KEYS.DEPARTMENT_MASTER_LIST] ?? departmentMasterList,
-        planningState: pendingUpdates[STORAGE_KEYS.PLANNING_STATE] ?? planningState,
+        planningState: effectivePlanId ? (pendingUpdates[STORAGE_KEYS.PLANNING_STATE] ?? planningState) : null,
         productionResults: pendingUpdates[STORAGE_KEYS.PRODUCTION_RESULTS] ?? productionResults,
         productionExcludedDowntimeTypes: pendingUpdates[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES] ?? productionExcludedDowntimeTypes,
         productionLineNorms: pendingUpdates[STORAGE_KEYS.PRODUCTION_LINE_NORMS] ?? productionLineNorms ?? getDefaultLineNorms([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
-    }), [
+        };
+    }, [
         pendingUpdates,
         manualAssignments, manualLines, assignmentClones, savedPlans, currentPlanId,
         autoReassignEnabled, factData, factDates, rawTables, scheduleDates, planHashes,

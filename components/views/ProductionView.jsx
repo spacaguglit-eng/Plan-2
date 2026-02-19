@@ -4,7 +4,6 @@ import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS } from '../../utils';
 import {
     ALL_CATEGORIES,
-    NORM_CHOICES,
     getDefaultLineNorms,
     getLineNumberFromRow,
     compareDowntimesToNorms,
@@ -131,17 +130,6 @@ function NormsTab({ productionLineNorms, setProductionLineNorms, flatDowntimeRow
         [flatDowntimeRows, lineNorms]
     );
 
-    const choiceValues = useMemo(() => {
-        const s = new Set(NORM_CHOICES.map(String));
-        ALL_CATEGORIES.forEach((cat) => {
-            LINE_NUMBERS.forEach((n) => {
-                const v = lineNorms[String(n)]?.[cat];
-                if (v != null) s.add(String(v));
-            });
-        });
-        return Array.from(s).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
-    }, [lineNorms]);
-
     return (
         <div className="p-6 space-y-6">
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
@@ -173,17 +161,18 @@ function NormsTab({ productionLineNorms, setProductionLineNorms, flatDowntimeRow
                                 <tr key={cat}>
                                     <td className="px-4 py-2 text-slate-700">{cat}</td>
                                     <td className="px-4 py-2">
-                                        <select
-                                            value={String(normsForLine[cat] ?? 0)}
-                                            onChange={(e) => handleNormChange(cat, e.target.value)}
+                                        <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            pattern="[0-9]*"
+                                            value={normsForLine[cat] ?? ''}
+                                            onChange={(e) => {
+                                                const v = e.target.value.replace(/\D/g, '');
+                                                handleNormChange(cat, v === '' ? '' : v);
+                                            }}
                                             className="rounded border border-slate-300 px-2 py-1 text-sm bg-white text-slate-800 w-24"
-                                        >
-                                            {choiceValues.map((v) => (
-                                                <option key={v} value={v}>
-                                                    {v}
-                                                </option>
-                                            ))}
-                                        </select>
+                                            placeholder="0"
+                                        />
                                     </td>
                                 </tr>
                             ))}
@@ -264,6 +253,7 @@ const ProductionView = () => {
     
     // Состояние для раскрытых графиков
     const [chartsDetailMode, setChartsDetailMode] = useState('summary'); // 'summary' | 'unplanned' — во втором режиме в категориях показываем вклад неплановых остановок
+    const [offerPrintOnOpen, setOfferPrintOnOpen] = useState(true); // при открытии отчёта сразу предлагать печать
     const [expandedCharts, setExpandedCharts] = useState({
         byDate: new Set(),
         byLine: new Set(),
@@ -718,7 +708,10 @@ const ProductionView = () => {
                                 description: description || '',
                                 durationMinutes: duration,
                                 line: downtime.line,
-                                comment: downtime.comment || ''
+                                comment: downtime.comment || '',
+                                start: downtime.start || '',
+                                end: downtime.end || '',
+                                shift: downtime.shift || ''
                             });
                         }
                     }
@@ -743,7 +736,10 @@ const ProductionView = () => {
                                 description: description || '',
                                 durationMinutes: duration,
                                 date: downtime.date,
-                                comment: downtime.comment || ''
+                                comment: downtime.comment || '',
+                                start: downtime.start || '',
+                                end: downtime.end || '',
+                                shift: downtime.shift || ''
                             });
                         }
                     }
@@ -770,7 +766,10 @@ const ProductionView = () => {
                                     durationMinutes: duration,
                                     date: downtime.date,
                                     line: downtime.line,
-                                    comment: downtime.comment || ''
+                                    comment: downtime.comment || '',
+                                    start: downtime.start || '',
+                                    end: downtime.end || '',
+                                    shift: downtime.shift || ''
                                 });
                             }
                         }
@@ -884,12 +883,17 @@ const ProductionView = () => {
         parts.push('<h1 class="report-title">Доля неплановых простоев</h1>');
         parts.push('<div class="report-meta">Сформировано: ' + esc(new Date().toLocaleString('ru')) + '</div>');
 
+        const shiftClass = (s) => (s && String(s).trim() === 'Ночь' ? ' shift-night' : (s && String(s).trim() === 'День' ? ' shift-day' : ''));
+        const shiftLabel = (s) => (s && (String(s).trim() === 'День' || String(s).trim() === 'Ночь') ? ' [' + String(s).trim() + '] ' : '');
         const renderItem = (item, keyLabel) => {
             const keyValue = item[keyLabel];
+            const headerLabel = keyLabel === 'line'
+                ? (/^Линия\s/i.test(String(keyValue)) ? keyValue : 'Линия ' + keyValue)
+                : keyValue;
             const buf = [];
             buf.push('<div class="item-block">');
             buf.push('<div class="item-header">');
-            buf.push('<div class="item-date"><strong>' + esc(keyValue) + '</strong></div>');
+            buf.push('<div class="item-date"><strong>' + esc(headerLabel) + '</strong></div>');
             buf.push('<div class="item-kpis">');
             buf.push('<span class="kpi"><span class="kpi-label">План</span> ' + (item.plan || 0).toLocaleString('ru') + '</span>');
             buf.push('<span class="kpi"><span class="kpi-label">Факт</span> ' + (item.fact || 0).toLocaleString('ru') + '</span>');
@@ -902,20 +906,39 @@ const ProductionView = () => {
                     buf.push('<div class="item-category-row"><div class="item-category-name"><strong>' + esc(d.category) + '</strong></div><div class="item-category-min">' + (d.minutes || 0) + ' мин</div><div class="item-category-pct">' + (d.percent ?? 0).toFixed(2) + '%</div></div>');
                     const unplanned = (item.unplannedByCategory && item.unplannedByCategory[d.category]) || [];
                     if (unplanned.length > 0) {
-                        const byLine = new Map();
-                        for (const s of unplanned) {
-                            const lineKey = s.line != null && String(s.line).trim() !== '' ? String(s.line).trim() : '—';
-                            if (!byLine.has(lineKey)) byLine.set(lineKey, []);
-                            byLine.get(lineKey).push(s);
-                        }
-                        const sortedLines = Array.from(byLine.keys()).sort((a, b) => (a === '—' ? 1 : b === '—' ? -1 : String(a).localeCompare(b, undefined, { numeric: true })));
-                        for (const lineKey of sortedLines) {
-                            const stops = byLine.get(lineKey);
-                            buf.push('<div class="item-line-group"><strong>Линия ' + esc(lineKey) + '</strong></div>');
-                            for (const s of stops) {
-                                const desc = [s.type, s.description].filter(Boolean).map((x) => esc(x)).join(' — ') || '';
+                        if (keyLabel === 'line') {
+                            for (const s of unplanned) {
+                                const descParts = [s.type, s.description].filter(Boolean);
+                                if (descParts[0] === d.category) descParts.shift();
+                                const desc = descParts.map((x) => esc(x)).join(' — ') || '';
                                 const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
-                                buf.push('<div class="item-unplanned-line">— ' + esc(d.category) + ' — ' + desc + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                                const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
+                                const sc = shiftClass(s.shift);
+                                const sl = shiftLabel(s.shift);
+                                buf.push('<div class="item-unplanned-line' + sc + '">— ' + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                            }
+                        } else {
+                            const byLine = new Map();
+                            for (const s of unplanned) {
+                                const lineKey = s.line != null && String(s.line).trim() !== '' ? String(s.line).trim() : '—';
+                                if (!byLine.has(lineKey)) byLine.set(lineKey, []);
+                                byLine.get(lineKey).push(s);
+                            }
+                            const sortedLines = Array.from(byLine.keys()).sort((a, b) => (a === '—' ? 1 : b === '—' ? -1 : String(a).localeCompare(b, undefined, { numeric: true })));
+                            for (const lineKey of sortedLines) {
+                                const stops = byLine.get(lineKey);
+                                const lineLabel = /^Линия\s/i.test(String(lineKey)) ? lineKey : 'Линия ' + lineKey;
+                                buf.push('<div class="item-line-group"><strong>' + esc(lineLabel) + '</strong></div>');
+                                for (const s of stops) {
+                                    const descParts = [s.type, s.description].filter(Boolean);
+                                    if (descParts[0] === d.category) descParts.shift();
+                                    const desc = descParts.map((x) => esc(x)).join(' — ') || '';
+                                    const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
+                                    const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
+                                    const sc = shiftClass(s.shift);
+                                    const sl = shiftLabel(s.shift);
+                                    buf.push('<div class="item-unplanned-line' + sc + '">— ' + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                                }
                             }
                         }
                     }
@@ -926,9 +949,9 @@ const ProductionView = () => {
         };
 
         parts.push('<section class="report-section">');
-        parts.push('<h2 class="section-title">Простои по датам</h2>');
-        for (const item of chartData.byDate) {
-            parts.push(renderItem(item, 'date'));
+        parts.push('<h2 class="section-title">Разбор по линиям</h2>');
+        for (const item of chartData.byLine) {
+            parts.push(renderItem(item, 'line'));
         }
         parts.push('</section>');
         parts.push('</div>');
@@ -955,7 +978,9 @@ const ProductionView = () => {
             + '.item-category-min,.item-category-pct{font-variant-numeric:tabular-nums;color:#334155;}'
             + '.item-line-group{margin:6px 0 2px 10px;color:#0f172a;}'
             + '.item-unplanned-line{margin:2px 0 2px 20px;padding-left:8px;border-left:2px solid #9ca3af;color:#1f2937;}'
-            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;}}</style></head><body>'
+            + '.item-unplanned-line.shift-day{border-left-color:#eab308;background:#fef9c3;}'
+            + '.item-unplanned-line.shift-night{border-left-color:#3b82f6;background:#dbeafe;}'
+            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;} .item-unplanned-line.shift-day{border-left-color:#b45309;background:#fef3c7;} .item-unplanned-line.shift-night{border-left-color:#1d4ed8;background:#dbeafe;}}</style></head><body>'
             + bodyHtml
             + '</body></html>';
         const w = window.open('', '_blank');
@@ -963,9 +988,9 @@ const ProductionView = () => {
             w.document.write(html);
             w.document.close();
             w.focus();
-            setTimeout(() => w.print(), 300);
+            if (offerPrintOnOpen) setTimeout(() => w.print(), 300);
         }
-    }, [chartData]);
+    }, [chartData, offerPrintOnOpen]);
 
     useEffect(() => {
         if (!isElectron) return;
@@ -1832,15 +1857,26 @@ const ProductionView = () => {
                                                     {chartsDetailMode === 'summary' ? 'Полоски и детализация по нормативным (плановым) категориям.' : 'Полоски по сырым категориям; раскройте дату или линию (▶) для списка неплановых остановок.'}
                                                 </span>
                                                 {chartsDetailMode === 'unplanned' && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={openUnplannedReportPrint}
-                                                        className="inline-flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg text-sm font-semibold hover:bg-slate-800 transition-colors"
-                                                        title="Сформировать текстовый отчёт и открыть в новом окне для печати"
-                                                    >
-                                                        <Printer size={16} />
-                                                        Печать (текстовый отчёт)
-                                                    </button>
+                                                    <div className="inline-flex items-center gap-3">
+                                                        <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-slate-600">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={offerPrintOnOpen}
+                                                                onChange={(e) => setOfferPrintOnOpen(e.target.checked)}
+                                                                className="rounded border-slate-300 text-slate-700 focus:ring-slate-500"
+                                                            />
+                                                            Сразу предложить печать
+                                                        </label>
+                                                        <button
+                                                            type="button"
+                                                            onClick={openUnplannedReportPrint}
+                                                            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-700 text-white rounded-lg text-sm font-semibold hover:bg-slate-800 transition-colors"
+                                                            title="Сформировать текстовый отчёт и открыть в новом окне для печати"
+                                                        >
+                                                            <Printer size={16} />
+                                                            Печать (текстовый отчёт)
+                                                        </button>
+                                                    </div>
                                                 )}
                                             </div>
                                             {/* Общая статистика */}
@@ -2012,6 +2048,8 @@ const ProductionView = () => {
                                                                                                         const showType = stop.type && stop.type !== downtime.category;
                                                                                                         return (
                                                                                                         <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
+                                                                                                            {stop.start && stop.end && <span className="text-slate-500 font-medium">{stop.start} - {stop.end}</span>}
+                                                                                                            {stop.start && stop.end && (showType || stop.description) && <span> · </span>}
                                                                                                             {showType && <span className="text-amber-700">{stop.type}</span>}
                                                                                                             {showType && stop.description && <span> — </span>}
                                                                                                             {stop.description && <span>{stop.description}</span>}
@@ -2171,6 +2209,8 @@ const ProductionView = () => {
                                                                                                         const showType = stop.type && stop.type !== downtime.category;
                                                                                                         return (
                                                                                                         <div key={sIdx} className="text-xs text-slate-600 pl-5 border-l-2 border-amber-300 py-0.5">
+                                                                                                            {stop.start && stop.end && <span className="text-slate-500 font-medium">{stop.start} - {stop.end}</span>}
+                                                                                                            {stop.start && stop.end && (showType || stop.description) && <span> · </span>}
                                                                                                             {showType && <span className="text-amber-700">{stop.type}</span>}
                                                                                                             {showType && stop.description && <span> — </span>}
                                                                                                             {stop.description && <span>{stop.description}</span>}

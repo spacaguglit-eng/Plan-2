@@ -1,7 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-
+const https = require('https');
+const http = require('http');
 const isDev = process.env.NODE_ENV === 'development';
 
 ipcMain.handle('production:selectFiles', async () => {
@@ -32,6 +33,82 @@ ipcMain.handle('production:readFiles', async (_, filePaths) => {
     }
   }
   return result;
+});
+
+ipcMain.handle('onec:testHttpConnection', async (_, url, user, password) => {
+  const base = (url || '').trim().replace(/\/+$/, '');
+  if (!base) return { ok: false, error: 'Укажите адрес 1С' };
+  let finalUrl = /^https?:\/\//i.test(base) ? base : 'https://' + base;
+  const auth = (user || password) ? Buffer.from((user || '') + ':' + (password || '')).toString('base64') : null;
+  const tryRequest = (href) => {
+    return new Promise((resolve) => {
+      const u = new URL(href);
+      const lib = u.protocol === 'https:' ? https : http;
+      const opts = {
+        hostname: u.hostname,
+        port: u.port || (u.protocol === 'https:' ? 443 : 80),
+        path: u.pathname || '/',
+        method: 'GET',
+        headers: { Accept: 'application/json, text/html, */*' }
+      };
+      if (auth) opts.headers.Authorization = 'Basic ' + auth;
+      const req = lib.request(opts, (res) => {
+        if (res.statusCode === 200) resolve({ ok: true, message: `Сервер доступен, HTTP ${res.statusCode}` });
+        else if (res.statusCode === 401) resolve({ ok: true, message: 'Сервер достигнут, требуется авторизация (HTTP 401)' });
+        else if (res.statusCode === 403) resolve({ ok: true, message: 'Сервер достигнут, доступ запрещён (HTTP 403)' });
+        else resolve({ ok: false, error: `HTTP ${res.statusCode}` });
+      });
+      req.setTimeout(15000, () => { req.destroy(); resolve({ ok: false, error: 'Таймаут' }); });
+      req.on('error', (e) => resolve({ ok: false, error: e.message || String(e) }));
+      req.end();
+    });
+  };
+  const r1 = await tryRequest(finalUrl + '/odata/standard.odata/$metadata');
+  if (r1.ok) return r1;
+  const r2 = await tryRequest(finalUrl + '/');
+  if (r2.ok) return r2;
+  return r1;
+});
+
+ipcMain.handle('onec:executeRequest', async (_, url, user, password, pathOrFullUrl) => {
+  const pathStr = (pathOrFullUrl || '').trim();
+  if (!pathStr) return { ok: false, error: 'Укажите путь запроса' };
+  let href;
+  if (/^https?:\/\//i.test(pathStr)) {
+    href = pathStr;
+  } else {
+    const base = (url || '').trim().replace(/\/+$/, '');
+    if (!base) return { ok: false, error: 'Укажите адрес 1С (или полный URL)' };
+    href = (/^https?:\/\//i.test(base) ? base : 'https://' + base) + (pathStr.startsWith('/') ? pathStr : '/' + pathStr);
+  }
+  const auth = (user || password) ? Buffer.from((user || '') + ':' + (password || '')).toString('base64') : null;
+  return new Promise((resolve) => {
+    const u = new URL(href);
+    const lib = u.protocol === 'https:' ? https : http;
+    const opts = {
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + (u.search || ''),
+      method: 'GET',
+      headers: { Accept: 'application/json, application/xml, text/html, */*' }
+    };
+    if (auth) opts.headers.Authorization = 'Basic ' + auth;
+    const req = lib.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ ok: true, status: res.statusCode, body });
+        } else {
+          resolve({ ok: false, error: `HTTP ${res.statusCode}`, body });
+        }
+      });
+    });
+    req.setTimeout(20000, () => { req.destroy(); resolve({ ok: false, error: 'Таймаут' }); });
+    req.on('error', (e) => resolve({ ok: false, error: e.message || String(e) }));
+    req.end();
+  });
 });
 
 ipcMain.handle('production:getFileStats', async (_, filePaths) => {

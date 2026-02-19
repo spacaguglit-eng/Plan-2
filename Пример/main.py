@@ -368,7 +368,7 @@ def _get_plan_fact_map(lines_result, line_norms) -> dict[tuple[int, int], tuple[
                         duration = _downtime_duration_min(d)
                         norms_sum += min(duration, n) if duration is not None else n
             available_min = max(0, work_time_min - norms_sum)
-            plan_int = int(round(avg_speed * (available_min / 60.0) * (10 / 12)))
+            plan_int = int(round(avg_speed * (available_min / 60.0)))
             fact_int = int(round(sum((_parse_speed(getattr(d, "fact", None)) or 0) for d in info.details)))
             result[(line_num, info.day)] = (plan_int, fact_int)
     return result
@@ -472,7 +472,7 @@ def _compute_plan(lines_result, line_norms, detailed: bool = False) -> list[str]
                         duration = _downtime_duration_min(d)
                         norms_sum += min(duration, n) if duration is not None else n
             available_min = max(0, work_time_min - norms_sum)
-            plan = avg_speed * (available_min / 60.0) * (10 / 12)
+            plan = avg_speed * (available_min / 60.0)
             plan_int = int(round(plan))
             # Факт — сумма значений из столбца K по всем строкам дня
             fact_sum = sum((_parse_speed(getattr(d, "fact", None)) or 0) for d in info.details)
@@ -482,7 +482,7 @@ def _compute_plan(lines_result, line_norms, detailed: bool = False) -> list[str]
             if detailed:
                 out.append(
                     f"  Норм. простои: {norms_sum} мин. Доступно: {available_min} мин. "
-                    f"План = {avg_speed:.1f} * ({available_min}/60) * (10/12) = {plan_int}"
+                    f"План = {avg_speed:.1f} * ({available_min}/60) = {plan_int}"
                 )
                 out.append(f"  Факт (столбец K) = {fact_int}{dev_str}")
             out.append(
