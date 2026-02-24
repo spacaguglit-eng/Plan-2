@@ -20,9 +20,11 @@ function applyUIScale(scale) {
     document.documentElement.style.fontSize = `${BASE_FONT_SIZE_PX * scale}px`;
 }
 
-import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2, Plug, FileText, X } from 'lucide-react';
+import { LayoutGrid, Grid3X3, Users, FileCheck, Briefcase, Activity, FolderOpen, ChevronDown, Factory, Calendar, BarChart, Trash2, Plug, FileText, X, Database } from 'lucide-react';
 import { useData } from './context/DataContext';
-import { UpdateReportModal, EditWorkerModal } from './UIComponents';
+import { UpdateReportModal } from './components/modals/UpdateReportModal';
+import { RawDataAndLogModal } from './components/modals/RawDataAndLogModal';
+import { EditWorkerModal } from './components/modals/EditWorkerModal';
 import DashboardView from './components/views/DashboardView';
 import DistributionView from './components/views/DistributionView';
 import TimesheetView from './components/views/TimesheetView';
@@ -36,9 +38,147 @@ import PlanningView from './components/views/PlanningView';
 import ReportsView from './components/views/ReportsView';
 import ShiftReportsView from './components/views/ShiftReportsView';
 import OneCTestView from './components/views/OneCTestView';
-import SyncIndicator from './components/SyncIndicator';
+import SyncIndicator from './components/layout/SyncIndicator';
+const WIPE_ITEMS = [
+    {
+        id: 'SAVED_PLANS',
+        key: 'plan_saved_plans',
+        title: 'Список планов',
+        description: 'Метаинформация о сохранённых планах (id, имя, тип, createdAt).'
+    },
+    {
+        id: 'CURRENT_PLAN_ID',
+        key: 'plan_current_plan_id',
+        title: 'Текущий план',
+        description: 'Идентификатор выбранного плана.'
+    },
+    {
+        id: 'RAW_TABLES',
+        key: 'plan_raw_tables',
+        title: 'Сырые таблицы (RAW_TABLES)',
+        description: 'Изначальные таблицы demand/roster, из которых считается расписание.'
+    },
+    {
+        id: 'SCHEDULE_DATES',
+        key: 'plan_schedule_dates',
+        title: 'Даты расписания',
+        description: 'Список дат, по которым строится расписание.'
+    },
+    {
+        id: 'PLAN_HASHES',
+        key: 'plan_hashes',
+        title: 'Хеши плана',
+        description: 'Хеши по сменам/линиям для отслеживания изменений расписания.'
+    },
+    {
+        id: 'MANUAL_ASSIGNMENTS',
+        key: 'plan_manual_assignments',
+        title: 'Ручная расстановка',
+        description: 'Привязки сотрудников к слотам (manualAssignments).'
+    },
+    {
+        id: 'MANUAL_LINES',
+        key: 'plan_manual_lines',
+        title: 'Ручные линии',
+        description: 'Дополнительные ручные линии (manualLines).'
+    },
+    {
+        id: 'ASSIGNMENT_CLONES',
+        key: 'plan_assignment_clones',
+        title: 'Клоны расстановки',
+        description: 'Совмещения/клоны сотрудников по слотам (assignmentClones).'
+    },
+    {
+        id: 'PLANNING_STATE',
+        key: 'plan_planning_state',
+        title: 'Состояние планирования',
+        description: 'Внутреннее состояние планировщика (products, события CIP и т.п.).'
+    },
+    {
+        id: 'WORKER_REGISTRY',
+        key: 'plan_worker_registry',
+        title: 'Реестр сотрудников',
+        description: 'Основной справочник людей, их компетенции и статусы.'
+    },
+    {
+        id: 'LINE_TEMPLATES',
+        key: 'plan_line_templates',
+        title: 'Шаблоны линий',
+        description: 'Структура линий и слотов для расписания.'
+    },
+    {
+        id: 'FLOATERS',
+        key: 'plan_floaters',
+        title: 'Свободные руки',
+        description: 'Списки свободных сотрудников по сменам (day/night).'
+    },
+    {
+        id: 'ALL_EMPLOYEES',
+        key: 'plan_all_employees',
+        title: 'Все сотрудники (сводный список)',
+        description: 'Смешанный список сотрудников из плана и СКУД для раздела «Все сотрудники».'
+    },
+    {
+        id: 'DEPARTMENT_MASTER_LIST',
+        key: 'plan_department_master_list',
+        title: 'Справочник подразделений',
+        description: 'Список подразделений/департаментов для фильтрации сотрудников.'
+    },
+    {
+        id: 'FACT_DATA',
+        key: 'plan_fact_data',
+        title: 'Данные СКУД (FACT_DATA)',
+        description: 'Фактические данные входов/выходов из СКУД.'
+    },
+    {
+        id: 'FACT_DATES',
+        key: 'plan_fact_dates',
+        title: 'Даты СКУД',
+        description: 'Список дат, по которым загружены данные СКУД.'
+    },
+    {
+        id: 'PRODUCTION_RESULTS',
+        key: 'productionParsedResults',
+        title: 'Производство: результаты',
+        description: 'Разобранные результаты производства по продуктам/линиям/датам.'
+    },
+    {
+        id: 'PRODUCTION_EXCLUDED_DOWNTIME_TYPES',
+        key: 'productionExcludedDowntimeTypes',
+        title: 'Производство: исключаемые простои',
+        description: 'Типы простоев, которые не учитываются при расчётах.'
+    },
+    {
+        id: 'PRODUCTION_LINE_NORMS',
+        key: 'productionLineNorms',
+        title: 'Производство: нормы по линиям',
+        description: 'Нормы (скорости/время) по линиям для расчёта план/факт.'
+    },
+];
+
 export default function App() {
     const [openNavMenu, setOpenNavMenu] = useState(null); // 'staff' | 'plans' | 'reports' | 'extra' | null — только одно меню открыто
+    const [showRawDataLog, setShowRawDataLog] = useState(false);
+    const [syncLogTab, setSyncLogTab] = useState('status'); // 'status' | 'log'
+    const [showWipeModal, setShowWipeModal] = useState(false);
+    const [wipeOptions, setWipeOptions] = useState(() =>
+        WIPE_ITEMS.reduce((acc, item) => {
+            // По умолчанию включаем только ключи, связанные с планом/расписанием
+            const planDefaults = new Set([
+                'SAVED_PLANS',
+                'CURRENT_PLAN_ID',
+                'RAW_TABLES',
+                'SCHEDULE_DATES',
+                'PLAN_HASHES',
+                'MANUAL_ASSIGNMENTS',
+                'MANUAL_LINES',
+                'ASSIGNMENT_CLONES',
+                'PLANNING_STATE',
+            ]);
+            acc[item.id] = planDefaults.has(item.id);
+            return acc;
+        }, {})
+    );
     const [brandLogoIndex, setBrandLogoIndex] = useState(0);
     const [uiScale, setUiScale] = useState(getStoredScale);
     const showBrandFallback = brandLogoIndex >= BRAND_IMAGES.length;
@@ -78,7 +218,15 @@ export default function App() {
         setRawTables,
         savedPlans,
         currentPlanId,
-        wipeAllData
+        wipeAllData,
+        wipeDataCategories,
+        planHashes,
+        floaters,
+        manualAssignments,
+        manualLines,
+        assignmentClones,
+        dataChangeLog,
+        clearDataChangeLog
     } = useData();
 
     // Scroll to target brigade when targetScrollBrigadeId changes
@@ -121,6 +269,22 @@ export default function App() {
     return (
         <div className="min-h-screen bg-slate-100 font-sans text-slate-800 overflow-y-auto">
             <UpdateReportModal data={updateReport} onClose={() => setUpdateReport(null)} />
+            {showRawDataLog && (
+                <RawDataAndLogModal
+                    rawTables={rawTables}
+                    scheduleDates={scheduleDates}
+                    planHashes={planHashes}
+                    lineTemplates={lineTemplates}
+                    floaters={floaters}
+                    workerRegistry={workerRegistry}
+                    manualAssignments={manualAssignments}
+                    manualLines={manualLines}
+                    assignmentClones={assignmentClones}
+                    dataChangeLog={dataChangeLog}
+                    clearDataChangeLog={clearDataChangeLog}
+                    onClose={() => setShowRawDataLog(false)}
+                />
+            )}
             {editingWorker && (
                 <EditWorkerModal
                     worker={editingWorker === 'new' ? null : editingWorker}
@@ -133,7 +297,7 @@ export default function App() {
             )}
             {showSyncLog && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowSyncLog(false)}>
-                    <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-white rounded-xl shadow-2xl max-w-[1200px] w-full max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-between p-4 border-b border-slate-200">
                             <div className="flex items-center gap-3">
                                 <FileText size={20} className="text-slate-600" />
@@ -146,7 +310,32 @@ export default function App() {
                                 <X size={20} />
                             </button>
                         </div>
-                        <div className="p-4 border-b border-slate-200 bg-slate-50 space-y-4">
+                        <div className="flex border-b border-slate-200">
+                            <button
+                                type="button"
+                                onClick={() => setSyncLogTab('status')}
+                                className={`px-4 py-3 text-sm font-medium transition-colors ${
+                                    syncLogTab === 'status'
+                                        ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
+                                        : 'text-slate-600 hover:bg-slate-50'
+                                }`}
+                            >
+                                Статус и облако
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setSyncLogTab('log')}
+                                className={`px-4 py-3 text-sm font-medium transition-colors ${
+                                    syncLogTab === 'log'
+                                        ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
+                                        : 'text-slate-600 hover:bg-slate-50'
+                                }`}
+                            >
+                                Записи лога {syncLog && syncLog.length > 0 ? `(${syncLog.length})` : ''}
+                            </button>
+                        </div>
+                        {syncLogTab === 'status' && (
+                        <div className="p-4 border-b border-slate-200 bg-slate-50 space-y-4 overflow-x-auto">
                             <div className="grid grid-cols-2 gap-4 text-sm">
                                 <div>
                                     <span className="text-slate-500">Статус:</span>
@@ -183,7 +372,7 @@ export default function App() {
                                 </div>
                             </div>
                             {/* Содержимое облака (планы) */}
-                            <div className="border border-slate-200 rounded-lg bg-white/60 p-3">
+                            <div className="border border-slate-200 rounded-lg bg-white/60 p-3 overflow-x-auto">
                                 <div className="flex items-center justify-between mb-2">
                                     <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Планы в облаке (по списку планов)</span>
                                     <span className="text-xs text-slate-500">
@@ -191,7 +380,7 @@ export default function App() {
                                     </span>
                                 </div>
                                 {Array.isArray(savedPlans) && savedPlans.length > 0 ? (
-                                    <div className="max-h-32 overflow-auto space-y-1">
+                                    <div className="max-h-40 overflow-auto space-y-1">
                                         {savedPlans.map((p) => (
                                             <div
                                                 key={p.id}
@@ -218,7 +407,7 @@ export default function App() {
                                 )}
                             </div>
                             {/* Полный снимок облака (ключи) */}
-                            <div className="mt-3 border border-slate-200 rounded-lg bg-white/60 p-3">
+                            <div className="mt-3 border border-slate-200 rounded-lg bg-white/60 p-3 overflow-x-auto">
                                 <div className="flex items-center justify-between mb-2">
                                     <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Ключи состояния в облаке</span>
                                     <span className="text-xs text-slate-500">
@@ -228,7 +417,7 @@ export default function App() {
                                     </span>
                                 </div>
                                 {remoteSnapshot && typeof remoteSnapshot === 'object' && Object.keys(remoteSnapshot).length > 0 ? (
-                                    <div className="max-h-32 overflow-auto space-y-1">
+                                    <div className="max-h-40 overflow-auto space-y-1">
                                         {Object.keys(remoteSnapshot).map((key) => {
                                             const val = remoteSnapshot[key];
                                             let kind = typeof val;
@@ -263,7 +452,7 @@ export default function App() {
                                 )}
                             </div>
                             {/* Отладочная информация */}
-                            <div className="mt-4 pt-4 border-t border-slate-200">
+                            <div className="mt-4 pt-4 border-t border-slate-200 overflow-x-auto">
                                 <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Отладка</div>
                                 <div className="space-y-2 text-xs">
                                     <div className="flex items-start gap-2">
@@ -324,20 +513,33 @@ export default function App() {
                                     <span className="text-xs font-semibold text-red-600 uppercase tracking-wide">Опасные действия</span>
                                 </div>
                                 <p className="text-xs text-slate-500 mb-2">
-                                    «Сброс (Wipe All)» полностью очищает облако и локальное хранилище. Откатить действие нельзя.
+                                    Выберите, какие данные очистить. Полный сброс (старое поведение) тоже доступен.
                                 </p>
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        wipeAllData();
-                                    }}
-                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-md text-xs font-semibold text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 hover:border-red-300 transition-colors"
-                                >
-                                    <Trash2 size={14} className="text-red-500" />
-                                    <span>Сброс (Wipe All)</span>
-                                </button>
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setShowWipeModal(true);
+                                        }}
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md text-xs font-semibold text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 hover:border-red-300 transition-colors"
+                                    >
+                                        <Trash2 size={14} className="text-red-500" />
+                                        <span>Выборочная очистка…</span>
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            wipeAllData();
+                                        }}
+                                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md text-xs font-semibold text-slate-500 border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                                    >
+                                        <span>Полный сброс (облако + localStorage)</span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
+                        )}
+                        {syncLogTab === 'log' && (
                         <div className="flex-1 overflow-y-auto p-4">
                             {syncLog && syncLog.length > 0 ? (
                                 <div className="space-y-2">
@@ -369,6 +571,73 @@ export default function App() {
                                     <p>Логи синхронизации пусты</p>
                                 </div>
                             )}
+                        </div>
+                        )}
+                    </div>
+                </div>
+            )}
+            {showWipeModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowWipeModal(false)}>
+                    <div
+                        className="bg-white rounded-xl shadow-2xl max-w-md w-full max-h-[80vh] flex flex-col"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between p-4 border-b border-slate-200">
+                            <h2 className="text-lg font-bold text-slate-800">Очистка данных</h2>
+                            <button
+                                onClick={() => setShowWipeModal(false)}
+                                className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-3 text-sm">
+                            <p className="text-slate-600">
+                                Отметьте конкретные ключи состояния, которые нужно очистить. По умолчанию выбраны только ключи,
+                                связанные с планами и расписанием.
+                            </p>
+                            <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+                                {WIPE_ITEMS.map((item) => (
+                                    <label key={item.id} className="flex items-start gap-2 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            className="mt-1"
+                                            checked={!!wipeOptions[item.id]}
+                                            onChange={(e) =>
+                                                setWipeOptions((prev) => ({
+                                                    ...prev,
+                                                    [item.id]: e.target.checked,
+                                                }))
+                                            }
+                                        />
+                                        <div>
+                                            <div className="font-semibold text-slate-800">{item.title}</div>
+                                            <div className="text-xs text-slate-500">{item.description}</div>
+                                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{item.key}</div>
+                                        </div>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+                            <button
+                                onClick={() => setShowWipeModal(false)}
+                                className="px-4 py-2 rounded-md text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors"
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={async () => {
+                                    const keysToWipe = WIPE_ITEMS
+                                        .filter((item) => wipeOptions[item.id])
+                                        .map((item) => item.key);
+                                    await wipeDataCategories(keysToWipe);
+                                    setShowWipeModal(false);
+                                }}
+                                className="px-4 py-2 rounded-md text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors"
+                            >
+                                Очистить выбранное
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -602,6 +871,23 @@ export default function App() {
                                                         </span>
                                                     )}
                                                 </button>
+                                                {/* Сырые данные и лог изменений */}
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setShowRawDataLog(true);
+                                                        setOpenNavMenu(null);
+                                                    }}
+                                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors border-b border-slate-100"
+                                                >
+                                                    <Database size={18} className="text-slate-500" />
+                                                    <span>Сырые данные и лог изменений</span>
+                                                    {dataChangeLog && dataChangeLog.length > 0 && (
+                                                        <span className="ml-auto bg-slate-200 text-slate-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                                                            {dataChangeLog.length}
+                                                        </span>
+                                                    )}
+                                                </button>
                                                 
                                                 {/* Масштаб интерфейса */}
                                                 <div className="px-4 py-3 border-b border-slate-100">
@@ -627,18 +913,6 @@ export default function App() {
                                                         ))}
                                                     </div>
                                                 </div>
-                                                
-                                                {/* Сброс */}
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        wipeAllData();
-                                                    }}
-                                                    className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
-                                                >
-                                                    <Trash2 size={18} className="text-red-500" />
-                                                    <span>Сброс (Wipe All)</span>
-                                                </button>
                                             </div>
                                         )}
                                     </div>

@@ -5,10 +5,10 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   resolve: {
-    dedupe: ['@tanstack/react-query'],
+    dedupe: ['react', 'react-dom', '@tanstack/react-query'],
   },
   optimizeDeps: {
-    include: ['@tanstack/react-query'],
+    include: ['react', 'react-dom', '@tanstack/react-query'],
   }, // Важно для Electron - относительные пути
   server: {
     port: 3000,

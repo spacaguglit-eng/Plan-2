@@ -10,7 +10,7 @@
     "build:portable": "cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable",
     "build:dir": "npm run build && cross-env ELECTRON_BUILDER_DISABLE_CODE_SIGNING=true CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --dir",
     "preview": "vite preview",
-    "check": "node check-setup.js",
+    "check": "node scripts/check-setup.js",
     "electron": "electron electron/main.js",
     "electron:dev": "cross-env NODE_ENV=development electron electron/main.js",
     "dev:electron": "concurrently -k \"npm run dev\" \"npm run electron:dev\""

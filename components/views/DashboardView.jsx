@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown } from 'lucide-react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown, RotateCcw } from 'lucide-react';
 import { useData } from '../../context/DataContext';
-import { RvPickerModal, DayStatusHeader, CustomDateSelector } from '../../UIComponents';
+import { RvPickerModal } from '../modals/RvPickerModal';
+import { DayStatusHeader } from '../common/DayStatusHeader';
+import { CustomDateSelector } from '../common/CustomDateSelector';
 import { normalizeName } from '../../utils';
 
 const parseTimeToMinutes = (value) => {
@@ -207,7 +209,10 @@ const DashboardView = () => {
         savedPlans,
         currentPlanId,
         setCurrentPlanId,
-        loadPlan
+        loadPlan,
+        resetAssignmentsForShift,
+        resetAssignmentsForDay,
+        resetAssignmentsAll
     } = useData();
 
     const [contextMenu, setContextMenu] = useState(null);
@@ -344,6 +349,12 @@ const DashboardView = () => {
         const used = new Set(existing.map(line => line.templateName));
         return templates.filter(template => !used.has(template));
     }, [lineTemplates, manualLines, selectedDate]);
+
+    const hasManualAssignmentsForShift = useCallback((shiftId) => {
+        if (!selectedDate || !shiftId) return false;
+        const prefix = `${selectedDate}_${shiftId}_`;
+        return Object.keys(manualAssignments || {}).some((key) => key.startsWith(prefix));
+    }, [selectedDate, manualAssignments]);
 
     if (!shiftsData || shiftsData.length === 0) {
         return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
@@ -485,6 +496,8 @@ const DashboardView = () => {
                 manualAssignments={manualAssignments}
                 onRunAutoReassign={() => applyAutoReassignForDate(selectedDate)}
                 onExportLines={exportScheduleByLinesToExcel}
+                onResetDay={() => resetAssignmentsForDay(selectedDate)}
+                onResetAll={resetAssignmentsAll}
                 dateSelector={
                     <div className="flex items-center gap-3 flex-wrap">
                         <CustomDateSelector
@@ -553,6 +566,7 @@ const DashboardView = () => {
                     const isActive = hasFloaters && (isGlobalFill || hasVacanciesHere);
                     const availableTemplates = getManualTemplateOptionsForShift(shift.id);
                     const isDisabled = availableTemplates.length === 0;
+                    const hasManualForShift = hasManualAssignmentsForShift(shift.id);
                     return (
                         <div id={`brigade-${shift.id}`} key={shift.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                         <div className="px-6 py-4 border-b flex items-center justify-between bg-slate-50">
@@ -583,6 +597,15 @@ const DashboardView = () => {
                                     className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-semibold text-sm transition-colors ${isDisabled ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
                                 >
                                     <Plus size={16} /> Добавить линию
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!hasManualForShift}
+                                    onClick={() => resetAssignmentsForShift(selectedDate, shift.id)}
+                                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border font-semibold text-sm transition-colors ${hasManualForShift ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                    title="Откатить назначения на этой смене к базовым значениям"
+                                >
+                                    <RotateCcw size={16} /> Откат смены
                                 </button>
                             </div>
                         </div>

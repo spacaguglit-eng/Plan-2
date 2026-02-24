@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { STORAGE_KEYS } from '../../utils';
+import { STORAGE_KEYS, normalizeExcelDate, formatDateLocal } from '../../utils';
 import { generatePlanId, restoreDemandDates, serializeWorkerRegistry, hydrateWorkerRegistry, normalizeLineTemplates, normalizeManualAssignments, normalizePlanData } from './planUtils';
 import { preAnalyzeRoster, analyzeDataPure, buildPlanHashes } from './useDataAnalysis';
 import { buildPlanSlots } from './useShiftsOperations';
@@ -58,18 +58,23 @@ export const usePlanOperations = ({
     /**
      * Создает снапшот текущего плана
      */
-    const buildPlanSnapshot = useCallback(() => ({
-        rawTables,
-        scheduleDates,
-        planHashes,
-        lineTemplates,
-        floaters,
-        workerRegistry: serializeWorkerRegistry(workerRegistry),
-        manualAssignments,
-        manualLines,
-        assignmentClones,
-        autoReassignEnabled
-    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments, manualLines, assignmentClones, autoReassignEnabled]);
+    const buildPlanSnapshot = useCallback(() => {
+        // В план сохраняем ТОЛЬКО то, что реально план-зависимо:
+        // - demand (календарь/даты/включенные линии)
+        // - хеши/список дат (производные от demand)
+        // - расстановка (manualAssignments/manualLines/assignmentClones)
+        // Всё, что относится к справочнику людей/линий, хранится глобально.
+        const demandOnly = rawTables?.demand ? { demand: rawTables.demand } : {};
+        return {
+            rawTables: demandOnly,
+            scheduleDates,
+            planHashes,
+            manualAssignments,
+            manualLines,
+            assignmentClones,
+            autoReassignEnabled
+        };
+    }, [rawTables, scheduleDates, planHashes, manualAssignments, manualLines, assignmentClones, autoReassignEnabled]);
 
     /**
      * Применяет данные плана к состоянию
@@ -79,30 +84,29 @@ export const usePlanOperations = ({
         const nextRaw = { ...(planData.rawTables || {}) };
         if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
 
-        // lineTemplates, floaters, workerRegistry восстанавливаем из roster — чтобы новые линии из Excel не терялись при смене плана
-        let lineTemplatesToApply = normalizeLineTemplates(planData.lineTemplates || {});
-        let floatersToApply = planData.floaters || { day: [], night: [] };
-        let workerRegistryToApply = hydrateWorkerRegistry(planData.workerRegistry || {});
-        if (nextRaw.demand && nextRaw.roster) {
+        // lineTemplates, floaters, workerRegistry — только если в плане есть roster (demand+roster дают анализ).
+        // Иначе не трогаем глобальные люди/линии, чтобы не затирать их пустыми значениями при загрузке плана без roster.
+        const hasRosterInPlan = nextRaw.demand && nextRaw.roster;
+        if (hasRosterInPlan) {
             const analysis = analyzeDataPure(nextRaw.demand, nextRaw.roster);
-            lineTemplatesToApply = analysis.lineTemplates;
-            floatersToApply = analysis.floaters;
-            workerRegistryToApply = analysis.workerRegistry;
+            const lineTemplatesToApply = analysis.lineTemplates;
+            const floatersToApply = analysis.floaters;
+            const workerRegistryToApply = analysis.workerRegistry;
+            setLineTemplates(lineTemplatesToApply);
+            setFloaters(floatersToApply);
+            setWorkerRegistry(workerRegistryToApply);
+            persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, lineTemplatesToApply);
+            persistStateKey(STORAGE_KEYS.FLOATERS, floatersToApply);
+            const registryForStorage = {};
+            Object.entries(workerRegistryToApply || {}).forEach(([k, v]) => {
+                registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
+            });
+            persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
         }
 
         setRawTables(nextRaw);
         setScheduleDates(planData.scheduleDates || []);
         setPlanHashes(planData.planHashes || {});
-        setLineTemplates(lineTemplatesToApply);
-        setFloaters(floatersToApply);
-        setWorkerRegistry(workerRegistryToApply);
-        persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, lineTemplatesToApply);
-        persistStateKey(STORAGE_KEYS.FLOATERS, floatersToApply);
-        const registryForStorage = {};
-        Object.entries(workerRegistryToApply || {}).forEach(([k, v]) => {
-            registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
-        });
-        persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
         setManualAssignments(normalizeManualAssignments(planData.manualAssignments || {}));
         const savedManualLines = planData.manualLines || {};
         setManualLines(savedManualLines);
@@ -120,6 +124,82 @@ export const usePlanOperations = ({
     ]);
 
     /**
+     * Применяет ТОЛЬКО расписание (demand -> scheduleDates/planHashes) из плана.
+     * Всё, что относится к людям/линиям (roster, workerRegistry, lineTemplates, floaters) — остаётся глобальным.
+     */
+    const applyPlanScheduleOnly = useCallback((planData, { switchView = true } = {}) => {
+        if (!planData) return;
+
+        const planDemandRaw = planData.rawTables?.demand;
+        if (!planDemandRaw) return;
+
+        const restoredDemand = restoreDemandDates(planDemandRaw);
+
+        // Обновляем только demand, roster оставляем как есть (глобальный)
+        const nextRaw = { ...(rawTables || {}), demand: restoredDemand };
+
+        // scheduleDates: берём из плана (если есть), иначе считаем по demand (не зависит от roster)
+        let nextScheduleDates = Array.isArray(planData.scheduleDates) ? planData.scheduleDates : [];
+        if (nextScheduleDates.length === 0) {
+            const rawDates = restoredDemand
+                .slice(1)
+                .map((row) => normalizeExcelDate(row?.[11]))
+                .filter((d) => d);
+            const uniqueTimestamps = [...new Set(rawDates.map((d) => d.getTime()))].sort((a, b) => a - b);
+            nextScheduleDates = uniqueTimestamps.map((ts) => formatDateLocal(new Date(ts)));
+        }
+
+        // planHashes: берём из плана (если есть), иначе считаем, если есть roster (глобальный или legacy из плана)
+        const rosterForHashes = nextRaw.roster || planData.rawTables?.roster;
+        let nextHashes = {};
+        if (planData.planHashes && typeof planData.planHashes === 'object' && Object.keys(planData.planHashes).length > 0) {
+            nextHashes = planData.planHashes;
+        } else if (rosterForHashes) {
+            const { templates } = preAnalyzeRoster(rosterForHashes);
+            nextHashes = buildPlanHashes(restoredDemand, templates);
+        }
+
+        // Расстановка: у каждого плана своя, берём напрямую из planData (без пересчёта по хешам)
+        const nextAssignments = normalizeManualAssignments(planData.manualAssignments || {});
+        const nextManualLines = planData.manualLines || {};
+        const nextClones = planData.assignmentClones || {};
+        const nextAutoReassignEnabled = planData.autoReassignEnabled ?? true;
+
+        setRawTables(nextRaw);
+        setScheduleDates(nextScheduleDates);
+        setPlanHashes(nextHashes);
+        setManualAssignments(nextAssignments);
+        setManualLines(nextManualLines);
+        setAssignmentClones(nextClones);
+        setAutoReassignEnabled(nextAutoReassignEnabled);
+
+        persistStateKey(STORAGE_KEYS.RAW_TABLES, nextRaw);
+        persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, nextScheduleDates);
+        persistStateKey(STORAGE_KEYS.PLAN_HASHES, nextHashes);
+        persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, nextAssignments);
+        persistStateKey(STORAGE_KEYS.MANUAL_LINES, nextManualLines);
+        persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, nextClones);
+        persistStateKey(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, nextAutoReassignEnabled);
+
+        if (nextScheduleDates.length > 0) {
+            setSelectedDate((prev) => (nextScheduleDates.includes(prev) ? prev : nextScheduleDates[0]));
+        }
+        if (switchView) setStep('dashboard');
+    }, [
+        rawTables,
+        setRawTables,
+        setScheduleDates,
+        setPlanHashes,
+        setManualAssignments,
+        setManualLines,
+        setAssignmentClones,
+        setAutoReassignEnabled,
+        setSelectedDate,
+        setStep,
+        persistStateKey
+    ]);
+
+    /**
      * Парсит Excel файл в данные плана
      */
     const parseExcelToPlanData = useCallback(async (selectedFile) => {
@@ -134,18 +214,28 @@ export const usePlanOperations = ({
         });
         if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
 
+        // План-зависимо: только demand + производные, расстановка пустая.
+        const restoredDemand = restoreDemandDates(loadedData['demand']);
+        const rawDates = restoredDemand
+            .slice(1)
+            .map((row) => normalizeExcelDate(row?.[11]))
+            .filter((d) => d);
+        const uniqueTimestamps = [...new Set(rawDates.map((d) => d.getTime()))].sort((a, b) => a - b);
+        const nextScheduleDates = uniqueTimestamps.map((ts) => formatDateLocal(new Date(ts)));
+
+        // Хеши смен считаем на основе roster из файла (только для корректного сохранения/валидации),
+        // но roster в план не сохраняем.
         const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
-        const newHashes = buildPlanHashes(loadedData['demand'], newTemplates);
-        const analysis = analyzeDataPure(loadedData['demand'], loadedData['roster']);
+        const newHashes = buildPlanHashes(restoredDemand, newTemplates);
 
         return {
-            rawTables: loadedData,
+            rawTables: { demand: restoredDemand },
             planHashes: newHashes,
-            scheduleDates: analysis.scheduleDates,
-            lineTemplates: analysis.lineTemplates,
-            floaters: analysis.floaters,
-            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
-            manualAssignments: {}
+            scheduleDates: nextScheduleDates,
+            manualAssignments: {},
+            manualLines: {},
+            assignmentClones: {},
+            autoReassignEnabled: true
         };
     }, [TARGET_CONFIG]);
 
@@ -194,17 +284,12 @@ export const usePlanOperations = ({
         const plan = savedPlans.find(p => p.id === planId);
         if (!plan?.data) return;
         isLoadingPlanRef.current = true;
-        applyPlanData(plan.data, { switchView: switchToDashboard });
+        applyPlanScheduleOnly(plan.data, { switchView: switchToDashboard });
         setCurrentPlanId(plan.id);
-        if (plan.data.planningState) {
-            persistStateKey(STORAGE_KEYS.PLANNING_STATE, plan.data.planningState);
-            setPlanningStateToLoad(plan.data.planningState);
-            setPlanningStateVersion(v => v + 1);
-        }
         setTimeout(() => {
             isLoadingPlanRef.current = false;
         }, 0);
-    }, [savedPlans, applyPlanData, setCurrentPlanId, persistStateKey, setPlanningStateToLoad, setPlanningStateVersion, isLoadingPlanRef]);
+    }, [savedPlans, applyPlanScheduleOnly, setCurrentPlanId, isLoadingPlanRef]);
 
     /**
      * Загружает очередь планирования из плана
@@ -292,20 +377,75 @@ export const usePlanOperations = ({
         setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
         if (currentPlanId === planId) {
             setCurrentPlanId(null);
-            setRawTables({});
+            // Очищаем только план-зависимое (demand). roster/люди/линии — глобальные.
+            setRawTables((prev) => {
+                const roster = prev?.roster;
+                return roster ? { roster } : {};
+            });
             setScheduleDates([]);
             setPlanHashes({});
             setManualAssignments({});
             setManualLines({});
             setAssignmentClones({});
-            // СКУД не сбрасываем — один для всех планов
-            setWorkerRegistry({});
-            setLineTemplates({});
-            setFloaters({ day: [], night: [] });
             setPlanningStateToLoad(null);
             setSelectedDate('');
         }
-    }, [currentPlanId, isReadOnly, notify, setSavedPlans, setCurrentPlanId, setRawTables, setScheduleDates, setPlanHashes, setManualAssignments, setManualLines, setAssignmentClones, setWorkerRegistry, setLineTemplates, setFloaters, setPlanningStateToLoad, setSelectedDate, savedPlansSourceRef]);
+    }, [currentPlanId, isReadOnly, notify, setSavedPlans, setCurrentPlanId, setRawTables, setScheduleDates, setPlanHashes, setManualAssignments, setManualLines, setAssignmentClones, setPlanningStateToLoad, setSelectedDate, savedPlansSourceRef]);
+
+    /**
+     * (Опционально) Забирает справочник (люди/линии/привязки) из сохранённого плана и применяет ГЛОБАЛЬНО.
+     * Нужен для совместимости со старыми планами, где roster/workerRegistry могли храниться в plan.data.
+     */
+    const pullRosterFromPlanToGlobal = useCallback((planId) => {
+        if (isReadOnly) {
+            notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
+            return;
+        }
+        const plan = savedPlans.find(p => p.id === planId);
+        const rosterFromPlan = plan?.data?.rawTables?.roster;
+        if (!Array.isArray(rosterFromPlan) || rosterFromPlan.length === 0) {
+            notify({ type: 'error', message: 'В этом плане нет справочника (roster).', duration: 5000 });
+            return;
+        }
+
+        // Сохраняем roster глобально в rawTables (demand остаётся текущим)
+        setRawTables(prev => {
+            const next = { ...(prev || {}), roster: rosterFromPlan };
+            persistStateKey(STORAGE_KEYS.RAW_TABLES, next);
+            return next;
+        });
+
+        // Пересчитываем глобальные структуры (линии/подсобники/реестр) на основе текущего demand
+        const demandForAnalysis = rawTables?.demand || plan?.data?.rawTables?.demand;
+        if (Array.isArray(demandForAnalysis) && demandForAnalysis.length > 0) {
+            const analysis = analyzeDataPure(demandForAnalysis, rosterFromPlan);
+            setLineTemplates(analysis.lineTemplates);
+            setFloaters(analysis.floaters);
+            setWorkerRegistry(analysis.workerRegistry);
+            persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, analysis.lineTemplates);
+            persistStateKey(STORAGE_KEYS.FLOATERS, analysis.floaters);
+            const registryForStorage = {};
+            Object.entries(analysis.workerRegistry || {}).forEach(([k, v]) => {
+                registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
+            });
+            persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
+        } else {
+            // Если demand отсутствует, хотя бы обновим roster.
+            notify({ type: 'info', message: 'Справочник загружен глобально. Расписание отсутствует, поэтому шаблоны линий не пересчитаны.' });
+        }
+
+        notify({ type: 'success', message: 'Справочник (люди/линии) загружен глобально из плана.' });
+    }, [
+        isReadOnly,
+        notify,
+        savedPlans,
+        rawTables,
+        setRawTables,
+        setLineTemplates,
+        setFloaters,
+        setWorkerRegistry,
+        persistStateKey
+    ]);
 
     /**
      * Импортирует план из JSON
@@ -386,15 +526,15 @@ export const usePlanOperations = ({
         const createdAt = new Date().toISOString();
         const planName = (name || `План ${createdAt.slice(0, 10)}`).trim();
         const planData = {
-            rawTables: rawTablesNext,
+            // В план сохраняем только расписание и расстановку.
+            // roster/lineTemplates/workerRegistry/floaters — глобальные.
+            rawTables: { demand },
             planHashes: newHashes,
             scheduleDates: analysis.scheduleDates,
-            lineTemplates: analysis.lineTemplates,
-            floaters: analysis.floaters,
-            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
             manualAssignments: {},
             manualLines,
             assignmentClones,
+            autoReassignEnabled,
             planningState: planningState || null
         };
         const existingByName = savedPlans.find(p => (p.name || '').trim() === planName);
@@ -414,7 +554,7 @@ export const usePlanOperations = ({
         setCurrentPlanId(planId);
         draftPlanIdRef.current = null;
     }, [
-        savedPlans, manualLines, assignmentClones, draftPlanIdRef,
+        savedPlans, manualLines, assignmentClones, autoReassignEnabled, draftPlanIdRef,
         setRawTables, setPlanHashes, setScheduleDates, setLineTemplates, setFloaters, setWorkerRegistry,
         setManualAssignments, setSelectedDate, setSavedPlans, setCurrentPlanId, persistStateKey, savedPlansSourceRef
     ]);
@@ -423,11 +563,39 @@ export const usePlanOperations = ({
      * Сравнивает два снапшота планов
      */
     const comparePlanSnapshots = useCallback((masterPlan, operationalPlan) => {
-        const master = normalizePlanData(masterPlan || {});
-        const operational = normalizePlanData(operationalPlan || {});
+        // Для сравнения используем ГЛОБАЛЬНЫЙ справочник (линии/люди),
+        // а из планов берём только расписание (demand) и расстановку (manualAssignments/...).
+        const makeEffectiveForSlots = (plan) => {
+            const normalized = normalizePlanData(plan || {});
+            const demand = normalized.rawTables?.demand ? restoreDemandDates(normalized.rawTables.demand) : null;
 
-        const masterSlots = buildPlanSlots(master);
-        const operationalSlots = buildPlanSlots(operational);
+            const rosterForSlots = (rawTables && rawTables.roster) ? rawTables.roster : normalized.rawTables?.roster;
+
+            const hasGlobalTemplates = lineTemplates && Object.keys(lineTemplates).length > 0;
+            const hasGlobalRegistry = workerRegistry && Object.keys(workerRegistry).length > 0;
+            const hasGlobalFloaters = floaters && (
+                (Array.isArray(floaters.day) && floaters.day.length > 0) ||
+                (Array.isArray(floaters.night) && floaters.night.length > 0)
+            );
+
+            return {
+                ...normalized,
+                rawTables: {
+                    ...(normalized.rawTables || {}),
+                    demand: demand || normalized.rawTables?.demand,
+                    roster: rosterForSlots
+                },
+                lineTemplates: hasGlobalTemplates ? lineTemplates : normalizeLineTemplates(normalized.lineTemplates || {}),
+                floaters: hasGlobalFloaters ? floaters : (normalized.floaters || { day: [], night: [] }),
+                workerRegistry: hasGlobalRegistry ? workerRegistry : hydrateWorkerRegistry(normalized.workerRegistry || {})
+            };
+        };
+
+        const masterEffective = makeEffectiveForSlots(masterPlan);
+        const operationalEffective = makeEffectiveForSlots(operationalPlan);
+
+        const masterSlots = buildPlanSlots(masterEffective);
+        const operationalSlots = buildPlanSlots(operationalEffective);
 
         const slotIds = new Set([
             ...masterSlots.slots.map(s => s.slotId),
@@ -544,7 +712,7 @@ export const usePlanOperations = ({
         return {
             changes: { moved, added, lost, replaced, matched }
         };
-    }, []);
+    }, [rawTables, lineTemplates, floaters, workerRegistry]);
 
     return {
         buildPlanSnapshot,
@@ -558,6 +726,7 @@ export const usePlanOperations = ({
         updatePlanPlanningState,
         setPlanType,
         deletePlan,
+        pullRosterFromPlanToGlobal,
         importPlanFromJson,
         importPlanFromExcelFile,
         createPlanFromSchedule,

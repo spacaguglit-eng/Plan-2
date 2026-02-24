@@ -1,5 +1,36 @@
 import { STORAGE_KEYS } from '../utils';
 
+/**
+ * Ключи, задаваемые из текущего плана при применении снапшота.
+ * При appliedPlanDataInThisRun они не перезаписываются из снапшота; источник правды — plan.data.
+ */
+const PLAN_SCOPED_KEYS = [
+    STORAGE_KEYS.RAW_TABLES,
+    STORAGE_KEYS.SCHEDULE_DATES,
+    STORAGE_KEYS.PLAN_HASHES,
+    STORAGE_KEYS.MANUAL_ASSIGNMENTS,
+    STORAGE_KEYS.MANUAL_LINES,
+    STORAGE_KEYS.ASSIGNMENT_CLONES,
+];
+
+/**
+ * Ключи, всегда берущиеся из глобального снапшота (люди, линии, факты, настройки и т.д.).
+ */
+const GLOBAL_KEYS = [
+    STORAGE_KEYS.AUTO_REASSIGN_ENABLED,
+    STORAGE_KEYS.CURRENT_PLAN_ID,
+    STORAGE_KEYS.FACT_DATA,
+    STORAGE_KEYS.FACT_DATES,
+    STORAGE_KEYS.LINE_TEMPLATES,
+    STORAGE_KEYS.FLOATERS,
+    STORAGE_KEYS.ALL_EMPLOYEES,
+    STORAGE_KEYS.DEPARTMENT_MASTER_LIST,
+    STORAGE_KEYS.PLANNING_STATE,
+    STORAGE_KEYS.PRODUCTION_RESULTS,
+    STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES,
+    STORAGE_KEYS.PRODUCTION_LINE_NORMS,
+];
+
 const hasPlanEvents = (p) =>
     (p?.data?.planningState?.products?.length ?? 0) + (p?.data?.planningState?.cipBetween?.length ?? 0) > 0;
 
@@ -19,11 +50,15 @@ function maybeMergePendingPlanningState(plans, currentPlanId, pendingPlanningSta
 
 /**
  * Применяет удалённый снапшот к состоянию приложения.
+ * При применении данных текущего плана (appliedPlanDataInThisRun) план-зависимые ключи не перезаписываются из снапшота; источник правды — plan.data.
+ *
  * @param {Object} snapshot — распарсенный объект из Firestore (ключи STORAGE_KEYS, значения уже объекты/массивы)
  * @param {Object} ctx — контекст: сеттеры, applyPlanData, getCurrentPlans (текущие планы в памяти), hydrateWorkerRegistry, serializeWorkerRegistry, setSavedPlansSourceRef
  */
 export function applyRemoteSnapshot(snapshot, ctx) {
     if (!snapshot) return;
+
+    let appliedPlanDataInThisRun = false;
 
     const {
         setSavedPlans,
@@ -171,20 +206,6 @@ export function applyRemoteSnapshot(snapshot, ctx) {
             })();
 
             if (!preferLocal) {
-                // Читаем currentPlanId напрямую из localStorage как fallback, если он не передан или равен null
-                let effectiveCurrentPlanId = currentPlanId;
-                if (!effectiveCurrentPlanId) {
-                    try {
-                        const storageKey = STORAGE_KEYS.CURRENT_PLAN_ID;
-                        const stored = localStorage.getItem(storageKey);
-                        if (stored) {
-                            effectiveCurrentPlanId = stored;
-                        }
-                    } catch (e) {
-                        // Ignore localStorage errors
-                    }
-                }
-                
                 const remotePlanIdEntry = snapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
                 const shouldSkipResult = shouldSkip(STORAGE_KEYS.CURRENT_PLAN_ID, remotePlanIdEntry);
                 let remotePlanId = null;
@@ -193,10 +214,11 @@ export function applyRemoteSnapshot(snapshot, ctx) {
                     const unwrapped = unwrap(remotePlanIdEntry);
                     remotePlanId = unwrapped?.value;
                 } else if (!remotePlanIdEntry && remotePlans && remotePlans.length > 0) {
-                    if (effectiveCurrentPlanId) {
-                        const planExists = remotePlans.find((p) => p.id === effectiveCurrentPlanId);
+                    // Если уже есть выбранный currentPlanId в состоянии — пробуем его сохранить
+                    if (currentPlanId) {
+                        const planExists = remotePlans.find((p) => p.id === currentPlanId);
                         if (planExists) {
-                            remotePlanId = effectiveCurrentPlanId;
+                            remotePlanId = currentPlanId;
                         }
                     }
                     
@@ -225,30 +247,41 @@ export function applyRemoteSnapshot(snapshot, ctx) {
                             };
                         }
                         applyPlanData(dataToApply, { switchView: false });
+                        appliedPlanDataInThisRun = true;
                     }
                 }
             }
         }
     }
 
-    applyField(STORAGE_KEYS.MANUAL_ASSIGNMENTS, setManualAssignments);
-    applyField(STORAGE_KEYS.MANUAL_LINES, setManualLines);
-    applyField(STORAGE_KEYS.ASSIGNMENT_CLONES, setAssignmentClones);
-    applyField(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, setAutoReassignEnabled);
-    applyField(STORAGE_KEYS.CURRENT_PLAN_ID, setCurrentPlanId);
-    applyField(STORAGE_KEYS.FACT_DATA, setFactData);
-    applyField(STORAGE_KEYS.FACT_DATES, setFactDates);
-    applyField(STORAGE_KEYS.RAW_TABLES, setRawTables);
-    applyField(STORAGE_KEYS.SCHEDULE_DATES, setScheduleDates);
-    applyField(STORAGE_KEYS.PLAN_HASHES, setPlanHashes);
-    applyField(STORAGE_KEYS.LINE_TEMPLATES, setLineTemplates);
-    applyField(STORAGE_KEYS.FLOATERS, setFloaters);
-    if (setAllEmployees) applyField(STORAGE_KEYS.ALL_EMPLOYEES, setAllEmployees);
-    if (setDepartmentMasterList) applyField(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, setDepartmentMasterList);
-    if (setPlanningState) applyField(STORAGE_KEYS.PLANNING_STATE, setPlanningState);
-    if (setProductionResults) applyField(STORAGE_KEYS.PRODUCTION_RESULTS, setProductionResults);
-    if (setProductionExcludedDowntimeTypes) applyField(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, setProductionExcludedDowntimeTypes);
-    if (setProductionLineNorms) applyField(STORAGE_KEYS.PRODUCTION_LINE_NORMS, setProductionLineNorms);
+    const setterByKey = {
+        [STORAGE_KEYS.RAW_TABLES]: setRawTables,
+        [STORAGE_KEYS.SCHEDULE_DATES]: setScheduleDates,
+        [STORAGE_KEYS.PLAN_HASHES]: setPlanHashes,
+        [STORAGE_KEYS.MANUAL_ASSIGNMENTS]: setManualAssignments,
+        [STORAGE_KEYS.MANUAL_LINES]: setManualLines,
+        [STORAGE_KEYS.ASSIGNMENT_CLONES]: setAssignmentClones,
+        [STORAGE_KEYS.AUTO_REASSIGN_ENABLED]: setAutoReassignEnabled,
+        [STORAGE_KEYS.CURRENT_PLAN_ID]: setCurrentPlanId,
+        [STORAGE_KEYS.FACT_DATA]: setFactData,
+        [STORAGE_KEYS.FACT_DATES]: setFactDates,
+        [STORAGE_KEYS.LINE_TEMPLATES]: setLineTemplates,
+        [STORAGE_KEYS.FLOATERS]: setFloaters,
+        [STORAGE_KEYS.ALL_EMPLOYEES]: setAllEmployees,
+        [STORAGE_KEYS.DEPARTMENT_MASTER_LIST]: setDepartmentMasterList,
+        [STORAGE_KEYS.PLANNING_STATE]: setPlanningState,
+        [STORAGE_KEYS.PRODUCTION_RESULTS]: setProductionResults,
+        [STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES]: setProductionExcludedDowntimeTypes,
+        [STORAGE_KEYS.PRODUCTION_LINE_NORMS]: setProductionLineNorms,
+    };
+
+    const keysToApply = appliedPlanDataInThisRun
+        ? GLOBAL_KEYS
+        : [...PLAN_SCOPED_KEYS, ...GLOBAL_KEYS];
+    keysToApply.forEach((key) => {
+        const setter = setterByKey[key];
+        if (setter) applyField(key, setter);
+    });
 
     const serializedRegistry = snapshot[STORAGE_KEYS.WORKER_REGISTRY];
     if (serializedRegistry) {

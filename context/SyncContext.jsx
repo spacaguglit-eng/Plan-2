@@ -82,26 +82,30 @@ export const SyncProvider = ({ children }) => {
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
 
+    /**
+     * persistStateKey
+     * Единственная точка записи бизнес-данных.
+     * ВСЕГДА пишет только в облако (Firestore) через saveRemoteStateKey.
+     * localStorage НЕ используется для хранения данных плана / сотрудников / распределения.
+     */
     const persistStateKey = useCallback((key, value) => {
         const meta = { clientId: clientIdRef.current, rev: Date.now(), ts: Date.now() };
         pendingUpdatesRef.current = { ...pendingUpdatesRef.current, [key]: value };
         pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
         setPendingUpdates((prev) => ({ ...prev, [key]: value }));
         setPendingMeta((prev) => ({ ...prev, [key]: meta }));
-        
-        if (isRemoteStorageEnabled()) {
-            // Начали отправку в облако
-            setSyncStatus('syncing');
-            saveRemoteStateKey(key, value, meta).catch((err) =>
-                console.error(`Error saving ${key} to remote:`, err)
-            );
-        } else {
-            try {
-                localStorage.setItem(key, JSON.stringify(value));
-            } catch (e) {
-                console.error(`Error saving ${key} to localStorage:`, e);
-            }
+
+        if (!isRemoteStorageEnabled()) {
+            // Облако должно быть включено всегда; если нет — просто логируем.
+            console.error(`persistStateKey("${key}") skipped: remote storage is disabled`);
+            return;
         }
+
+        // Начали отправку в облако
+        setSyncStatus('syncing');
+        saveRemoteStateKey(key, value, meta).catch((err) =>
+            console.error(`Error saving ${key} to remote:`, err)
+        );
     }, [isRemoteStorageEnabled, setSyncStatus]);
 
     const cloudStatus = useMemo(() => {

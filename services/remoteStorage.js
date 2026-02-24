@@ -287,21 +287,36 @@ export const loadRemoteState = async () => {
     }
 };
 
-/** Собирает массив планов из plan_list + отдельных документов планов. Поддержка legacy: один документ plan_saved_plans. */
+/**
+ * Собирает массив планов из plan_list + отдельных документов планов.
+ * Возвращает сами планы и метаданные ревизии (если есть) из конверта plan_list/legacy plan_saved_plans.
+ * Поддержка legacy: один документ plan_saved_plans.
+ */
 const buildSavedPlansFromState = (data) => {
+    let meta = null;
+
     const planListRaw = data?.plan_list;
     if (planListRaw != null) {
         let metaList;
+        let envelopeMeta = null;
         try {
             const parsed = typeof planListRaw === 'string' ? JSON.parse(planListRaw) : planListRaw;
-            metaList = (parsed && typeof parsed.value !== 'undefined') ? parsed.value : parsed;
+            if (parsed && typeof parsed.value !== 'undefined') {
+                metaList = parsed.value;
+                envelopeMeta = parsed._meta || null;
+            } else {
+                metaList = parsed;
+            }
         } catch {
             metaList = null;
         }
         if (Array.isArray(metaList) && metaList.length > 0) {
+            if (envelopeMeta) {
+                meta = envelopeMeta;
+            }
             const plans = [];
-            for (const meta of metaList) {
-                const planId = meta?.id;
+            for (const m of metaList) {
+                const planId = m?.id;
                 if (!planId) continue;
                 const raw = data[planId];
                 if (raw == null) continue;
@@ -313,7 +328,7 @@ const buildSavedPlansFromState = (data) => {
                     // пропуск битого плана
                 }
             }
-            if (plans.length > 0) return plans;
+            if (plans.length > 0) return { plans, meta };
         }
     }
     const legacyRaw = data?.plan_saved_plans;
@@ -321,10 +336,13 @@ const buildSavedPlansFromState = (data) => {
         try {
             const parsed = typeof legacyRaw === 'string' ? JSON.parse(legacyRaw) : legacyRaw;
             const envelope = normalizeEnvelope(parsed);
-            if (Array.isArray(envelope.value)) return envelope.value;
+            if (envelope && envelope._meta) {
+                meta = envelope._meta;
+            }
+            if (Array.isArray(envelope.value)) return { plans: envelope.value, meta };
         } catch { }
     }
-    return null;
+    return { plans: null, meta };
 };
 
 const parseRemoteData = (data) => {
@@ -345,9 +363,12 @@ const parseRemoteData = (data) => {
             parsedData[key] = normalizeEnvelope(data[key]);
         }
     });
-    const savedPlans = buildSavedPlansFromState(data);
-    if (savedPlans != null) {
-        parsedData[STORAGE_KEYS.SAVED_PLANS] = { value: savedPlans, _meta: null };
+    const savedPlansResult = buildSavedPlansFromState(data);
+    if (savedPlansResult && savedPlansResult.plans != null) {
+        parsedData[STORAGE_KEYS.SAVED_PLANS] = {
+            value: savedPlansResult.plans,
+            _meta: savedPlansResult.meta || null
+        };
     }
     return parsedData;
 };

@@ -33,7 +33,8 @@ import {
 import {
     buildPlanHashes,
     preAnalyzeRoster,
-    createAnalyzeData
+    createAnalyzeData,
+    analyzeDataPure
 } from './modules/useDataAnalysis';
 import { buildPlanSlots, useShiftsOperations } from './modules/useShiftsOperations';
 import { usePlanOperations } from './modules/usePlanOperations';
@@ -45,7 +46,8 @@ import {
     exportScheduleByLinesToExcel as exportScheduleByLinesToExcelFromModule
 } from './modules/exportUtils';
 
-const DataContext = createContext(null);
+const DATA_CONTEXT_DEFAULT = Object.freeze({ __DATA_PROVIDER: false });
+const DataContext = createContext(DATA_CONTEXT_DEFAULT);
 
 export const DataProvider = ({ children }) => {
     const sync = useSync();
@@ -65,11 +67,41 @@ export const DataProvider = ({ children }) => {
         pendingMetaRef,
         clientIdRef,
         unwrapSnapshotValue,
-        persistStateKey,
+        persistStateKey: persistStateKeyFromSync,
         cloudStatus,
         isRemoteStorageEnabled,
         wipeRemoteStorage
     } = sync;
+
+    const dataChangeLogRef = useRef([]);
+    const [dataChangeLog, setDataChangeLog] = useState([]);
+    const DATA_CHANGE_KEY_LABELS = {
+        [STORAGE_KEYS.RAW_TABLES]: 'Расписание (сырые таблицы)',
+        [STORAGE_KEYS.SCHEDULE_DATES]: 'Даты расписания',
+        [STORAGE_KEYS.PLAN_HASHES]: 'Хеши плана',
+        [STORAGE_KEYS.MANUAL_ASSIGNMENTS]: 'Ручная расстановка',
+        [STORAGE_KEYS.MANUAL_LINES]: 'Ручные линии',
+        [STORAGE_KEYS.ASSIGNMENT_CLONES]: 'Клоны расстановки',
+        [STORAGE_KEYS.WORKER_REGISTRY]: 'Реестр сотрудников',
+        [STORAGE_KEYS.LINE_TEMPLATES]: 'Шаблоны линий',
+        [STORAGE_KEYS.FLOATERS]: 'Свободные руки',
+        [STORAGE_KEYS.SAVED_PLANS]: 'Сохранённые планы',
+        [STORAGE_KEYS.CURRENT_PLAN_ID]: 'Текущий план',
+        [STORAGE_KEYS.AUTO_REASSIGN_ENABLED]: 'Автораспределение',
+        [STORAGE_KEYS.FACT_DATA]: 'Данные СКУД',
+        [STORAGE_KEYS.FACT_DATES]: 'Даты СКУД',
+    };
+    const persistStateKey = useCallback((key, value) => {
+        const keyLabel = DATA_CHANGE_KEY_LABELS[key] || key;
+        dataChangeLogRef.current = [{ id: Date.now(), ts: new Date().toISOString(), key, keyLabel }, ...dataChangeLogRef.current].slice(0, 100);
+        setDataChangeLog([...dataChangeLogRef.current]);
+        persistStateKeyFromSync(key, value);
+    }, [persistStateKeyFromSync]);
+
+    const clearDataChangeLog = useCallback(() => {
+        dataChangeLogRef.current = [];
+        setDataChangeLog([]);
+    }, []);
 
     const wipeAllData = useCallback(async () => {
         if (window.confirm('ВНИМАНИЕ! Это действие удалит ВСЕ данные (планы, настройки, сотрудников) из облака. Восстановить данные будет невозможно. Продолжить?')) {
@@ -98,17 +130,8 @@ export const DataProvider = ({ children }) => {
     const [savedPlans, setSavedPlans] = useState([]);
     const savedPlansSourceRef = useRef(null);
     const savedPlansRef = useRef([]);
-    const [currentPlanId, setCurrentPlanId] = useState(() => {
-        try {
-            const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_PLAN_ID);
-            if (stored) {
-                return stored;
-            }
-        } catch (e) {
-            // Ignore localStorage errors
-        }
-        return null;
-    });
+    // Идентификатор активного плана приходит из облака (remoteSnapshot / syncStateApplier)
+    const [currentPlanId, setCurrentPlanId] = useState(null);
     const [planningStateVersion, setPlanningStateVersion] = useState(0);
     const [planningStateToLoad, setPlanningStateToLoad] = useState(null);
 
@@ -209,6 +232,127 @@ export const DataProvider = ({ children }) => {
         if (!restoring)         persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, next);
     }, [productionLineNorms, restoring, persistStateKey]);
 
+    /**
+     * Селективная очистка данных по конкретным ключам STORAGE_KEYS.
+     * Используется из UI (модалка с чекбоксами по каждому ключу).
+     */
+    const wipeDataCategories = useCallback(async (keys) => {
+        const keySet = new Set(keys || []);
+        try {
+            if (keySet.has(STORAGE_KEYS.SAVED_PLANS)) {
+                setSavedPlans([]);
+                persistStateKey(STORAGE_KEYS.SAVED_PLANS, []);
+            }
+            if (keySet.has(STORAGE_KEYS.CURRENT_PLAN_ID)) {
+                setCurrentPlanId(null);
+                persistStateKey(STORAGE_KEYS.CURRENT_PLAN_ID, null);
+                setSelectedDate('');
+                setStep('upload');
+            }
+            if (keySet.has(STORAGE_KEYS.RAW_TABLES)) {
+                setRawTables({});
+                persistStateKey(STORAGE_KEYS.RAW_TABLES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.SCHEDULE_DATES)) {
+                setScheduleDates([]);
+                persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, []);
+            }
+            if (keySet.has(STORAGE_KEYS.PLAN_HASHES)) {
+                setPlanHashes({});
+                persistStateKey(STORAGE_KEYS.PLAN_HASHES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.MANUAL_ASSIGNMENTS)) {
+                setManualAssignments({});
+                persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
+            }
+            if (keySet.has(STORAGE_KEYS.MANUAL_LINES)) {
+                setManualLinesState({});
+                persistStateKey(STORAGE_KEYS.MANUAL_LINES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.ASSIGNMENT_CLONES)) {
+                setAssignmentClonesState({});
+                persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.PLANNING_STATE)) {
+                setPlanningStateState({});
+                persistStateKey(STORAGE_KEYS.PLANNING_STATE, {});
+            }
+
+            if (keySet.has(STORAGE_KEYS.WORKER_REGISTRY)) {
+                setWorkerRegistry({});
+                persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, {});
+            }
+            if (keySet.has(STORAGE_KEYS.LINE_TEMPLATES)) {
+                setLineTemplates({});
+                persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.FLOATERS)) {
+                const emptyFloaters = { day: [], night: [] };
+                setFloaters(emptyFloaters);
+                persistStateKey(STORAGE_KEYS.FLOATERS, emptyFloaters);
+            }
+            if (keySet.has(STORAGE_KEYS.ALL_EMPLOYEES)) {
+                setAllEmployeesState({});
+                persistStateKey(STORAGE_KEYS.ALL_EMPLOYEES, {});
+            }
+            if (keySet.has(STORAGE_KEYS.DEPARTMENT_MASTER_LIST)) {
+                setDepartmentMasterListState(null);
+                persistStateKey(STORAGE_KEYS.DEPARTMENT_MASTER_LIST, null);
+            }
+
+            if (keySet.has(STORAGE_KEYS.FACT_DATA)) {
+                setFactDataState(null);
+                persistStateKey(STORAGE_KEYS.FACT_DATA, null);
+            }
+            if (keySet.has(STORAGE_KEYS.FACT_DATES)) {
+                setFactDatesState([]);
+                persistStateKey(STORAGE_KEYS.FACT_DATES, []);
+            }
+
+            if (keySet.has(STORAGE_KEYS.PRODUCTION_RESULTS)) {
+                setProductionResultsState(null);
+                persistStateKey(STORAGE_KEYS.PRODUCTION_RESULTS, null);
+            }
+            if (keySet.has(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES)) {
+                setProductionExcludedDowntimeTypesState(null);
+                persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, null);
+            }
+            if (keySet.has(STORAGE_KEYS.PRODUCTION_LINE_NORMS)) {
+                setProductionLineNormsState(null);
+                persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, null);
+            }
+
+            notify({ type: 'success', message: 'Выбранные ключи очищены' });
+        } catch (e) {
+            console.error(e);
+            notify({ type: 'error', message: 'Ошибка при очистке данных' });
+        }
+    }, [
+        setSavedPlans,
+        setCurrentPlanId,
+        setSelectedDate,
+        setStep,
+        setRawTables,
+        setScheduleDates,
+        setPlanHashes,
+        setManualAssignments,
+        setManualLinesState,
+        setAssignmentClonesState,
+        setPlanningStateState,
+        setWorkerRegistry,
+        setLineTemplates,
+        setFloaters,
+        setAllEmployeesState,
+        setDepartmentMasterListState,
+        setFactDataState,
+        setFactDatesState,
+        setProductionResultsState,
+        setProductionExcludedDowntimeTypesState,
+        setProductionLineNormsState,
+        persistStateKey,
+        notify
+    ]);
+
     useEffect(() => {
         setRemoteFlushErrorCallback((err, failedKeys) => {
             if (!failedKeys?.length) return;
@@ -298,6 +442,7 @@ export const DataProvider = ({ children }) => {
         updatePlanPlanningState,
         setPlanType,
         deletePlan,
+        pullRosterFromPlanToGlobal,
         importPlanFromJson,
         importPlanFromExcelFile,
         createPlanFromSchedule,
@@ -326,14 +471,17 @@ export const DataProvider = ({ children }) => {
                 setCurrentPlanId(currentPlanIdStr);
             }
             
-            const manualAssignmentsStr = localStorage.getItem(STORAGE_KEYS.MANUAL_ASSIGNMENTS);
-            if (manualAssignmentsStr) {
-                try {
-                    const parsed = JSON.parse(manualAssignmentsStr);
-                    if (parsed && typeof parsed === 'object') {
-                        setManualAssignments(parsed);
-                    }
-                } catch (e) {}
+            // Расстановка план-зависимая: восстанавливаем только если есть активный план.
+            if (currentPlanIdStr) {
+                const manualAssignmentsStr = localStorage.getItem(STORAGE_KEYS.MANUAL_ASSIGNMENTS);
+                if (manualAssignmentsStr) {
+                    try {
+                        const parsed = JSON.parse(manualAssignmentsStr);
+                        if (parsed && typeof parsed === 'object') {
+                            setManualAssignments(parsed);
+                        }
+                    } catch (e) {}
+                }
             }
         } catch (e) {
             console.error('Failed to load from localStorage:', e);
@@ -341,6 +489,32 @@ export const DataProvider = ({ children }) => {
         
         setRestoring(false);
     }, [isRemoteStorageEnabled, setSavedPlans, setCurrentPlanId, setManualAssignments]);
+
+    // Если нет активного плана — план-зависимое состояние должно быть пустым (а roster/люди — глобальные).
+    useEffect(() => {
+        if (restoring) return;
+        if (currentPlanId) return;
+
+        // Сохраняем глобальный roster, чистим только demand и всё план-зависимое.
+        setRawTables((prev) => {
+            const roster = prev?.roster;
+            const next = roster ? { roster } : {};
+            persistStateKey(STORAGE_KEYS.RAW_TABLES, next);
+            return next;
+        });
+        setScheduleDates([]);
+        setPlanHashes({});
+        setManualAssignments({});
+        setManualLinesState({});
+        setAssignmentClonesState({});
+        setSelectedDate('');
+
+        persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, []);
+        persistStateKey(STORAGE_KEYS.PLAN_HASHES, {});
+        persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
+        persistStateKey(STORAGE_KEYS.MANUAL_LINES, {});
+        persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, {});
+    }, [currentPlanId, restoring, persistStateKey, setRawTables, setScheduleDates, setPlanHashes, setManualAssignments, setSelectedDate]);
 
     useEffect(() => {
         if (restoring) return;
@@ -358,6 +532,7 @@ export const DataProvider = ({ children }) => {
 
     const hasAppliedRemoteRef = useRef(false);
     const lastAppliedRemoteRevRef = useRef({});
+    const migrationAttemptedRef = useRef(false);
     useEffect(() => {
         if (!remoteSnapshot) return;
         const pending = pendingUpdatesRef.current;
@@ -440,6 +615,46 @@ export const DataProvider = ({ children }) => {
             setRestoring(false);
         }
     }, [restoring, remoteSnapshot, unwrapSnapshotValue, currentPlanId]);
+
+    // Миграция старых локальных данных (localStorage → облако) один раз на старт
+    useEffect(() => {
+        if (!isRemoteStorageEnabled()) return;
+        if (!remoteSnapshot) return;
+        if (migrationAttemptedRef.current) return;
+        if (typeof localStorage === 'undefined') return;
+
+        migrationAttemptedRef.current = true;
+
+        const migrateKeyIfMissing = (key) => {
+            if (remoteSnapshot[key] != null) return;
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                persistStateKey(key, parsed);
+                // После отправки в облако больше не держим эти данные локально
+                localStorage.removeItem(key);
+            } catch (e) {
+                console.error(`Failed to migrate ${key} from localStorage:`, e);
+            }
+        };
+
+        const keysToMigrate = [
+            STORAGE_KEYS.SAVED_PLANS,
+            STORAGE_KEYS.MANUAL_ASSIGNMENTS,
+            STORAGE_KEYS.MANUAL_LINES,
+            STORAGE_KEYS.ASSIGNMENT_CLONES,
+            STORAGE_KEYS.RAW_TABLES,
+            STORAGE_KEYS.SCHEDULE_DATES,
+            STORAGE_KEYS.PLAN_HASHES,
+            STORAGE_KEYS.ALL_EMPLOYEES,
+            STORAGE_KEYS.DEPARTMENT_MASTER_LIST,
+            STORAGE_KEYS.PLANNING_STATE,
+            STORAGE_KEYS.WORKER_REGISTRY
+        ];
+
+        keysToMigrate.forEach(migrateKeyIfMissing);
+    }, [remoteSnapshot, isRemoteStorageEnabled, persistStateKey]);
 
     useEffect(() => {
         if (restoring) return;
@@ -694,6 +909,218 @@ export const DataProvider = ({ children }) => {
         reader.readAsArrayBuffer(selectedFile);
     };
 
+    /**
+     * Частичный импорт Excel-файла в текущий план по выбранным частям.
+     * options:
+     * - importCalendar: расписание (дни, смены, хеши)
+     * - importRoster: штат и линии (lineTemplates/floaters/workerRegistry)
+     */
+    const importPlanFromExcelFilePartial = useCallback(
+        async (file, options) => {
+            if (!file) return;
+            if (isReadOnly) {
+                notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
+                return;
+            }
+
+            const { importCalendar, importRoster } = options || {};
+
+            setLoading(true);
+            setError('');
+
+            try {
+                const data = await file.arrayBuffer();
+                const workbook = XLSX.read(new Uint8Array(data), {
+                    type: 'array',
+                    cellDates: false,
+                    cellNF: true
+                });
+
+                const loadedData = {};
+                TARGET_CONFIG.forEach(target => {
+                    const sheetName = workbook.SheetNames.find(s =>
+                        s.toLowerCase().includes(
+                            target.expectedSheet.toLowerCase().split('.')[0]
+                        )
+                    );
+                    if (sheetName) {
+                        loadedData[target.type] = XLSX.utils.sheet_to_json(
+                            workbook.Sheets[sheetName],
+                            { header: 1, raw: false }
+                        );
+                    }
+                });
+
+                const hasDemand = !!loadedData['demand'];
+                const hasRoster = !!loadedData['roster'];
+
+                if ((importCalendar && !hasDemand) || (importRoster && !hasRoster)) {
+                    throw new Error('Файл Excel не содержит ожидаемые листы (Расписание/Справочник).');
+                }
+
+                const currentRaw = rawTables || {};
+                let nextRaw = { ...currentRaw };
+
+                if (importCalendar && hasDemand) {
+                    nextRaw = { ...nextRaw, demand: loadedData['demand'] };
+                }
+                if (importRoster && hasRoster) {
+                    nextRaw = { ...nextRaw, roster: loadedData['roster'] };
+                }
+
+                let nextPlanHashes = { ...planHashes };
+                let keptAssignments = manualAssignments || {};
+                let nextScheduleDates = scheduleDates || [];
+
+                const demandToUse = nextRaw.demand;
+                const rosterToUse = nextRaw.roster;
+
+                // 1) Пересчёт календаря и справочника, если есть и demand, и roster
+                if (demandToUse && rosterToUse) {
+                    const analysis = analyzeDataPure(demandToUse, rosterToUse);
+                    nextScheduleDates = analysis.scheduleDates;
+                    setScheduleDates(analysis.scheduleDates);
+                    setLineTemplates(analysis.lineTemplates);
+                    setFloaters(analysis.floaters);
+                    setWorkerRegistry(analysis.workerRegistry);
+
+                    const registryForStorage = {};
+                    Object.entries(analysis.workerRegistry || {}).forEach(([key, value]) => {
+                        registryForStorage[key] = {
+                            ...value,
+                            competencies: Array.from(value.competencies || [])
+                        };
+                    });
+                    persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, analysis.lineTemplates);
+                    persistStateKey(STORAGE_KEYS.FLOATERS, analysis.floaters);
+                    persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
+                    persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, analysis.scheduleDates);
+                } else if (demandToUse && !rosterToUse) {
+                    // Только календарь: считаем scheduleDates напрямую из demand
+                    const rawDates = (demandToUse.slice(1) || [])
+                        .map(row => normalizeExcelDate(row[11]))
+                        .filter(d => d);
+                    const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
+                    const sortedStringDates = uniqueTimestamps.map(ts => formatDateLocal(new Date(ts)));
+                    nextScheduleDates = sortedStringDates;
+                    setScheduleDates(sortedStringDates);
+                    persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, sortedStringDates);
+                }
+
+                // 2) Пересчёт хешей смен и сохранение ручных назначений, когда есть и demand, и roster
+                if (demandToUse && rosterToUse) {
+                    const { templates: newTemplates } = preAnalyzeRoster(rosterToUse);
+                    const newHashes = buildPlanHashes(demandToUse, newTemplates);
+
+                    const oldHashes = planHashes || {};
+                    const newManual = {};
+                    const changedDaysSet = new Set();
+                    let preservedCount = 0;
+
+                    Object.entries(manualAssignments || {}).forEach(([key, assignment]) => {
+                        const parts = key.split('_');
+                        const date = parts[0];
+                        const shift = parts[1];
+                        const compositeKey = `${date}_${shift}`;
+                        if (newHashes[compositeKey] && newHashes[compositeKey] === oldHashes[compositeKey]) {
+                            newManual[key] = assignment;
+                            preservedCount++;
+                        } else {
+                            changedDaysSet.add(JSON.stringify({ date, shift }));
+                        }
+                    });
+
+                    keptAssignments = newManual;
+                    nextPlanHashes = newHashes;
+
+                    const changedDays = Array.from(changedDaysSet).map(s => JSON.parse(s));
+                    let sameDaysCount = 0;
+                    Object.keys(newHashes).forEach(k => {
+                        if (oldHashes[k] === newHashes[k]) sameDaysCount++;
+                    });
+
+                    if (Object.keys(oldHashes).length > 0) {
+                        setUpdateReport({
+                            savedDays: sameDaysCount,
+                            savedAssignmentsCount: preservedCount,
+                            changedDays
+                        });
+                    }
+
+                    setManualAssignments(newManual);
+                    persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, newManual);
+                    setPlanHashes(newHashes);
+                    persistStateKey(STORAGE_KEYS.PLAN_HASHES, newHashes);
+                }
+
+                setRawTables(nextRaw);
+                persistStateKey(STORAGE_KEYS.RAW_TABLES, nextRaw);
+
+                if (nextScheduleDates && nextScheduleDates.length > 0) {
+                    setSelectedDate(prev =>
+                        nextScheduleDates.includes(prev) ? prev : nextScheduleDates[0]
+                    );
+                }
+
+                // Если нет активного плана и мы импортировали календарь — создаём новый план автоматически,
+                // чтобы не было ситуации «нет активного плана, но расписание есть».
+                if (!currentPlanId && importCalendar && demandToUse) {
+                    const createdAt = new Date().toISOString();
+                    const name = file?.name || 'Новый план';
+                    const nextPlan = {
+                        id: generatePlanId(),
+                        name,
+                        createdAt,
+                        type: 'Operational',
+                        data: {
+                            rawTables: { demand: demandToUse },
+                            scheduleDates: nextScheduleDates || [],
+                            planHashes: nextPlanHashes || {},
+                            manualAssignments: {},
+                            manualLines: {},
+                            assignmentClones: {},
+                            autoReassignEnabled: true
+                        }
+                    };
+                    savedPlansSourceRef.current = 'importPlanFromExcelFilePartial';
+                    setSavedPlans((prev) => {
+                        const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
+                        return [...cleared, nextPlan];
+                    });
+                    setCurrentPlanId(nextPlan.id);
+                }
+
+                setStep('dashboard');
+            } catch (err) {
+                setError(err?.message || 'Ошибка загрузки файла');
+            } finally {
+                setLoading(false);
+            }
+        },
+        [
+            isReadOnly,
+            notify,
+            rawTables,
+            currentPlanId,
+            planHashes,
+            manualAssignments,
+            scheduleDates,
+            setScheduleDates,
+            setLineTemplates,
+            setFloaters,
+            setWorkerRegistry,
+            setManualAssignments,
+            setPlanHashes,
+            setRawTables,
+            setSelectedDate,
+            setStep,
+            persistStateKey,
+            setSavedPlans,
+            setCurrentPlanId,
+            savedPlansSourceRef
+        ]
+    );
+
     const parseExcelToPlanData = parseExcelToPlanDataFromModule;
 
     const addPlan = useCallback((plan) => {
@@ -901,6 +1328,41 @@ export const DataProvider = ({ children }) => {
         applyAutoReassignForDateFromModule(dateStr, getShiftsForDate, manualAssignments, updateAssignments, workerRegistry);
     }, [getShiftsForDate, manualAssignments, updateAssignments, workerRegistry, applyAutoReassignForDateFromModule]);
 
+    const resetAssignmentsForShift = useCallback((dateStr, shiftId) => {
+        if (!dateStr || !shiftId) return;
+        setManualAssignments((prev) => {
+            const next = { ...prev };
+            const prefix = `${dateStr}_${shiftId}_`;
+            Object.keys(next).forEach((key) => {
+                if (key.startsWith(prefix)) {
+                    delete next[key];
+                }
+            });
+            persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, next);
+            return next;
+        });
+    }, [setManualAssignments, persistStateKey]);
+
+    const resetAssignmentsForDay = useCallback((dateStr) => {
+        if (!dateStr) return;
+        setManualAssignments((prev) => {
+            const next = { ...prev };
+            const prefix = `${dateStr}_`;
+            Object.keys(next).forEach((key) => {
+                if (key.startsWith(prefix)) {
+                    delete next[key];
+                }
+            });
+            persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, next);
+            return next;
+        });
+    }, [setManualAssignments, persistStateKey]);
+
+    const resetAssignmentsAll = useCallback(() => {
+        setManualAssignments({});
+        persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
+    }, [setManualAssignments, persistStateKey]);
+
     const assignmentClonesForDisplay = pendingUpdates[STORAGE_KEYS.ASSIGNMENT_CLONES] ?? assignmentClones;
     const cloneCountsByName = useMemo(() => {
         const counts = {};
@@ -1022,8 +1484,11 @@ export const DataProvider = ({ children }) => {
         lineTemplates: display.lineTemplates,
         floaters: display.floaters,
         workerRegistry: display.workerRegistry,
-        setWorkerRegistry, setLineTemplates, setFloaters,
-        handleWorkerEditSave, handleWorkerDelete
+        setWorkerRegistry,
+        setLineTemplates,
+        setFloaters,
+        handleWorkerEditSave,
+        handleWorkerDelete
     }), [display.lineTemplates, display.floaters, display.workerRegistry, handleWorkerEditSave, handleWorkerDelete]);
 
     const assignmentsValue = useMemo(() => ({
@@ -1047,12 +1512,14 @@ export const DataProvider = ({ children }) => {
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
         importPlanFromJson, importPlanFromExcelFile,
+        pullRosterFromPlanToGlobal,
+        importPlanFromExcelFilePartial,
         createPlanFromSchedule, comparePlanSnapshots, buildPlanSlots
     }), [
         display.savedPlans, display.currentPlanId,
         processExcelFile, parseExcelToPlanData, saveCurrentAsNewPlan,
         loadPlan, loadPlanQueue, updateOperationalTimeline, updateOperationalFacts, updatePlanPlanningState, setPlanType, deletePlan,
-        importPlanFromJson, importPlanFromExcelFile,
+        importPlanFromJson, importPlanFromExcelFile, pullRosterFromPlanToGlobal, importPlanFromExcelFilePartial,
         createPlanFromSchedule, comparePlanSnapshots, buildPlanSlots
     ]);
 
@@ -1091,9 +1558,12 @@ export const DataProvider = ({ children }) => {
         chessTableWorkerStatus,
         setSyncStatus,
         persistStateKey,
+        dataChangeLog,
+        clearDataChangeLog,
         cloudStatus,
         pendingUpdates,
         wipeAllData,
+        wipeDataCategories,
         setCurrentPlanId,
         setWorkerRegistry, setLineTemplates, setFloaters,
         fileInputRef,
@@ -1109,6 +1579,8 @@ export const DataProvider = ({ children }) => {
         deletePlan,
         importPlanFromJson,
         importPlanFromExcelFile,
+        pullRosterFromPlanToGlobal,
+        importPlanFromExcelFilePartial,
         updateAssignments,
         addManualLine,
         removeManualLine,
@@ -1126,9 +1598,12 @@ export const DataProvider = ({ children }) => {
         cloneAssignedWorker,
         removeCloneEntry,
         calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
-        applyAutoReassignForDate
+        applyAutoReassignForDate,
+        resetAssignmentsForShift,
+        resetAssignmentsForDay,
+        resetAssignmentsAll
     }), [
-        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, setShowSyncLog, remoteSnapshot, cloudStatus, pendingUpdates, isReadOnly, wipeAllData,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, setShowSyncLog, remoteSnapshot, cloudStatus, pendingUpdates, isReadOnly, wipeAllData, dataChangeLog, clearDataChangeLog,
         display,
         planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         step, viewMode, selectedDate,
@@ -1156,6 +1631,8 @@ export const DataProvider = ({ children }) => {
         deletePlan,
         importPlanFromJson,
         importPlanFromExcelFile,
+        pullRosterFromPlanToGlobal,
+        importPlanFromExcelFilePartial,
         comparePlanSnapshots,
         addManualLine,
         removeManualLine,
@@ -1169,11 +1646,13 @@ export const DataProvider = ({ children }) => {
         removeCloneEntry,
         exportChessTableToExcel,
         exportScheduleByLinesToExcel,
-        persistStateKey
+        persistStateKey,
+        wipeDataCategories
     ]);
 
+    const contextValue = value != null ? { ...value, __DATA_PROVIDER: true } : { __DATA_PROVIDER: true };
     return (
-        <DataContext.Provider value={value ?? {}}>
+        <DataContext.Provider value={contextValue}>
             <WorkersProvider value={workersValue}>
                 <AssignmentsProvider value={assignmentsValue}>
                     <PlansProvider value={plansValue}>
@@ -1189,7 +1668,7 @@ export const DataProvider = ({ children }) => {
 
 export const useData = () => {
     const context = useContext(DataContext);
-    if (context == null || typeof context !== 'object') {
+    if (context == null || typeof context !== 'object' || context.__DATA_PROVIDER !== true) {
         throw new Error('useData must be used within a DataProvider');
     }
     return context;

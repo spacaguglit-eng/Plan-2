@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { Cloud, CloudOff } from 'lucide-react';
-import { useData } from '../context/DataContext';
+import { useData } from '../../context/DataContext';
 
 /**
  * Глобальный индикатор статуса синхронизации.
@@ -76,5 +76,3 @@ const SyncIndicator = ({ className = '' }) => {
 };
 
 export default React.memo(SyncIndicator);
-
-
