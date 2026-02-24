@@ -20,6 +20,77 @@ const DEFAULT_LINE_OPTIONS = [
     'Линия 11 (Лимонады)'
 ];
 
+// Базовые скорости (шт/час) по линиям и таре для вкладки планирования производства.
+// Используются как дефолтные значения, если в сохранённом состоянии нет своих speedLines.
+const DEFAULT_SPEED_LINES = [
+    {
+        name: 'Линия 1',
+        entries: [
+            { format: '1.8 л', speed: 1000 }
+        ]
+    },
+    {
+        name: 'Линия 2',
+        entries: [
+            { format: '0.25 л', speed: 6500 }
+        ]
+    },
+    {
+        name: 'Линия 3',
+        entries: [
+            { format: '0.75 л', speed: 3700 },
+            { format: '1 л', speed: 3700 }
+        ]
+    },
+    {
+        name: 'Линия 4',
+        entries: [
+            { format: '0.25 л', speed: 5600 },
+            { format: '0.33 л', speed: 5600 }
+        ]
+    },
+    {
+        name: 'Линия 5 (Сиропы)',
+        entries: [
+            { format: '0.25 л', speed: 2900 },
+            { format: '1 л', speed: 2200 }
+        ]
+    },
+    {
+        name: 'Линия 6 (Bag-in-Box)',
+        entries: [
+            { format: '3 л', speed: 300 }
+        ]
+    },
+    {
+        name: 'Линия 7 (Топпинги)',
+        entries: [
+            { format: '1 кг', speed: 200 }
+        ]
+    },
+    {
+        name: 'Линия 8 (Соусы)',
+        entries: [
+            { format: '3 кг', speed: 200 },
+            { format: '5 кг', speed: 200 },
+            { format: '10 кг', speed: 200 }
+        ]
+    },
+    {
+        name: 'Линия 10 (ПЭТ)',
+        entries: [
+            { format: '1 л', speed: 450 }
+        ]
+    },
+    {
+        // Линия 12 присутствует в отчёте производства, даже если нет шаблона линии в плане.
+        name: 'Линия 12',
+        entries: [
+            { format: '6 кг', speed: 50 }
+        ]
+    }
+];
+
 const TRANSITION_RULES_VERSION = 'rules_sets_2026_01_27';
 
 /** Распознаёт строку как событие CIP/перехода. Возвращает eventKey или null. */
@@ -284,7 +355,9 @@ const PlanningView = () => {
         () => resolveLineOption(storedPlanning?.selectedPlanLine)
     );
     const [speedLines, setSpeedLines] = useState(
-        () => storedPlanning?.speedLines || []
+        () => (Array.isArray(storedPlanning?.speedLines) && storedPlanning.speedLines.length > 0)
+            ? storedPlanning.speedLines
+            : DEFAULT_SPEED_LINES
     );
     // Храним данные по линиям: каждая линия - отдельный массив
     const [productsByLine, setProductsByLine] = useState(initializeProductsByLine);
@@ -778,7 +851,7 @@ const PlanningView = () => {
             if (!loaded || typeof loaded !== 'object') {
                 setProductsByLine({});
                 setCipBetweenByLine({});
-                setSpeedLines([]);
+                setSpeedLines(DEFAULT_SPEED_LINES);
                 setCipDurations({});
                 setBaseProducts([]);
                 setLineWorkDates({});
