@@ -545,9 +545,6 @@ export const DataProvider = ({ children }) => {
             const next = typeof updater === 'function' ? updater(prev) : updater;
             return (next != null && typeof next === 'object' && !Array.isArray(next) ? normalizeManualAssignments(next) : next) ?? prev;
         });
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/edf51bd3-9779-4fc3-8cd6-5ed3da614cff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DataContext.jsx:360',message:'Passing currentPlanId to applyRemoteSnapshot',data:{currentPlanId,hasRemoteSnapshot:!!remoteSnapshot},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         applyRemoteSnapshotFromService(remoteSnapshot, {
             setSavedPlans,
             setCurrentPlanId,
