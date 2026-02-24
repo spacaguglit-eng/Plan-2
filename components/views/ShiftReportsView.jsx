@@ -486,7 +486,8 @@ function applyAllFacts(planFlat, operationalFacts, boundaries, scheduleDates) {
 
 const TABS = [
     { id: 'reports', label: 'Отчёты по сменам' },
-    { id: 'downtime', label: 'Простои' }
+    { id: 'downtime', label: 'Простои' },
+    { id: 'empty', label: 'Пустая вкладка' }
 ];
 
 const formatDuration = (minutes) => {
@@ -964,6 +965,13 @@ export default function ShiftReportsView() {
                             )}
                         </tbody>
                     </table>
+                </div>
+            </div>
+            )}
+            {activeTab === 'empty' && (
+            <div className="flex-1 min-h-0 bg-white border border-t-0 border-slate-200 rounded-b-xl overflow-hidden flex flex-col">
+                <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
+                    Пустая вкладка
                 </div>
             </div>
             )}

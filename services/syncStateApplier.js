@@ -171,24 +171,60 @@ export function applyRemoteSnapshot(snapshot, ctx) {
             })();
 
             if (!preferLocal) {
-                const remotePlanIdEntry = snapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
-                if (!shouldSkip(STORAGE_KEYS.CURRENT_PLAN_ID, remotePlanIdEntry)) {
-                    const { value: remotePlanId } = unwrap(remotePlanIdEntry);
-                    if (remotePlanId) {
-                        setCurrentPlanId((prev) => (prev === remotePlanId ? prev : remotePlanId));
-                        const planToLoad = remotePlans.find((p) => p.id === remotePlanId);
-                        if (planToLoad?.data) {
-                            let dataToApply = planToLoad.data;
-                            if (currentPlanId === remotePlanId && (hasPendingPlanningState || pending[STORAGE_KEYS.MANUAL_LINES] != null || pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] != null)) {
-                                dataToApply = {
-                                    ...planToLoad.data,
-                                    ...(hasPendingPlanningState && { planningState: pendingPlanningState }),
-                                    ...(pending[STORAGE_KEYS.MANUAL_LINES] != null && { manualLines: pending[STORAGE_KEYS.MANUAL_LINES] }),
-                                    ...(pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] != null && { manualAssignments: pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] })
-                                };
-                            }
-                            applyPlanData(dataToApply);
+                // Читаем currentPlanId напрямую из localStorage как fallback, если он не передан или равен null
+                let effectiveCurrentPlanId = currentPlanId;
+                if (!effectiveCurrentPlanId) {
+                    try {
+                        const storageKey = STORAGE_KEYS.CURRENT_PLAN_ID;
+                        const stored = localStorage.getItem(storageKey);
+                        if (stored) {
+                            effectiveCurrentPlanId = stored;
                         }
+                    } catch (e) {
+                        // Ignore localStorage errors
+                    }
+                }
+                
+                const remotePlanIdEntry = snapshot[STORAGE_KEYS.CURRENT_PLAN_ID];
+                const shouldSkipResult = shouldSkip(STORAGE_KEYS.CURRENT_PLAN_ID, remotePlanIdEntry);
+                let remotePlanId = null;
+                
+                if (!shouldSkipResult && remotePlanIdEntry) {
+                    const unwrapped = unwrap(remotePlanIdEntry);
+                    remotePlanId = unwrapped?.value;
+                } else if (!remotePlanIdEntry && remotePlans && remotePlans.length > 0) {
+                    if (effectiveCurrentPlanId) {
+                        const planExists = remotePlans.find((p) => p.id === effectiveCurrentPlanId);
+                        if (planExists) {
+                            remotePlanId = effectiveCurrentPlanId;
+                        }
+                    }
+                    
+                    if (!remotePlanId) {
+                        const sortedPlans = [...remotePlans].sort((a, b) => {
+                            const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+                            const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+                            return dateB - dateA;
+                        });
+                        remotePlanId = sortedPlans[0]?.id;
+                    }
+                }
+                
+                if (remotePlanId) {
+                    const wasAlreadySet = currentPlanId === remotePlanId;
+                    setCurrentPlanId((prev) => (prev === remotePlanId ? prev : remotePlanId));
+                    const planToLoad = remotePlans.find((p) => p.id === remotePlanId);
+                    if (planToLoad?.data) {
+                        let dataToApply = planToLoad.data;
+                        if (wasAlreadySet && (hasPendingPlanningState || pending[STORAGE_KEYS.MANUAL_LINES] != null || pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] != null)) {
+                            dataToApply = {
+                                ...planToLoad.data,
+                                ...(hasPendingPlanningState && { planningState: pendingPlanningState }),
+                                ...(pending[STORAGE_KEYS.MANUAL_LINES] != null && { manualLines: pending[STORAGE_KEYS.MANUAL_LINES] }),
+                                ...(pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] != null && { manualAssignments: pending[STORAGE_KEYS.MANUAL_ASSIGNMENTS] })
+                            };
+                        }
+                        applyPlanData(dataToApply, { switchView: false });
                     }
                 }
             }

@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/brand.png" />
     <title>Планировщик смен</title>
     <!-- Библиотеки XLSX и ExcelJS теперь устанавливаются локально через npm, не требуют интернета -->
     <script>
@@ -10,7 +11,7 @@
         try {
           var raw = localStorage.getItem('plan_ui_scale');
           var scale = raw != null ? parseFloat(raw) : 1;
-          scale = Math.max(0.5, Math.min(1, Math.round(scale * 20) / 20));
+          scale = Math.max(0.5, Math.min(1.5, Math.round(scale * 20) / 20));
           document.documentElement.style.fontSize = (16 * scale) + 'px';
         } catch (e) {}
       })();

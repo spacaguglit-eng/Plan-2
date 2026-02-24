@@ -29,6 +29,13 @@ export const SyncProvider = ({ children }) => {
     const pendingUpdatesRef = useRef({});
     const pendingMetaRef = useRef({});
     const clientIdRef = useRef(getClientId());
+    const savedStatusTimeoutRef = useRef(null);
+
+    useEffect(() => {
+        return () => {
+            if (savedStatusTimeoutRef.current) clearTimeout(savedStatusTimeoutRef.current);
+        };
+    }, []);
 
     const unwrapSnapshotValue = useCallback((entry) => {
         if (entry && typeof entry === 'object' && 'value' in entry) {
@@ -67,7 +74,10 @@ export const SyncProvider = ({ children }) => {
     // Успешная запись в облако — сбрасываем статус
     useEffect(() => {
         setRemoteFlushSuccessCallback((keys) => {
-            setSyncStatus('idle');
+            // Показываем "saved" коротко, затем возвращаемся в idle
+            setSyncStatus('saved');
+            if (savedStatusTimeoutRef.current) clearTimeout(savedStatusTimeoutRef.current);
+            savedStatusTimeoutRef.current = setTimeout(() => setSyncStatus('idle'), 2500);
         });
         return () => setRemoteFlushSuccessCallback(null);
     }, []);
@@ -78,10 +88,21 @@ export const SyncProvider = ({ children }) => {
         pendingMetaRef.current = { ...pendingMetaRef.current, [key]: meta };
         setPendingUpdates((prev) => ({ ...prev, [key]: value }));
         setPendingMeta((prev) => ({ ...prev, [key]: meta }));
-        saveRemoteStateKey(key, value, meta).catch((err) =>
-            console.error(`Error saving ${key} to remote:`, err)
-        );
-    }, []);
+        
+        if (isRemoteStorageEnabled()) {
+            // Начали отправку в облако
+            setSyncStatus('syncing');
+            saveRemoteStateKey(key, value, meta).catch((err) =>
+                console.error(`Error saving ${key} to remote:`, err)
+            );
+        } else {
+            try {
+                localStorage.setItem(key, JSON.stringify(value));
+            } catch (e) {
+                console.error(`Error saving ${key} to localStorage:`, e);
+            }
+        }
+    }, [isRemoteStorageEnabled, setSyncStatus]);
 
     const cloudStatus = useMemo(() => {
         if (!isRemoteStorageEnabled()) return { status: 'off' };

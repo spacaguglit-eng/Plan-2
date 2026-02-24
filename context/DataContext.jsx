@@ -1,20 +1,13 @@
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import ExcelJS from 'exceljs';
 import { useNotification } from '../components/common/Toast.jsx';
 import {
     STORAGE_KEYS,
-    debounce,
     cleanVal,
     extractShiftNumber,
     normalizeName,
-    matchNames,
     isLineMatch,
-    expandCompositeLineKey,
-    cyrb53,
-    parseWorkerStatus,
     checkWorkerAvailability,
-    parseCellStrict,
     formatDateLocal,
     normalizeExcelDate
 } from '../utils';
@@ -26,6 +19,31 @@ import { WorkersProvider, useWorkers } from './WorkersContext';
 import { AssignmentsProvider, useAssignments } from './AssignmentsContext';
 import { PlansProvider, usePlans } from './PlansContext';
 import { PlanningProvider, usePlanning } from './PlanningContext';
+import {
+    generatePlanId,
+    restoreDemandDates,
+    serializeWorkerRegistry,
+    hydrateWorkerRegistry,
+    normalizeLineTemplates,
+    normalizeManualAssignments,
+    normalizePlanData,
+    createManualSlotId,
+    buildManualLineSlotIds
+} from './modules/planUtils';
+import {
+    buildPlanHashes,
+    preAnalyzeRoster,
+    createAnalyzeData
+} from './modules/useDataAnalysis';
+import { buildPlanSlots, useShiftsOperations } from './modules/useShiftsOperations';
+import { usePlanOperations } from './modules/usePlanOperations';
+import { useAssignmentsOperations } from './modules/useAssignmentsOperations';
+import { useChessTable } from './modules/useChessTable';
+import {
+    exportWithExcelJS,
+    exportWithXLSX,
+    exportScheduleByLinesToExcel as exportScheduleByLinesToExcelFromModule
+} from './modules/exportUtils';
 
 const DataContext = createContext(null);
 
@@ -68,7 +86,6 @@ export const DataProvider = ({ children }) => {
         }
     }, [wipeRemoteStorage, isRemoteStorageEnabled, notify]);
 
-    // --- STATE ---
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
     const [restoring, setRestoring] = useState(true);
@@ -81,7 +98,17 @@ export const DataProvider = ({ children }) => {
     const [savedPlans, setSavedPlans] = useState([]);
     const savedPlansSourceRef = useRef(null);
     const savedPlansRef = useRef([]);
-    const [currentPlanId, setCurrentPlanId] = useState(null);
+    const [currentPlanId, setCurrentPlanId] = useState(() => {
+        try {
+            const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_PLAN_ID);
+            if (stored) {
+                return stored;
+            }
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+        return null;
+    });
     const [planningStateVersion, setPlanningStateVersion] = useState(0);
     const [planningStateToLoad, setPlanningStateToLoad] = useState(null);
 
@@ -93,7 +120,6 @@ export const DataProvider = ({ children }) => {
     const [viewMode, setViewMode] = useState('production');
     const [selectedDate, setSelectedDate] = useState('');
     
-    // UI State that needs to be global
     const [targetScrollBrigadeId, setTargetScrollBrigadeId] = useState(null);
     const [manualAssignments, setManualAssignments] = useState({});
     
@@ -116,7 +142,6 @@ export const DataProvider = ({ children }) => {
     const [rvModalData, setRvModalData] = useState(null);
     const [editingWorker, setEditingWorker] = useState(null);
 
-    // Chess Table Filters (Global needed for export functions)
     const [chessFilterShift, setChessFilterShift] = useState('all');
     const [chessSearch, setChessSearch] = useState('');
     const [isGlobalFill, setIsGlobalFill] = useState(false);
@@ -128,12 +153,9 @@ export const DataProvider = ({ children }) => {
     }, [autoReassignEnabled, restoring, persistStateKey]);
     const [chessDisplayLimit, setChessDisplayLimit] = useState(50);
 
-    // Chess Table (Worker offload)
     const USE_CHESS_WORKER = true;
     const [chessTableWorkerResult, setChessTableWorkerResult] = useState(null);
-    const [chessTableWorkerStatus, setChessTableWorkerStatus] = useState({ status: 'idle', error: null, requestId: 0 });
-    const chessTableWorkerRef = useRef(null);
-    const chessTableWorkerReqIdRef = useRef(0);
+    const [chessTableWorkerStatusState, setChessTableWorkerStatus] = useState({ status: 'idle', error: null, requestId: 0 });
 
     // Verification (СКУД) — один для всех планов, сохраняется в облако
     const [factData, setFactDataState] = useState(null);
@@ -149,7 +171,6 @@ export const DataProvider = ({ children }) => {
         if (!restoring) persistStateKey(STORAGE_KEYS.FACT_DATES, next);
     }, [factDates, restoring, persistStateKey]);
 
-    // Глобальные данные (облако)
     const [allEmployees, setAllEmployeesState] = useState({});
     const [departmentMasterList, setDepartmentMasterListState] = useState(null);
     const [planningState, setPlanningStateState] = useState({});
@@ -185,10 +206,9 @@ export const DataProvider = ({ children }) => {
     const setProductionLineNorms = useCallback((value) => {
         const next = typeof value === 'function' ? value(productionLineNorms) : value;
         setProductionLineNormsState(next);
-        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, next);
+        if (!restoring)         persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, next);
     }, [productionLineNorms, restoring, persistStateKey]);
 
-    // Ошибка синхронизации: откат к кэшу из remote (вызывается из remoteStorage)
     useEffect(() => {
         setRemoteFlushErrorCallback((err, failedKeys) => {
             if (!failedKeys?.length) return;
@@ -218,7 +238,6 @@ export const DataProvider = ({ children }) => {
     const isReadOnly = false;
 
     const fileInputRef = useRef(null);
-    const syncTimeoutRef = useRef(null);
     const isLoadingPlanRef = useRef(false);
     const hasAutoLoadedLastPlanRef = useRef(false);
     const lastSavedPlansSerializedRef = useRef(null);
@@ -229,121 +248,99 @@ export const DataProvider = ({ children }) => {
         { tableName: 'Люд', expectedSheet: 'Справочник', type: 'roster' }
     ]), []);
 
-    const generatePlanId = () => `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-    const restoreDemandDates = (demandTable) => {
-        if (!Array.isArray(demandTable)) return demandTable;
-        return demandTable.map((row, i) => {
-            if (i === 0) return row;
-            const dateVal = row[11];
-            // Нормализуем дату для избежания проблем с часовым поясом
-            const normalized = normalizeExcelDate(dateVal);
-            if (normalized) {
-                row[11] = normalized;
-            }
-            return row;
-        });
-    };
-
-    const serializeWorkerRegistry = (registry) => {
-        const out = {};
-        Object.entries(registry || {}).forEach(([key, value]) => {
-            out[key] = { ...value, competencies: Array.from(value?.competencies || []) };
-        });
-        return out;
-    };
-
-    const hydrateWorkerRegistry = (registry) => {
-        const restored = {};
-        Object.entries(registry || {}).forEach(([key, value]) => {
-            restored[key] = {
-                ...value,
-                competencies: value?.competencies ? new Set(value.competencies) : new Set()
-            };
-        });
-        return restored;
-    };
-
-    const buildPlanSnapshot = useCallback(() => ({
+    const planOperations = usePlanOperations({
         rawTables,
         scheduleDates,
         planHashes,
         lineTemplates,
         floaters,
-        workerRegistry: serializeWorkerRegistry(workerRegistry),
+        workerRegistry,
         manualAssignments,
         manualLines,
         assignmentClones,
-        autoReassignEnabled
-    }), [rawTables, scheduleDates, planHashes, lineTemplates, floaters, workerRegistry, manualAssignments, manualLines, assignmentClones, autoReassignEnabled]);
+        autoReassignEnabled,
+        savedPlans,
+        currentPlanId,
+        selectedDate,
+        setRawTables,
+        setScheduleDates,
+        setPlanHashes,
+        setLineTemplates,
+        setFloaters,
+        setWorkerRegistry,
+        setManualAssignments,
+        setManualLines,
+        setAssignmentClones,
+        setAutoReassignEnabled,
+        setSavedPlans,
+        setCurrentPlanId,
+        setSelectedDate,
+        setStep,
+        setPlanningStateToLoad,
+        setPlanningStateVersion,
+        savedPlansSourceRef,
+        draftPlanIdRef,
+        isLoadingPlanRef,
+        persistStateKey,
+        notify,
+        isReadOnly
+    });
 
-    const normalizeManualRoleForId = (roleTitle) => {
-        return String(roleTitle || 'role').replace(/\s+/g, '_');
-    };
+    const {
+        buildPlanSnapshot,
+        applyPlanData,
+        parseExcelToPlanData: parseExcelToPlanDataFromModule,
+        saveCurrentAsNewPlan,
+        loadPlan,
+        loadPlanQueue,
+        updateOperationalTimeline,
+        updateOperationalFacts,
+        updatePlanPlanningState,
+        setPlanType,
+        deletePlan,
+        importPlanFromJson,
+        importPlanFromExcelFile,
+        createPlanFromSchedule,
+        comparePlanSnapshots
+    } = planOperations;
 
-    const createManualSlotId = (date, shiftId, lineId, roleTitle, index) => {
-        const roleKey = normalizeManualRoleForId(roleTitle);
-        return `${date}_${shiftId}_manual_${lineId}_${roleKey}_${index}`;
-    };
-
-    const buildManualLineSlotIds = (date, shiftId, manualLine) => {
-        if (!manualLine?.positions || manualLine.positions.length === 0) return [];
-        const ids = [];
-        manualLine.positions.forEach(pos => {
-            const count = Math.max(1, parseInt(pos.count, 10) || 1);
-            for (let idx = 0; idx < count; idx++) {
-                ids.push(createManualSlotId(date, shiftId, manualLine.id, pos.roleTitle, idx));
-            }
-        });
-        return ids;
-    };
-
-    const applyPlanData = (planData, { switchView = true } = {}) => {
-        if (!planData) return;
-        const nextRaw = { ...(planData.rawTables || {}) };
-        if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
-
-        // lineTemplates, floaters, workerRegistry восстанавливаем из roster — чтобы новые линии из Excel не терялись при смене плана
-        let lineTemplatesToApply = normalizeLineTemplates(planData.lineTemplates || {});
-        let floatersToApply = planData.floaters || { day: [], night: [] };
-        let workerRegistryToApply = hydrateWorkerRegistry(planData.workerRegistry || {});
-        if (nextRaw.demand && nextRaw.roster) {
-            const analysis = analyzeDataPure(nextRaw.demand, nextRaw.roster);
-            lineTemplatesToApply = analysis.lineTemplates;
-            floatersToApply = analysis.floaters;
-            workerRegistryToApply = analysis.workerRegistry;
-        }
-
-        setRawTables(nextRaw);
-        setScheduleDates(planData.scheduleDates || []);
-        setPlanHashes(planData.planHashes || {});
-        setLineTemplates(lineTemplatesToApply);
-        setFloaters(floatersToApply);
-        setWorkerRegistry(workerRegistryToApply);
-        persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, lineTemplatesToApply);
-        persistStateKey(STORAGE_KEYS.FLOATERS, floatersToApply);
-        const registryForStorage = {};
-        Object.entries(workerRegistryToApply || {}).forEach(([k, v]) => {
-            registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
-        });
-        persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
-        setManualAssignments(normalizeManualAssignments(planData.manualAssignments || {}));
-        const savedManualLines = planData.manualLines || {};
-        setManualLines(savedManualLines);
-        const savedClones = planData.assignmentClones || {};
-        setAssignmentClones(savedClones);
-        setAutoReassignEnabled(planData.autoReassignEnabled ?? true);
-        if (planData.scheduleDates?.length > 0) {
-            setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
-        }
-        if (switchView) setStep('dashboard');
-    };
-
-    // Загрузка только из облака: restoring снимается при первом применении remoteSnapshot
     useEffect(() => {
         if (!isRemoteStorageEnabled()) setRestoring(false);
         else setRestoring(true);
     }, []);
+
+    useEffect(() => {
+        if (isRemoteStorageEnabled()) return;
+        
+        try {
+            const savedPlansStr = localStorage.getItem(STORAGE_KEYS.SAVED_PLANS);
+            if (savedPlansStr) {
+                const parsed = JSON.parse(savedPlansStr);
+                if (Array.isArray(parsed)) {
+                    setSavedPlans(parsed);
+                }
+            }
+            
+            const currentPlanIdStr = localStorage.getItem(STORAGE_KEYS.CURRENT_PLAN_ID);
+            if (currentPlanIdStr) {
+                setCurrentPlanId(currentPlanIdStr);
+            }
+            
+            const manualAssignmentsStr = localStorage.getItem(STORAGE_KEYS.MANUAL_ASSIGNMENTS);
+            if (manualAssignmentsStr) {
+                try {
+                    const parsed = JSON.parse(manualAssignmentsStr);
+                    if (parsed && typeof parsed === 'object') {
+                        setManualAssignments(parsed);
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {
+            console.error('Failed to load from localStorage:', e);
+        }
+        
+        setRestoring(false);
+    }, [isRemoteStorageEnabled, setSavedPlans, setCurrentPlanId, setManualAssignments]);
 
     useEffect(() => {
         if (restoring) return;
@@ -359,8 +356,6 @@ export const DataProvider = ({ children }) => {
         persistStateKey(STORAGE_KEYS.CURRENT_PLAN_ID, currentPlanId);
     }, [currentPlanId, restoring, persistStateKey]);
 
-    // AUTO_REASSIGN_ENABLED, MANUAL_LINES, ASSIGNMENT_CLONES handled by wrappers
-
     const hasAppliedRemoteRef = useRef(false);
     const lastAppliedRemoteRevRef = useRef({});
     useEffect(() => {
@@ -375,6 +370,9 @@ export const DataProvider = ({ children }) => {
             const next = typeof updater === 'function' ? updater(prev) : updater;
             return (next != null && typeof next === 'object' && !Array.isArray(next) ? normalizeManualAssignments(next) : next) ?? prev;
         });
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/edf51bd3-9779-4fc3-8cd6-5ed3da614cff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'DataContext.jsx:360',message:'Passing currentPlanId to applyRemoteSnapshot',data:{currentPlanId,hasRemoteSnapshot:!!remoteSnapshot},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         applyRemoteSnapshotFromService(remoteSnapshot, {
             setSavedPlans,
             setCurrentPlanId,
@@ -454,8 +452,6 @@ export const DataProvider = ({ children }) => {
 
     savedPlansRef.current = savedPlans;
 
-    // --- LOGIC FUNCTIONS ---
-
     const saveSourceDataToLocal = (tables, hashes) => {
         try {
             persistStateKey(STORAGE_KEYS.RAW_TABLES, tables);
@@ -464,19 +460,6 @@ export const DataProvider = ({ children }) => {
             setError("Ошибка сохранения данных.");
         }
     };
-
-    const updateAssignments = useCallback((newAssignments) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
-            return;
-        }
-        if (viewMode !== 'dashboard') {
-            notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
-            return;
-        }
-        setManualAssignments(newAssignments);
-        persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, newAssignments);
-    }, [persistStateKey, viewMode, isReadOnly, notify]);
 
     const handleMatrixAssignment = useCallback((targetLineName, targetPosIdx, shiftId, newWorkerNames) => {
         if (isReadOnly) {
@@ -620,195 +603,15 @@ export const DataProvider = ({ children }) => {
         });
     }, [isReadOnly]);
 
-    const generateShiftHash = (dateStr, shiftNum, shiftType, activeLines, templates) => {
-        const linesFingerprint = activeLines.sort().map(lineName => {
-            const templateName = Object.keys(templates).find(t => isLineMatch(lineName, t));
-            const positions = templateName ? templates[templateName] : [];
-            const positionsStr = positions.map(p => `${p.role}:${p.count}`).sort().join('|');
-            return `${lineName}(${positionsStr})`;
-        }).join(';');
-        return cyrb53(`${dateStr}|${shiftNum}|${shiftType}|${linesFingerprint}`);
-    };
-
-    /** Составные ключи "Линия 1-2" раскладывает в "Линия 1" и "Линия 2" с одинаковым составом. */
-    const normalizeLineTemplates = (templates) => {
-        const result = {};
-        Object.entries(templates || {}).forEach(([key, positions]) => {
-            expandCompositeLineKey(key).forEach((atomic) => {
-                result[atomic] = positions;
-            });
-        });
-        return result;
-    };
-
-    /** SlotId вида date_shift_lineName_role_index: составную линию раскладывает в отдельные ключи. */
-    const normalizeManualAssignments = (assignments) => {
-        const result = {};
-        Object.entries(assignments || {}).forEach(([slotId, value]) => {
-            const parts = slotId.split('_');
-            if (parts.length >= 5) {
-                const linePart = parts[2];
-                const expanded = expandCompositeLineKey(linePart);
-                expanded.forEach((atomic) => {
-                    const newParts = [...parts];
-                    newParts[2] = atomic;
-                    result[newParts.join('_')] = value;
-                });
-            } else {
-                result[slotId] = value;
-            }
-        });
-        return result;
-    };
-
-    const preAnalyzeRoster = (rosterData) => {
-        const templates = {};
-        let lastLineName = '';
-        rosterData.slice(1).forEach(row => {
-            let lineName = cleanVal(row[4]);
-            const role = cleanVal(row[5]);
-            if (!lineName && role && lastLineName) lineName = lastLineName;
-            if (lineName) lastLineName = lineName;
-            const countVal = cleanVal(row[6]);
-            if (lineName && role && !role.toLowerCase().includes('подсобник')) {
-                const entry = { role, count: parseInt(countVal) || 1 };
-                expandCompositeLineKey(lineName).forEach((atomic) => {
-                    if (!templates[atomic]) templates[atomic] = [];
-                    templates[atomic].push(entry);
-                });
-            }
-        });
-        return { templates };
-    };
-
-    const analyzeDataPure = useCallback((demandData, rosterData) => {
-        const rawDates = demandData.slice(1).map(row => {
-            return normalizeExcelDate(row[11]);
-        }).filter(d => d);
-
-        const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
-        // Форматируем дату без учета часового пояса
-        const sortedStringDates = uniqueTimestamps.map(ts => formatDateLocal(new Date(ts)));
-
-        const templates = {};
-        const floaterMap = { day: new Map(), night: new Map() };
-        const registry = {};
-        let lastLineName = '';
-
-        rosterData.slice(1).forEach((row, rowIdx) => {
-            let lineName = cleanVal(row[4]);
-            const role = cleanVal(row[5]);
-            if (!lineName && role && lastLineName) lineName = lastLineName;
-            if (lineName) lastLineName = lineName;
-
-            const countVal = cleanVal(row[6]);
-            const roleLower = role.toLowerCase();
-            const shiftConfig = [
-                { id: '1', n: 7, c: 8, s: 9 },
-                { id: '2', n: 10, c: 11, s: 12 },
-                { id: '3', n: 13, c: 14, s: 15 },
-                { id: '4', n: 16, c: 17, s: 18 }
-            ];
-
-            if (roleLower.includes('подсобник') && countVal.length > 2 && !/^\d+$/.test(countVal)) {
-                const names = countVal.split(/[,;\n]+/).map(n => n.trim()).filter(n => n.length > 1);
-                let context = roleLower.includes('ночь') ? 'night' : 'day';
-                names.forEach(name => {
-                    const uniqueKey = name.replace(/\./g, '').trim().toLowerCase();
-                    if (!floaterMap[context].has(uniqueKey)) {
-                        floaterMap[context].set(uniqueKey, {
-                            name, role, type: 'floater', shiftContext: context, id: `floater_${context}_${uniqueKey}`
-                        });
-                    }
-                });
-                return;
-            }
-
-            if (lineName && role) {
-                const atomicLines = expandCompositeLineKey(lineName);
-                const homeLine = atomicLines[0];
-                const rosterMap = {};
-                shiftConfig.forEach(cfg => {
-                    const rawName = cleanVal(row[cfg.n]);
-                    const rawComp = cleanVal(row[cfg.c]);
-                    const rawStat = cleanVal(row[cfg.s]);
-                    if (rawName) {
-                        rosterMap[cfg.id] = rawName;
-                        const names = rawName.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1);
-                        names.forEach(name => {
-                            const parsedStatus = parseWorkerStatus(rawStat);
-                            const comps = rawComp ? rawComp.split(/[,;]+/).map(s => s.trim()) : [];
-                            const hasFiveDay = rawStat && String(rawStat).toLowerCase().includes('пятидневк');
-                            if (!registry[name]) {
-                                registry[name] = { name, role, homeLine, competencies: new Set(comps), status: parsedStatus, fiveDay: hasFiveDay };
-                            } else {
-                                comps.forEach(c => registry[name].competencies.add(c));
-                                if (!registry[name].status && parsedStatus) registry[name].status = parsedStatus;
-                                if (hasFiveDay) registry[name].fiveDay = true;
-                            }
-                        });
-                    }
-                });
-                const entry = { role, count: parseInt(countVal) || 1, roster: rosterMap };
-                atomicLines.forEach((atomic) => {
-                    if (!templates[atomic]) {
-                        templates[atomic] = [];
-                    }
-                    templates[atomic].push(entry);
-                });
-            }
-        });
-
-        return {
-            scheduleDates: sortedStringDates,
-            lineTemplates: templates,
-            floaters: { day: Array.from(floaterMap.day.values()), night: Array.from(floaterMap.night.values()) },
-            workerRegistry: registry
-        };
-    }, []);
-
-    const analyzeData = (demandData, rosterData) => {
-        const result = analyzeDataPure(demandData, rosterData);
-        const { scheduleDates: sortedStringDates, lineTemplates: templates, floaters: nextFloaters, workerRegistry: registry } = result;
-
-        setScheduleDates(sortedStringDates);
-        persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, sortedStringDates);
-        if (sortedStringDates.length > 0) setSelectedDate(prev => sortedStringDates.includes(prev) ? prev : sortedStringDates[0]);
-
-        setLineTemplates(templates);
-        setFloaters(nextFloaters);
-        setWorkerRegistry(registry);
-
-        persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, templates);
-        persistStateKey(STORAGE_KEYS.FLOATERS, nextFloaters);
-        const registryForStorage = {};
-        Object.entries(registry).forEach(([key, value]) => {
-            registryForStorage[key] = { ...value, competencies: Array.from(value.competencies || []) };
-        });
-        persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
-    };
-
-    const buildPlanHashes = (demandData, templates) => {
-        const newHashes = {};
-        const headers = demandData[0];
-        demandData.slice(1).forEach(row => {
-            const normalizedDate = normalizeExcelDate(row[11]);
-            if (!normalizedDate) return;
-            const dateStr = formatDateLocal(normalizedDate);
-
-            const shiftNum = extractShiftNumber(cleanVal(row[14]));
-            const shiftType = cleanVal(row[13]);
-            if (!shiftNum) return;
-
-            const activeLines = [];
-            for (let i = 15; i <= 26; i++) {
-                if ((parseInt(row[i]) || 0) > 0) activeLines.push(cleanVal(headers[i]));
-            }
-            const hash = generateShiftHash(dateStr, shiftNum, shiftType, activeLines, templates);
-            newHashes[`${dateStr}_${shiftNum}`] = hash;
-        });
-        return newHashes;
-    };
+    const analyzeData = createAnalyzeData({
+        setScheduleDates,
+        setLineTemplates,
+        setFloaters,
+        setWorkerRegistry,
+        setSelectedDate,
+        persistStateKey,
+        STORAGE_KEYS
+    });
 
     const processExcelFile = async (selectedFile) => {
         if (!selectedFile) return;
@@ -891,498 +694,7 @@ export const DataProvider = ({ children }) => {
         reader.readAsArrayBuffer(selectedFile);
     };
 
-    const parseExcelToPlanData = useCallback(async (selectedFile) => {
-        if (!selectedFile) return null;
-        const data = await selectedFile.arrayBuffer();
-        // Отключаем cellDates, чтобы получать даты как числа Excel, которые потом корректно парсим
-        const workbook = XLSX.read(new Uint8Array(data), { type: 'array', cellDates: false, cellNF: true });
-        const loadedData = {};
-        TARGET_CONFIG.forEach(target => {
-            const sheetName = workbook.SheetNames.find(s => s.toLowerCase().includes(target.expectedSheet.toLowerCase().split('.')[0]));
-            if (sheetName) loadedData[target.type] = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false });
-        });
-        if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
-
-        const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
-        const newHashes = buildPlanHashes(loadedData['demand'], newTemplates);
-        const analysis = analyzeDataPure(loadedData['demand'], loadedData['roster']);
-
-        return {
-            rawTables: loadedData,
-            planHashes: newHashes,
-            scheduleDates: analysis.scheduleDates,
-            lineTemplates: analysis.lineTemplates,
-            floaters: analysis.floaters,
-            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
-            manualAssignments: {}
-        };
-    }, [TARGET_CONFIG, buildPlanHashes, analyzeDataPure]);
-
-    const normalizePlanData = useCallback((planData) => ({
-        rawTables: planData.rawTables || {},
-        scheduleDates: planData.scheduleDates || [],
-        planHashes: planData.planHashes || {},
-        lineTemplates: planData.lineTemplates || {},
-        floaters: planData.floaters || { day: [], night: [] },
-        workerRegistry: planData.workerRegistry || {},
-        manualAssignments: planData.manualAssignments || {},
-        manualLines: planData.manualLines || {},
-        planningState: planData.planningState || null,
-        autoReassignEnabled: planData.autoReassignEnabled
-    }), []);
-
-    const createPlanFromSchedule = useCallback(({ demand, roster, name, planningState } = {}) => {
-        if (!Array.isArray(demand) || demand.length === 0) throw new Error('Пустое расписание (demand).');
-        if (!Array.isArray(roster) || roster.length === 0) throw new Error('Пустой справочник (roster).');
-
-        const rawTablesNext = { demand, roster };
-        const { templates: templatesFromRoster } = preAnalyzeRoster(roster);
-        const newHashes = buildPlanHashes(demand, templatesFromRoster);
-        const analysis = analyzeDataPure(demand, roster);
-
-        setRawTables(rawTablesNext);
-        setPlanHashes(newHashes);
-        setScheduleDates(analysis.scheduleDates);
-        setLineTemplates(analysis.lineTemplates);
-        setFloaters(analysis.floaters);
-        setWorkerRegistry(analysis.workerRegistry);
-        setManualAssignments({});
-        if (analysis.scheduleDates.length > 0) {
-            setSelectedDate(prev => analysis.scheduleDates.includes(prev) ? prev : analysis.scheduleDates[0]);
-        }
-
-        persistStateKey(STORAGE_KEYS.LINE_TEMPLATES, analysis.lineTemplates);
-        persistStateKey(STORAGE_KEYS.FLOATERS, analysis.floaters);
-        const registryForStorage = {};
-        Object.entries(analysis.workerRegistry || {}).forEach(([k, v]) => {
-            registryForStorage[k] = { ...v, competencies: Array.from(v?.competencies || []) };
-        });
-        persistStateKey(STORAGE_KEYS.WORKER_REGISTRY, registryForStorage);
-
-        const createdAt = new Date().toISOString();
-        const planName = (name || `План ${createdAt.slice(0, 10)}`).trim();
-        const planData = {
-            rawTables: rawTablesNext,
-            planHashes: newHashes,
-            scheduleDates: analysis.scheduleDates,
-            lineTemplates: analysis.lineTemplates,
-            floaters: analysis.floaters,
-            workerRegistry: serializeWorkerRegistry(analysis.workerRegistry),
-            manualAssignments: {},
-            manualLines,
-            assignmentClones,
-            planningState: planningState || null
-        };
-        const existingByName = savedPlans.find(p => (p.name || '').trim() === planName);
-        const planId = existingByName ? existingByName.id : (draftPlanIdRef.current || generatePlanId());
-        const plan = {
-            id: planId,
-            name: planName,
-            createdAt,
-            type: existingByName ? existingByName.type : null,
-            data: planData
-        };
-        savedPlansSourceRef.current = 'createPlanFromSchedule';
-        setSavedPlans(prev => {
-            const idx = prev.findIndex(p => p.id === planId);
-            return idx !== -1 ? (() => { const n = [...prev]; n[idx] = plan; return n; })() : [...prev, plan];
-        });
-        setCurrentPlanId(planId);
-        draftPlanIdRef.current = null;
-    }, [analyzeDataPure, assignmentClones, buildPlanHashes, manualLines, preAnalyzeRoster, savedPlans]);
-
-    const buildPlanSlots = useCallback((planData) => {
-        const normalized = normalizePlanData(planData || {});
-        const demandData = normalized.rawTables?.demand;
-        const templates = normalized.lineTemplates || {};
-        const assignments = normalized.manualAssignments || {};
-        const manualLines = normalized.manualLines || {};
-        const workerRegistry = normalized.workerRegistry || {};
-        const autoReassignEnabled = normalized.autoReassignEnabled ?? true;
-
-        if (!Array.isArray(demandData) || demandData.length === 0) {
-            return { slots: [], slotMap: new Map() };
-        }
-
-        const headers = Array.isArray(demandData[0]) ? demandData[0] : [];
-        const slots = [];
-        const availabilityCache = new Map();
-
-        const getAvailability = (name, dateStr) => {
-            const k = `${name}|${dateStr}`;
-            if (availabilityCache.has(k)) return availabilityCache.get(k);
-            const v = checkWorkerAvailability(name, dateStr, workerRegistry);
-            availabilityCache.set(k, v);
-            return v;
-        };
-
-        const rowAt = (row, idx) => {
-            if (row == null) return undefined;
-            if (Array.isArray(row)) return row[idx];
-            if (typeof row === 'object') return row[idx] ?? row[String(idx)];
-            return undefined;
-        };
-
-        const splitNames = (val) => {
-            if (!val) return [];
-            return String(val)
-                .split(/[,;\n/]+/)
-                .map(s => s.trim())
-                .filter(s => s.length > 1);
-        };
-
-        const getRosterNames = (pos, shiftNum) => {
-            const roster = pos?.roster;
-            if (!roster) return [];
-            const val = roster[shiftNum] ?? roster[String(shiftNum)] ?? roster[Number(shiftNum)];
-            return splitNames(val);
-        };
-
-        demandData.slice(1).forEach(row => {
-            if (!row) return;
-            const dateVal = rowAt(row, 11);
-            const normalizedDate = normalizeExcelDate(dateVal);
-            if (!normalizedDate) return;
-            const dateStr = formatDateLocal(normalizedDate);
-            if (!dateStr || dateStr.length < 5) return;
-
-            const shiftRaw = cleanVal(rowAt(row, 14));
-            const shiftNum = extractShiftNumber(shiftRaw);
-            if (!shiftNum) return;
-
-            const isNight = shiftRaw.toLowerCase().includes('ночь');
-
-            // 1. Collect Active Lines
-            const activeLines = [];
-            for (let i = 15; i <= 26; i++) {
-                if ((parseInt(rowAt(row, i), 10) || 0) > 0) {
-                    const headerName = cleanVal(rowAt(headers, i));
-                    if (headerName) activeLines.push(headerName);
-                }
-            }
-
-            // 2. Collect all potential workers (roster)
-            const allShiftWorkers = [];
-            
-            Object.keys(templates).forEach(lKey => {
-                templates[lKey].forEach(pos => {
-                    const names = getRosterNames(pos, shiftNum);
-                    names.forEach(name => {
-                        const regEntry = workerRegistry[name];
-                        const isFiveDay = regEntry?.fiveDay === true;
-                        if (isNight && isFiveDay) return;
-
-                        const avail = getAvailability(name, dateStr);
-                        const worker = {
-                            name,
-                            role: pos.role,
-                            homeLine: lKey,
-                            isBusy: false,
-                            isAvailable: avail.available,
-                            statusReason: avail.reason
-                        };
-                        allShiftWorkers.push(worker);
-                    });
-                });
-            });
-
-            // Один человек на смену — одна запись в пуле (иначе при «Линия 1-2» дубли попадают на обе линии)
-            const seenNames = new Set();
-            const uniqueShiftWorkers = [];
-            allShiftWorkers.forEach(w => {
-                const n = normalizeName(w.name);
-                if (seenNames.has(n)) return;
-                seenNames.add(n);
-                uniqueShiftWorkers.push(w);
-            });
-            allShiftWorkers.length = 0;
-            allShiftWorkers.push(...uniqueShiftWorkers);
-
-            // 3. Process assignments
-            const lineTasks = [];
-            // Один человек — одна линия в смене: если уже назначен на другую линию, слот делаем вакансией
-            const assignedNamesInShift = new Set();
-
-            activeLines.forEach(activeLineName => {
-                const templateName = Object.keys(templates).find(t => isLineMatch(activeLineName, t));
-                const positions = templateName ? templates[templateName] : [];
-
-                positions.forEach(pos => {
-                    const names = getRosterNames(pos, shiftNum);
-                    const count = Math.max(parseInt(pos.count) || 1, names.length);
-
-                    for (let i = 0; i < count; i++) {
-                        const slotId = `${dateStr}_${shiftNum}_${activeLineName}_${pos.role}_${i}`;
-                        let currentWorkerName = names[i] || null;
-                        let status = 'vacancy';
-
-                        if (currentWorkerName) {
-                            const norm = normalizeName(currentWorkerName);
-                            if (assignedNamesInShift.has(norm)) {
-                                currentWorkerName = null;
-                            } else {
-                                const wAvail = getAvailability(currentWorkerName, dateStr);
-                                const regEntry = workerRegistry[currentWorkerName];
-                                const isFiveDay = regEntry?.fiveDay === true;
-                                if (isNight && isFiveDay) status = 'vacancy';
-                                else status = wAvail.available ? 'filled' : 'vacancy';
-                            }
-                        }
-
-                        const manual = assignments[slotId];
-                        if (manual) {
-                            if (manual.type === 'vacancy') status = 'vacancy';
-                            else if (manual.type === 'outsourced') status = 'outsourced';
-                            else status = 'manual';
-                        }
-
-                        if (status === 'filled' && currentWorkerName) {
-                             const wAvail = getAvailability(currentWorkerName, dateStr);
-                             const regEntry = workerRegistry[currentWorkerName];
-                             const isFiveDay = regEntry?.fiveDay === true;
-                             if (!wAvail.available || (isNight && isFiveDay)) status = 'vacancy';
-                             else assignedNamesInShift.add(normalizeName(currentWorkerName));
-                        }
-
-                        const assigned = (status === 'filled' && currentWorkerName) ? { name: currentWorkerName } : null;
-
-                        lineTasks.push({
-                            slotId,
-                            status,
-                            roleTitle: pos.role,
-                            currentWorkerName,
-                            assigned: manual || assigned,
-                            lineName: templateName || activeLineName,
-                            index: i,
-                            isManualVacancy: manual?.type === 'vacancy'
-                        });
-                    }
-                });
-            });
-
-            // Manual Lines
-            const manualLineDefs = manualLines[`${dateStr}_${shiftNum}`] || [];
-            manualLineDefs.forEach(manualLine => {
-                (manualLine.positions || []).forEach(pos => {
-                    const count = Math.max(1, parseInt(pos.count, 10) || 1);
-                    for (let i = 0; i < count; i++) {
-                        const slotId = createManualSlotId(dateStr, shiftNum, manualLine.id, pos.roleTitle, i);
-                        const manual = assignments[slotId];
-                        let status = 'vacancy';
-                        if (manual) {
-                             if (manual.type === 'vacancy') status = 'vacancy';
-                             else if (manual.type === 'outsourced') status = 'outsourced';
-                             else status = 'manual';
-                        }
-                        lineTasks.push({
-                            slotId,
-                            status,
-                            roleTitle: pos.roleTitle,
-                            currentWorkerName: null,
-                            assigned: manual || null,
-                            lineName: manualLine.displayName || manualLine.id,
-                            index: i,
-                            isManualVacancy: manual?.type === 'vacancy'
-                        });
-                    }
-                });
-            });
-
-            // Mark busy
-            const busyNames = new Set();
-            lineTasks.forEach(task => {
-                if (task.status !== 'vacancy' && task.assigned?.name) {
-                    busyNames.add(normalizeName(task.assigned.name));
-                }
-            });
-
-            // Auto-reassignment
-            if (autoReassignEnabled) {
-                const freeAgents = allShiftWorkers.filter(w => !w.isBusy && !busyNames.has(normalizeName(w.name)) && w.isAvailable);
-                
-                lineTasks.forEach(task => {
-                    if (task.status === 'vacancy' && !task.isManualVacancy && freeAgents.length > 0) {
-                        let idx = freeAgents.findIndex(a => a.role === task.roleTitle);
-                        if (idx === -1) {
-                            idx = freeAgents.findIndex(a => {
-                                const regEntry = workerRegistry[a.name];
-                                return regEntry && regEntry.competencies?.has && regEntry.competencies.has(task.roleTitle);
-                            });
-                        }
-                        if (idx >= 0) {
-                            task.status = 'reassigned';
-                            task.assigned = freeAgents[idx];
-                            task.assignmentType = 'auto';
-                            freeAgents.splice(idx, 1);
-                        }
-                    }
-                });
-            }
-
-            // Convert to output slots
-            lineTasks.forEach(task => {
-                let source = 'vacancy';
-                let assignmentType = task.assignmentType || null;
-                let assignedName = null;
-
-                if (task.status === 'filled') {
-                    source = 'roster';
-                    assignedName = task.assigned?.name;
-                } else if (task.status === 'manual') {
-                    source = 'manual';
-                    assignedName = task.assigned?.name;
-                    assignmentType = task.assigned?.type;
-                } else if (task.status === 'reassigned') {
-                    source = 'auto';
-                    assignedName = task.assigned?.name;
-                } else if (task.status === 'outsourced') {
-                    source = 'outsourced';
-                    assignedName = task.assigned?.name;
-                } else if (task.isManualVacancy) {
-                    source = 'manualVacancy';
-                }
-
-                slots.push({
-                    slotId: task.slotId,
-                    date: dateStr,
-                    shiftId: String(shiftNum),
-                    lineName: task.lineName,
-                    role: task.roleTitle,
-                    index: task.index,
-                    assignedName,
-                    assignedNorm: assignedName ? normalizeName(assignedName) : '',
-                    assignmentType,
-                    source
-                });
-            });
-        });
-
-        return { slots, slotMap: new Map(slots.map(s => [s.slotId, s])) };
-    }, [normalizePlanData]);
-
-    const comparePlanSnapshots = useCallback((masterPlan, operationalPlan) => {
-        const master = normalizePlanData(masterPlan || {});
-        const operational = normalizePlanData(operationalPlan || {});
-
-        const masterSlots = buildPlanSlots(master);
-        const operationalSlots = buildPlanSlots(operational);
-
-        const slotIds = new Set([
-            ...masterSlots.slots.map(s => s.slotId),
-            ...operationalSlots.slots.map(s => s.slotId)
-        ]);
-
-        // Сначала собираем все изменения без учёта moved
-        const tempAdded = [];
-        const tempLost = [];
-        const replaced = [];
-        const unchangedSlotIds = new Set();
-
-        // Слоты только в оперативном плане (РВ, ручные линии и т.д.) — считаем добавлениями
-        operationalSlots.slots.forEach(slotB => {
-            if (masterSlots.slotMap.has(slotB.slotId)) return;
-            if (!slotB.assignedName || !slotB.assignedNorm) return;
-            tempAdded.push({ ...slotB, name: slotB.assignedName });
-        });
-
-        slotIds.forEach(slotId => {
-            const slotA = masterSlots.slotMap.get(slotId);
-            const slotB = operationalSlots.slotMap.get(slotId);
-
-            if (!slotA && !slotB) return;
-
-            // Слот есть только в основном плане — в оперативном его нет (потеря)
-            if (slotA && !slotB) {
-                if (slotA.assignedName && slotA.assignedNorm) {
-                    tempLost.push({ ...slotA, name: slotA.assignedName });
-                }
-                return;
-            }
-
-            // Слот есть только в оперативном — обработано выше в tempAdded
-            if (!slotA || !slotB) return;
-
-            const nameA = slotA.assignedNorm;
-            const nameB = slotB.assignedNorm;
-
-            if (nameA === nameB) {
-                unchangedSlotIds.add(slotId);
-                return;
-            }
-
-            if (nameA && nameB) {
-                replaced.push({
-                    ...slotB,
-                    fromName: slotA.assignedName,
-                    toName: slotB.assignedName,
-                    fromSlot: slotA,
-                    toSlot: slotB
-                });
-                return;
-            }
-
-            if (nameA && !nameB) {
-                tempLost.push({ ...slotA, name: slotA.assignedName });
-                return;
-            }
-
-            if (!nameA && nameB) {
-                tempAdded.push({ ...slotB, name: slotB.assignedName });
-                return;
-            }
-        });
-
-        // Теперь определяем moved: если человек исчез из одного слота и появился в другом той же смены
-        const moved = [];
-        const movedSlotIds = new Set();
-        const usedLostIndices = new Set();
-        const usedAddedIndices = new Set();
-
-        tempLost.forEach((lostSlot, lostIdx) => {
-            if (usedLostIndices.has(lostIdx)) return;
-
-            // Ищем добавление того же человека в той же смене
-            const dateShiftKey = `${lostSlot.date}_${lostSlot.shiftId}`;
-            const lostNameNorm = lostSlot.assignedNorm;
-
-            tempAdded.forEach((addedSlot, addedIdx) => {
-                if (usedAddedIndices.has(addedIdx)) return;
-                if (movedSlotIds.has(lostSlot.slotId) || movedSlotIds.has(addedSlot.slotId)) return;
-
-                const addedDateShiftKey = `${addedSlot.date}_${addedSlot.shiftId}`;
-                const addedNameNorm = addedSlot.assignedNorm;
-
-                // Проверяем: тот же человек, та же смена, но разные слоты
-                if (lostNameNorm === addedNameNorm && dateShiftKey === addedDateShiftKey && lostSlot.slotId !== addedSlot.slotId) {
-                    moved.push({
-                        name: lostSlot.name,
-                        from: lostSlot,
-                        to: addedSlot
-                    });
-                    movedSlotIds.add(lostSlot.slotId);
-                    movedSlotIds.add(addedSlot.slotId);
-                    usedLostIndices.add(lostIdx);
-                    usedAddedIndices.add(addedIdx);
-                }
-            });
-        });
-
-        // Остальные lost и added, которые не стали moved
-        const added = tempAdded.filter((_, idx) => !usedAddedIndices.has(idx));
-        const lost = tempLost.filter((_, idx) => !usedLostIndices.has(idx));
-
-        const matched = [];
-        unchangedSlotIds.forEach(slotId => {
-            const masterSlot = masterSlots.slotMap.get(slotId);
-            const operationalSlot = operationalSlots.slotMap.get(slotId);
-            if (!masterSlot || !operationalSlot) return;
-            matched.push({ master: masterSlot, operational: operationalSlot });
-        });
-
-        return {
-            changes: { moved, added, lost, replaced, matched }
-        };
-    }, [buildPlanSlots, normalizePlanData]);
+    const parseExcelToPlanData = parseExcelToPlanDataFromModule;
 
     const addPlan = useCallback((plan) => {
         savedPlansSourceRef.current = 'addPlan';
@@ -1391,178 +703,6 @@ export const DataProvider = ({ children }) => {
             return [...cleared, plan];
         });
     }, []);
-
-    const saveCurrentAsNewPlan = useCallback((name) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Сохранение недоступно.' });
-            return;
-        }
-        const planName = (name || `План ${new Date().toISOString().slice(0, 10)}`).trim();
-        const createdAt = new Date().toISOString();
-        const snapshot = buildPlanSnapshot();
-        const existing = savedPlans.find(p => (p.name || '').trim() === planName);
-        const targetPlanId = existing ? existing.id : generatePlanId();
-        savedPlansSourceRef.current = 'saveCurrentAsNewPlan';
-        setSavedPlans(prev => {
-            const existingIdx = prev.findIndex(p => (p.name || '').trim() === planName);
-            const cleared = prev.map(p => (p.type === 'Operational' ? { ...p, type: null } : p));
-            if (existingIdx !== -1) {
-                const next = [...cleared];
-                next[existingIdx] = {
-                    ...cleared[existingIdx],
-                    createdAt,
-                    type: 'Operational',
-                    data: snapshot
-                };
-                return next;
-            }
-            return [...cleared, {
-                id: targetPlanId,
-                name: planName,
-                createdAt,
-                type: 'Operational',
-                data: snapshot
-            }];
-        });
-        setCurrentPlanId(targetPlanId);
-    }, [buildPlanSnapshot, isReadOnly, savedPlans]);
-
-    const loadPlan = useCallback((planId, { switchToDashboard = true } = {}) => {
-        const plan = savedPlans.find(p => p.id === planId);
-        if (!plan?.data) return;
-        isLoadingPlanRef.current = true;
-        applyPlanData(plan.data, { switchView: switchToDashboard });
-        setCurrentPlanId(plan.id);
-        if (plan.data.planningState) {
-            persistStateKey(STORAGE_KEYS.PLANNING_STATE, plan.data.planningState);
-            setPlanningStateToLoad(plan.data.planningState);
-            setPlanningStateVersion(v => v + 1);
-        }
-        setTimeout(() => {
-            isLoadingPlanRef.current = false;
-        }, 0);
-    }, [savedPlans]);
-
-    const loadPlanQueue = useCallback((planId) => {
-        const plan = savedPlans.find(p => p.id === planId);
-        if (!plan?.data?.planningState) return;
-        setPlanningStateToLoad(plan.data.planningState);
-        setPlanningStateVersion(v => v + 1);
-    }, [savedPlans]);
-
-    const updateOperationalTimeline = useCallback((updater) => {
-        if (!currentPlanId || typeof updater !== 'function') return;
-        savedPlansSourceRef.current = 'updateOperationalTimeline';
-        setSavedPlans(prev => {
-            const idx = prev.findIndex(p => p.id === currentPlanId);
-            if (idx === -1) return prev;
-            const nextData = { ...prev[idx].data, operationalTimeline: updater(prev[idx].data?.operationalTimeline ?? null) };
-            const next = [...prev];
-            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
-            return next;
-        });
-    }, [currentPlanId]);
-
-    const updateOperationalFacts = useCallback((updater) => {
-        if (!currentPlanId || typeof updater !== 'function') return;
-        savedPlansSourceRef.current = 'updateOperationalFacts';
-        setSavedPlans(prev => {
-            const idx = prev.findIndex(p => p.id === currentPlanId);
-            if (idx === -1) return prev;
-            const nextData = { ...prev[idx].data, operationalFacts: updater(prev[idx].data?.operationalFacts ?? null) };
-            const next = [...prev];
-            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
-            return next;
-        });
-    }, [currentPlanId]);
-
-    const updatePlanPlanningState = useCallback((planningState) => {
-        if (!currentPlanId || planningState == null) return;
-        savedPlansSourceRef.current = 'updatePlanPlanningState';
-        setSavedPlans(prev => {
-            const idx = prev.findIndex(p => p.id === currentPlanId);
-            if (idx === -1) return prev;
-            const nextData = { ...prev[idx].data, planningState };
-            const next = [...prev];
-            next[idx] = { ...next[idx], data: nextData, updatedAt: new Date().toISOString() };
-            return next;
-        });
-    }, [currentPlanId]);
-
-    const setPlanType = useCallback((planId, type) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Изменение типа недоступно.' });
-            return;
-        }
-        savedPlansSourceRef.current = 'setPlanType';
-        setSavedPlans(prev => prev.map(plan => {
-            if (plan.id === planId) return { ...plan, type };
-            if (type && plan.type === type) return { ...plan, type: null };
-            return plan;
-        }));
-    }, [isReadOnly]);
-
-    const deletePlan = useCallback((planId) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
-            return;
-        }
-        savedPlansSourceRef.current = 'deletePlan';
-        setSavedPlans(prev => prev.filter(plan => plan.id !== planId));
-        if (currentPlanId === planId) {
-            setCurrentPlanId(null);
-            setRawTables({});
-            setScheduleDates([]);
-            setPlanHashes({});
-            setManualAssignments({});
-            setManualLines({});
-            setAssignmentClones({});
-            // СКУД не сбрасываем — один для всех планов
-            setWorkerRegistry({});
-            setLineTemplates({});
-            setFloaters({ day: [], night: [] });
-            setPlanningStateToLoad(null);
-            setPlanningStateState(null);
-            setSelectedDate('');
-        }
-    }, [currentPlanId, isReadOnly]);
-
-    const importPlanFromJson = useCallback((jsonData, defaultName) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
-            return null;
-        }
-        const createdAt = new Date().toISOString();
-        const hasData = jsonData && typeof jsonData === 'object' && jsonData.data;
-        const planData = hasData ? jsonData.data : jsonData;
-        const plan = {
-            id: jsonData?.id || generatePlanId(),
-            name: jsonData?.name || defaultName || `План ${createdAt.slice(0, 10)}`,
-            createdAt: jsonData?.createdAt || createdAt,
-            type: jsonData?.type || null,
-            data: normalizePlanData(planData)
-        };
-        addPlan(plan);
-        return plan.id;
-    }, [addPlan, isReadOnly]);
-
-    const importPlanFromExcelFile = useCallback(async (file, nameOverride) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Импорт недоступен.' });
-            return null;
-        }
-        const planData = await parseExcelToPlanData(file);
-        const createdAt = new Date().toISOString();
-        const plan = {
-            id: generatePlanId(),
-            name: nameOverride || file?.name || `План ${createdAt.slice(0, 10)}`,
-            createdAt,
-            type: null,
-            data: planData
-        };
-        addPlan(plan);
-        return plan.id;
-    }, [addPlan, isReadOnly]);
 
     useEffect(() => {
         if (!currentPlanId) return;
@@ -1608,317 +748,48 @@ export const DataProvider = ({ children }) => {
         manualLines
     ]);
 
-    // Автозагрузка последнего активного плана после восстановления из облака.
+    // Автозагрузка последнего активного плана после восстановления из localStorage (только если облако отключено)
     useEffect(() => {
         if (restoring) return;
         if (hasAutoLoadedLastPlanRef.current) return;
-        if (!currentPlanId || !savedPlans.length) return;
-        const plan = savedPlans.find(p => p.id === currentPlanId);
+        if (isRemoteStorageEnabled()) return;
+        
+        let planIdToLoad = currentPlanId;
+        if (!planIdToLoad) {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_PLAN_ID);
+                if (stored) {
+                    planIdToLoad = stored;
+                    setCurrentPlanId(stored);
+                }
+            } catch (e) {}
+        }
+        
+        if (!planIdToLoad) return;
+        
+        let plansToUse = savedPlans;
+        if (!plansToUse.length) {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEYS.SAVED_PLANS);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (Array.isArray(parsed)) {
+                        plansToUse = parsed;
+                        setSavedPlans(parsed);
+                    }
+                }
+            } catch (e) {}
+        }
+        
+        if (!plansToUse.length) return;
+        
+        const plan = plansToUse.find(p => p.id === planIdToLoad);
         if (!plan?.data) return;
+        
         hasAutoLoadedLastPlanRef.current = true;
-        loadPlan(currentPlanId, { switchToDashboard: false });
-    }, [restoring, currentPlanId, savedPlans, loadPlan]);
+        loadPlan(planIdToLoad, { switchToDashboard: false });
+    }, [restoring, currentPlanId, savedPlans, loadPlan, isRemoteStorageEnabled, setCurrentPlanId, setSavedPlans]);
 
-    const handleDragStart = useCallback((e, worker) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
-            return;
-        }
-        if (viewMode !== 'dashboard') {
-            notify({ type: 'error', message: 'Редактирование доступно только в режиме "Смены".' });
-            return;
-        }
-        const availability = worker.isClone ? { available: true } : checkWorkerAvailability(worker.name, selectedDate, workerRegistry);
-        if (!availability.available) {
-            e.preventDefault();
-            notify({ type: 'error', message: `${worker.name} недоступен: ${availability.reason}` });
-            return;
-        }
-        setDraggedWorker(worker);
-        e.dataTransfer.effectAllowed = 'move';
-    }, [selectedDate, workerRegistry, viewMode, isReadOnly]);
-
-    const handleDragOver = useCallback((e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-    }, []);
-
-    const handleDragEnd = useCallback(() => {
-        setDraggedWorker(null);
-    }, []);
-
-    const updateCloneEntry = useCallback(({ date, shiftId, cloneId, updater }) => {
-        setAssignmentClones(prev => {
-            const next = { ...prev };
-            const dateEntry = next[date];
-            if (!dateEntry) return prev;
-            const shiftClones = dateEntry[shiftId];
-            if (!shiftClones) return prev;
-            let changed = false;
-            const updated = shiftClones.map(clone => {
-                if (clone.id !== cloneId) return clone;
-                changed = true;
-                return updater(clone);
-            });
-            if (!changed) return prev;
-            next[date] = { ...dateEntry, [shiftId]: updated };
-            return next;
-        });
-    }, []);
-
-    const removeCloneEntry = useCallback(({ date, shiftId, cloneId }) => {
-        setAssignmentClones(prev => {
-            const next = { ...prev };
-            const dateEntry = next[date];
-            if (!dateEntry) return prev;
-            const shiftClones = dateEntry[shiftId];
-            if (!shiftClones) return prev;
-            const filtered = shiftClones.filter(clone => clone.id !== cloneId);
-            if (filtered.length === shiftClones.length) return prev;
-            if (filtered.length > 0) {
-                next[date] = { ...dateEntry, [shiftId]: filtered };
-            } else {
-                const { [shiftId]: removed, ...rest } = dateEntry;
-                if (Object.keys(rest).length > 0) {
-                    next[date] = rest;
-                } else {
-                    delete next[date];
-                }
-            }
-            return next;
-        });
-    }, []);
-
-    const cloneAssignedWorker = useCallback(({ date, shiftId, slotId, worker, roleTitle }) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
-            return;
-        }
-        if (viewMode !== 'dashboard') {
-            notify({ type: 'error', message: 'Совмещение доступно только в режиме "Смены".' });
-            return;
-        }
-        if (!worker?.name || !date || !shiftId) return;
-
-            const cloneEntry = {
-            id: `clone_${slotId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            name: worker.name,
-            role: worker.role || roleTitle || 'Не указано',
-            homeLine: worker.homeLine || '',
-            originalSlotId: slotId,
-            date,
-            shiftId,
-                status: 'available',
-            createdAt: Date.now()
-        };
-
-        setAssignmentClones(prev => {
-            const next = { ...prev };
-            const dateEntry = next[date] ? { ...next[date] } : {};
-            const shiftList = dateEntry[shiftId] ? [...dateEntry[shiftId]] : [];
-            shiftList.push(cloneEntry);
-            dateEntry[shiftId] = shiftList;
-            next[date] = dateEntry;
-            return next;
-        });
-    }, [notify, viewMode]);
-
-
-    const handleDrop = useCallback((e, targetSlotId, targetBaseWorkerName = null) => {
-        e.preventDefault();
-        if (!draggedWorker) return;
-        
-        const newAssignments = { ...manualAssignments };
-        const sourceSlotId = draggedWorker.sourceSlotId;
-        
-        // Если перетаскивают из другого слота (перемещение/обмен)
-        if (sourceSlotId && sourceSlotId !== targetSlotId) {
-            const targetWorker = newAssignments[targetSlotId];
-            
-            // Создаем новую запись для перетаскиваемого работника в целевой слот
-            const draggedEntry = {
-                ...draggedWorker,
-                originalId: draggedWorker.originalId || draggedWorker.id,
-                id: `assigned_${targetSlotId}_${Date.now()}`,
-                movedFrom: sourceSlotId, // Сохраняем откуда перенесли
-                movedAt: Date.now()
-            };
-            delete draggedEntry.sourceSlotId; // Убираем служебное поле
-            
-            // Если целевой слот занят - меняем местами
-            if (targetWorker && targetWorker.type !== 'vacancy') {
-                // Target slot has a manual assignment - swap them
-                const swappedEntry = {
-                    ...targetWorker,
-                    id: `assigned_${sourceSlotId}_${Date.now()}`,
-                    movedFrom: targetSlotId,
-                    movedAt: Date.now()
-                };
-                newAssignments[sourceSlotId] = swappedEntry;
-            } else if (targetBaseWorkerName) {
-                // Target slot is occupied by a roster worker (not in manualAssignments)
-                // Create a manual assignment for the roster worker in the source slot
-                const rosterWorkerEntry = {
-                    name: targetBaseWorkerName,
-                    role: workerRegistry[targetBaseWorkerName]?.role || 'Не указано',
-                    homeLine: workerRegistry[targetBaseWorkerName]?.homeLine || '',
-                    id: `assigned_${sourceSlotId}_${Date.now()}`,
-                    movedFrom: targetSlotId,
-                    movedAt: Date.now(),
-                    type: 'roster' // Mark as roster worker moved to manual
-                };
-                newAssignments[sourceSlotId] = rosterWorkerEntry;
-            } else {
-                // Если целевой слот пустой - освобождаем исходный (создаем вакансию)
-                // This handles the case where source slot had a roster worker
-                newAssignments[sourceSlotId] = { 
-                    type: 'vacancy', 
-                    id: `moved_vacancy_${sourceSlotId}_${Date.now()}`,
-                    reason: 'moved',
-                    movedTo: targetSlotId,
-                    movedWorker: draggedWorker.name,
-                    movedAt: Date.now()
-                };
-            }
-            
-            newAssignments[targetSlotId] = draggedEntry;
-        } else {
-            // Обычное назначение из резерва/свободных
-            const assignmentEntry = {
-                ...draggedWorker,
-                originalId: draggedWorker.id,
-                id: `assigned_${targetSlotId}_${Date.now()}`
-            };
-            delete assignmentEntry.sourceSlotId;
-            if (draggedWorker.cloneId) {
-                assignmentEntry.cloneId = draggedWorker.cloneId;
-                assignmentEntry.cloneDate = draggedWorker.date;
-                assignmentEntry.cloneShiftId = draggedWorker.shiftId;
-            }
-            newAssignments[targetSlotId] = assignmentEntry;
-            if (draggedWorker.cloneId) {
-                updateCloneEntry({
-                    date: draggedWorker.date,
-                    shiftId: draggedWorker.shiftId,
-                    cloneId: draggedWorker.cloneId,
-                    updater: (clone) => ({
-                        ...clone,
-                        status: 'assigned',
-                        assignedSlotId: targetSlotId,
-                        assignedAt: Date.now()
-                    })
-                });
-            }
-        }
-        
-        updateAssignments(newAssignments);
-        setDraggedWorker(null);
-    }, [draggedWorker, manualAssignments, updateAssignments, workerRegistry, updateCloneEntry]);
-
-    const handleAssignRv = useCallback((worker, slotId) => {
-        const assignmentEntry = {
-            name: worker.name,
-            role: worker.mainRole,
-            homeLine: worker.homeLine,
-            originalId: `rv_${worker.name}_${Date.now()}`,
-            id: `assigned_${slotId}_${Date.now()}`,
-            type: 'external',
-            sourceShift: worker.sourceShift
-        };
-        updateAssignments({ ...manualAssignments, [slotId]: assignmentEntry });
-        setRvModalData(null);
-    }, [manualAssignments, updateAssignments, updateCloneEntry]);
-
-    const handleRemoveAssignment = useCallback((slotId) => {
-        const newAssignments = { ...manualAssignments };
-        const existing = newAssignments[slotId];
-        if (existing?.cloneId && existing.cloneDate && existing.cloneShiftId) {
-            updateCloneEntry({
-                date: existing.cloneDate,
-                shiftId: existing.cloneShiftId,
-                cloneId: existing.cloneId,
-                updater: (clone) => ({
-                    ...clone,
-                    status: 'available',
-                    assignedSlotId: undefined,
-                    assignedAt: undefined
-                })
-            });
-        }
-        if (newAssignments[slotId]) delete newAssignments[slotId];
-        else newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
-        updateAssignments(newAssignments);
-    }, [manualAssignments, updateAssignments]);
-
-    const addManualLine = useCallback(({ date, shiftId, displayName, templateName, positions }) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
-            return;
-        }
-        if (!date || !shiftId || !displayName) return;
-        const key = `${date}_${shiftId}`;
-        const normalizedPositions = Array.isArray(positions) && positions.length > 0
-            ? positions.map(pos => ({
-                roleTitle: pos?.roleTitle || pos?.role || displayName,
-                count: Math.max(1, parseInt(pos?.count, 10) || 1)
-            }))
-            : [{ roleTitle: displayName, count: 1 }];
-        const nextLine = {
-            id: `manual_line_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            templateName,
-            displayName,
-            positions: normalizedPositions
-        };
-        setManualLines(prev => {
-            const next = { ...prev };
-            const existing = next[key] ? [...next[key]] : [];
-            next[key] = [...existing, nextLine];
-            return next;
-        });
-    }, [isReadOnly]);
-
-    const removeManualLine = useCallback(({ date, shiftId, lineId }) => {
-        if (isReadOnly) {
-            notify({ type: 'error', message: 'Вы вошли как гость. Удаление недоступно.' });
-            return;
-        }
-        if (!date || !shiftId || !lineId) return;
-        const key = `${date}_${shiftId}`;
-        let removedLine = null;
-        setManualLines(prev => {
-            const next = { ...prev };
-            const existing = next[key] ? [...next[key]] : [];
-            const filtered = existing.filter(line => {
-                if (line.id === lineId) {
-                    removedLine = line;
-                    return false;
-                }
-                return true;
-            });
-            if (filtered.length > 0) {
-                next[key] = filtered;
-            } else {
-                delete next[key];
-            }
-            return next;
-        });
-        if (!removedLine) return;
-        const slotIds = buildManualLineSlotIds(date, shiftId, removedLine);
-        if (slotIds.length === 0) return;
-        const nextAssignments = { ...manualAssignments };
-        let changed = false;
-        slotIds.forEach(slotId => {
-            if (nextAssignments[slotId]) {
-                delete nextAssignments[slotId];
-                changed = true;
-            }
-        });
-        if (changed) {
-            updateAssignments(nextAssignments);
-        }
-    }, [manualAssignments, updateAssignments, isReadOnly]);
-
-    // --- DEMAND INDEX (by date) ---
     const demandIndex = useMemo(() => {
         const res = { headers: [], brigadesByDate: new Map() };
         if (!rawTables?.demand) return res;
@@ -1951,315 +822,84 @@ export const DataProvider = ({ children }) => {
         return res;
     }, [rawTables]);
 
-    const buildShiftsFromBrigadesMap = useCallback((targetDate, brigadesMap, availabilityCache) => {
-        if (!brigadesMap) return [];
+    const shiftsOperations = useShiftsOperations({
+        rawTables,
+        scheduleDates,
+        lineTemplates,
+        floaters,
+        workerRegistry,
+        manualAssignments,
+        manualLines,
+        assignmentClones,
+        demandIndex,
+        createManualSlotId,
+        updateAssignments: null // Will be set after assignmentsOperations
+    });
 
-        const getAvailabilityCached = (name) => {
-            const k = `${name}|${targetDate}`;
-            if (availabilityCache.has(k)) return availabilityCache.get(k);
-            const v = checkWorkerAvailability(name, targetDate, workerRegistry);
-            availabilityCache.set(k, v);
-            return v;
-        };
+    const {
+        getShiftsForDate: getShiftsForDateFromModule,
+        shiftsByDate: shiftsByDateFromModule,
+        applyAutoReassignForDate: applyAutoReassignForDateFromModule,
+        calculateDailyStats: calculateDailyStatsFromModule,
+        globalWorkSchedule: globalWorkScheduleFromModule
+    } = shiftsOperations;
 
-        const clonesForDate = assignmentClones[targetDate] || {};
+    const getShiftsForDate = getShiftsForDateFromModule;
+    const shiftsByDate = shiftsByDateFromModule;
+    const calculateDailyStats = calculateDailyStatsFromModule;
+    const globalWorkSchedule = globalWorkScheduleFromModule;
 
-        return Object.values(brigadesMap).map(brigade => {
-            const shiftTypeLower = brigade.type ? brigade.type.toLowerCase() : '';
-            const lineTasks = [];
+    const assignmentsOperations = useAssignmentsOperations({
+        manualAssignments,
+        assignmentClones,
+        manualLines,
+        draggedWorker,
+        selectedDate,
+        viewMode,
+        workerRegistry,
+        scheduleDates,
+        setManualAssignments,
+        setAssignmentClones,
+        setManualLines,
+        setDraggedWorker,
+        persistStateKey,
+        notify,
+        isReadOnly,
+        getShiftsForDate
+    });
 
-            const allShiftWorkers = [];
-            const workersById = new Map();
-            const workersByNameHomeLine = new Map();
+    const {
+        updateAssignments,
+        handleDragStart: handleDragStartFromModule,
+        handleDragOver: handleDragOverFromModule,
+        handleDragEnd: handleDragEndFromModule,
+        handleDrop: handleDropFromModule,
+        handleAssignRv: handleAssignRvFromModule,
+        handleRemoveAssignment: handleRemoveAssignmentFromModule,
+        cloneAssignedWorker: cloneAssignedWorkerFromModule,
+        removeCloneEntry: removeCloneEntryFromModule,
+        updateCloneEntry: updateCloneEntryFromModule,
+        addManualLine: addManualLineFromModule,
+        removeManualLine: removeManualLineFromModule,
+        handleAutoFillFloaters: handleAutoFillFloatersFromModule
+    } = assignmentsOperations;
 
-            Object.keys(lineTemplates).forEach(lKey => {
-                lineTemplates[lKey].forEach(pos => {
-                    const rawNames = pos.roster && pos.roster[brigade.id];
-                    if (!rawNames) return;
-                    rawNames
-                        .split(/[,;\n/]+/)
-                        .map(s => s.trim())
-                        .filter(s => s.length > 1)
-                        .forEach(name => {
-                            const regEntry = workerRegistry[name];
-                            const isFiveDay = regEntry?.fiveDay === true;
-                            if (shiftTypeLower.includes('ночь') && isFiveDay) return;
-                            const avail = getAvailabilityCached(name);
-                            const worker = {
-                                name,
-                                role: pos.role,
-                                homeLine: lKey,
-                                id: `${name}_${brigade.id}`,
-                                isBusy: false,
-                                isAvailable: avail.available,
-                                statusReason: avail.reason
-                            };
-                            allShiftWorkers.push(worker);
-                            workersById.set(worker.id, worker);
-                            workersByNameHomeLine.set(`${normalizeName(name)}|${lKey}`, worker);
-                        });
-                });
-            });
-
-            const seenNames = new Set();
-            const uniqueShiftWorkers = [];
-            allShiftWorkers.forEach(w => {
-                const n = normalizeName(w.name);
-                if (seenNames.has(n)) return;
-                seenNames.add(n);
-                uniqueShiftWorkers.push(w);
-            });
-            allShiftWorkers.length = 0;
-            allShiftWorkers.push(...uniqueShiftWorkers);
-
-            const usedFloaterIds = new Set();
-            Object.keys(manualAssignments).forEach(key => {
-                if (key.startsWith(targetDate)) {
-                    const w = manualAssignments[key];
-                    if (w?.type !== 'vacancy') usedFloaterIds.add(w.originalId || w.id);
-                }
-            });
-
-            const assignedNamesInShift = new Set();
-            brigade.activeLines.forEach(activeLineName => {
-                const templateName = Object.keys(lineTemplates).find(t => isLineMatch(activeLineName, t));
-                const positions = templateName ? lineTemplates[templateName] : [];
-                const tasksForLine = [];
-
-                if (positions.length > 0) {
-                    positions.forEach((pos) => {
-                        const assignedNamesStr = pos.roster && pos.roster[brigade.id];
-                        const assignedNamesList = assignedNamesStr
-                            ? assignedNamesStr.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1)
-                            : [];
-                        const totalSlots = Math.max(pos.count, assignedNamesList.length);
-
-                        for (let i = 0; i < totalSlots; i++) {
-                            const slotId = `${targetDate}_${brigade.id}_${activeLineName}_${pos.role}_${i}`;
-                            let currentWorkerName = assignedNamesList[i] || null;
-                            let status = 'vacancy';
-
-                            if (currentWorkerName) {
-                                const norm = normalizeName(currentWorkerName);
-                                if (assignedNamesInShift.has(norm)) {
-                                    currentWorkerName = null;
-                                } else {
-                                    const wAvail = getAvailabilityCached(currentWorkerName);
-                                    const isFiveDay = workerRegistry[currentWorkerName]?.fiveDay === true;
-                                    if (shiftTypeLower.includes('ночь') && isFiveDay) status = 'vacancy';
-                                    else status = wAvail.available ? 'filled' : 'vacancy';
-                                }
-                            }
-
-                            const manual = manualAssignments[slotId];
-                            if (manual) {
-                                if (manual.type === 'vacancy') status = 'vacancy';
-                                else if (manual.type === 'outsourced') status = 'outsourced';
-                                else status = 'manual';
-                            }
-
-                            if (status === 'filled' && currentWorkerName) {
-                                const wAvail = getAvailabilityCached(currentWorkerName);
-                                const isFiveDay = workerRegistry[currentWorkerName]?.fiveDay === true;
-                                if (!wAvail.available || (shiftTypeLower.includes('ночь') && isFiveDay)) status = 'vacancy';
-                                else assignedNamesInShift.add(normalizeName(currentWorkerName));
-                            }
-
-                            const assigned = (status === 'filled' && currentWorkerName) ? { name: currentWorkerName } : null;
-                            tasksForLine.push({
-                                status,
-                                roleTitle: pos.role,
-                                slotId,
-                                isManualVacancy: manualAssignments[slotId]?.type === 'vacancy',
-                                currentWorkerName,
-                                assigned: manual || assigned
-                            });
-
-                            // Mark worker as busy (by name — один человек = занят по всей смене; для ручного назначения тоже по имени, т.к. после дедупликации allShiftWorkers один объект на человека)
-                            if (manual && manual.type !== 'vacancy' && manual.type !== 'floater' && manual.name) {
-                                const norm = normalizeName(manual.name);
-                                allShiftWorkers.forEach(w => { if (normalizeName(w.name) === norm) w.isBusy = true; });
-                            } else if (!manual && status === 'filled' && currentWorkerName) {
-                                const norm = normalizeName(currentWorkerName);
-                                allShiftWorkers.forEach(w => { if (normalizeName(w.name) === norm) w.isBusy = true; });
-                            }
-                        }
-                    });
-                }
-
-                lineTasks.push({
-                    slots: tasksForLine,
-                    displayName: templateName || activeLineName,
-                    lineSource: 'roster',
-                    templateName: templateName || null,
-                    activeLineName: activeLineName || null
-                });
-            });
-
-            const manualLineKey = `${targetDate}_${brigade.id}`;
-            const manualLineDefs = manualLines[manualLineKey] || [];
-            manualLineDefs.forEach(manualLine => {
-                const tasksForLine = [];
-                manualLine.positions.forEach(pos => {
-                    const slotCount = Math.max(1, parseInt(pos.count, 10) || 1);
-                    for (let slotIdx = 0; slotIdx < slotCount; slotIdx++) {
-                        const slotId = createManualSlotId(targetDate, brigade.id, manualLine.id, pos.roleTitle, slotIdx);
-                        const manual = manualAssignments[slotId];
-                            let status = 'vacancy';
-                            if (manual) {
-                                if (manual.type === 'vacancy') status = 'vacancy';
-                                else if (manual.type === 'outsourced') status = 'outsourced';
-                                else status = 'manual';
-                            }
-                        tasksForLine.push({
-                            status,
-                            roleTitle: pos.roleTitle || 'Роль',
-                            slotId,
-                            isManualVacancy: manual?.type === 'vacancy',
-                            currentWorkerName: null,
-                            assigned: manual || null
-                        });
-                    }
-                });
-                lineTasks.push({
-                    slots: tasksForLine,
-                    displayName: manualLine.displayName,
-                    manualLineId: manualLine.id,
-                    isManualLine: true,
-                    lineSource: 'manual',
-                    templateName: manualLine.templateName || null
-                });
-            });
-
-            // Назначенные на ручных линиях тоже убираем из свободных (по имени)
-            lineTasks.forEach(lt => {
-                lt.slots.forEach(slot => {
-                    const name = slot.assigned?.name;
-                    if (name && slot.assigned?.type !== 'outsourced') {
-                        const norm = normalizeName(name);
-                        allShiftWorkers.forEach(w => { if (normalizeName(w.name) === norm) w.isBusy = true; });
-                    }
-                });
-            });
-
-            const baseFloaters = shiftTypeLower.includes('день')
-                ? [...floaters.day]
-                : floaters.night.filter(f => workerRegistry[f.name]?.fiveDay !== true);
-            const freeFloaters = baseFloaters.filter(f => !usedFloaterIds.has(f.id));
-            const totalRequired = lineTasks.reduce((sum, lt) => sum + lt.slots.length, 0);
-            const filledSlots = lineTasks.reduce((sum, lt) => sum + lt.slots.filter(s => s.status !== 'vacancy' && s.status !== 'unknown').length, 0);
-
-            const shiftClones = clonesForDate[brigade.id] || [];
-            const availableClones = shiftClones.filter(clone => clone.status === 'available');
-            const cloneEntries = availableClones.map(clone => ({
-                ...clone,
-                cloneId: clone.id,
-                isClone: true,
-                isAvailable: true,
-                statusReason: clone.statusReason || 'Совмещение',
-                role: clone.role || '',
-                name: clone.name || '',
-                homeLine: clone.homeLine || ''
-            }));
-            const unassignedPeople = [
-                ...cloneEntries,
-                ...allShiftWorkers.filter(w => !w.isBusy)
-            ];
-
-            return {
-                id: brigade.id,
-                name: brigade.name,
-                type: brigade.type,
-                lineTasks,
-                unassignedPeople,
-                floaters: freeFloaters,
-                totalRequired,
-                filledSlots
-            };
-        });
-    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, manualLines, workerRegistry, assignmentClones]);
-
-    // --- SHIFTS CACHE (by date) ---
-    const shiftsByDate = useMemo(() => {
-        const map = new Map();
-        if (!scheduleDates || scheduleDates.length === 0) return map;
-        const availabilityCache = new Map();
-        scheduleDates.forEach(dateStr => {
-            const brigadesMap = demandIndex.brigadesByDate.get(dateStr);
-            map.set(dateStr, buildShiftsFromBrigadesMap(dateStr, brigadesMap, availabilityCache));
-        });
-        return map;
-    }, [scheduleDates, demandIndex, buildShiftsFromBrigadesMap]);
-
-    const getShiftsForDate = useCallback((targetDate) => {
-        if (!targetDate) return [];
-        if (shiftsByDate.has(targetDate)) return shiftsByDate.get(targetDate) || [];
-        // Fallback for dates outside scheduleDates
-        const availabilityCache = new Map();
-        const brigadesMap = demandIndex.brigadesByDate.get(targetDate);
-        return buildShiftsFromBrigadesMap(targetDate, brigadesMap, availabilityCache);
-    }, [buildShiftsFromBrigadesMap, demandIndex, shiftsByDate]);
+    const handleDragStart = handleDragStartFromModule;
+    const handleDragOver = handleDragOverFromModule;
+    const handleDragEnd = handleDragEndFromModule;
+    const handleDrop = handleDropFromModule;
+    const handleAssignRv = handleAssignRvFromModule;
+    const handleRemoveAssignment = handleRemoveAssignmentFromModule;
+    const cloneAssignedWorker = cloneAssignedWorkerFromModule;
+    const removeCloneEntry = removeCloneEntryFromModule;
+    const updateCloneEntry = updateCloneEntryFromModule;
+    const addManualLine = addManualLineFromModule;
+    const removeManualLine = removeManualLineFromModule;
+    const handleAutoFillFloaters = handleAutoFillFloatersFromModule;
 
     const applyAutoReassignForDate = useCallback((dateStr) => {
-        if (!dateStr) return;
-        const shifts = getShiftsForDate(dateStr);
-        const toApply = {};
-        const hasCompetency = (person, roleTitle) => {
-            const comps = workerRegistry[person?.name]?.competencies;
-            if (!comps || !roleTitle) return false;
-            return (comps instanceof Set && comps.has(roleTitle)) || (Array.isArray(comps) && comps.includes(roleTitle));
-        };
-        shifts.forEach(shift => {
-            const available = (shift.unassignedPeople || []).filter(p => p.isAvailable);
-            const used = new Set();
-            (shift.lineTasks || []).forEach(lt => {
-                (lt.slots || []).forEach(slot => {
-                    if (slot.status !== 'vacancy' || slot.isManualVacancy) return;
-                    let idx = available.findIndex(a => !used.has(a.id) && a.role === slot.roleTitle);
-                    if (idx === -1) {
-                        idx = available.findIndex(a => !used.has(a.id) && hasCompetency(a, slot.roleTitle));
-                    }
-                    if (idx >= 0) {
-                        const person = available[idx];
-                        used.add(person.id);
-                        toApply[slot.slotId] = {
-                            ...person,
-                            originalId: person.id,
-                            id: `assigned_${slot.slotId}_${Date.now()}`
-                        };
-                    }
-                });
-            });
-        });
-        if (Object.keys(toApply).length > 0) {
-            updateAssignments({ ...manualAssignments, ...toApply });
-        }
-    }, [getShiftsForDate, manualAssignments, updateAssignments, workerRegistry]);
-
-    const calculateDailyStats = useMemo(() => {
-        const stats = {};
-        if (!rawTables['demand'] || scheduleDates.length === 0) return stats;
-        scheduleDates.forEach(date => {
-            let totalSlots = 0;
-            let filledBySystem = 0;
-            let freeStaff = 0;
-            let activeFloaters = 0;
-            let manualEdits = 0;
-            const shifts = getShiftsForDate(date);
-            shifts.forEach(shift => {
-                totalSlots += shift.totalRequired;
-                filledBySystem += shift.filledSlots;
-                freeStaff += shift.unassignedPeople.filter(p => p.isAvailable).length;
-                activeFloaters += shift.floaters.length;
-            });
-            Object.keys(manualAssignments).forEach(k => { if (k.startsWith(date)) manualEdits++; });
-            const vacancies = totalSlots - filledBySystem;
-            let status = 'complete';
-            if (vacancies > 0) status = (freeStaff + activeFloaters) >= vacancies ? 'warning' : 'critical';
-            stats[date] = { totalSlots, filledSlots: filledBySystem, vacancies, freeStaff, floatersAvailable: activeFloaters, manualEdits, status };
-        });
-        return stats;
-    }, [rawTables, manualAssignments, scheduleDates, lineTemplates, getShiftsForDate]);
+        applyAutoReassignForDateFromModule(dateStr, getShiftsForDate, manualAssignments, updateAssignments, workerRegistry);
+    }, [getShiftsForDate, manualAssignments, updateAssignments, workerRegistry, applyAutoReassignForDateFromModule]);
 
     const assignmentClonesForDisplay = pendingUpdates[STORAGE_KEYS.ASSIGNMENT_CLONES] ?? assignmentClones;
     const cloneCountsByName = useMemo(() => {
@@ -2290,794 +930,45 @@ export const DataProvider = ({ children }) => {
         return map;
     }, [assignmentClonesForDisplay]);
 
-    const globalWorkSchedule = useMemo(() => {
-        const schedule = {};
-        if (scheduleDates.length === 0) return schedule;
-        scheduleDates.forEach(date => {
-            const shifts = getShiftsForDate(date);
-            const workingMap = new Map();
-            shifts.forEach(shift => {
-                const shiftType = shift.type.toLowerCase().includes('ночь') ? 'Night' : 'Day';
-                shift.lineTasks.forEach(t => t.slots.forEach(s => {
-                    if ((s.status === 'filled' || s.status === 'manual' || s.status === 'reassigned') && s.assigned) {
-                        workingMap.set(s.assigned.name, shiftType);
-                    }
-                }));
-            });
-            schedule[date] = workingMap;
-        });
-        return schedule;
-    }, [scheduleDates, getShiftsForDate]);
-
-    const handleAutoFillFloaters = useCallback((targetShift, isGlobal) => {
-        let newAssignments = { ...manualAssignments };
-        const datesToProcess = isGlobal ? scheduleDates : [selectedDate];
-        datesToProcess.forEach(date => {
-            const shifts = getShiftsForDate(date);
-            const usedIdsForDate = new Set();
-            Object.keys(newAssignments).filter(k => k.startsWith(date) && newAssignments[k].type !== 'vacancy').forEach(k => usedIdsForDate.add(newAssignments[k].originalId || newAssignments[k].id));
-            shifts.forEach(shift => {
-                if (!isGlobal && shift.id !== targetShift.id) return;
-                const vacantSlots = [];
-                shift.lineTasks.forEach(task => task.slots.forEach(slot => {
-                    if (slot.status === 'vacancy' && !slot.isManualVacancy && slot.roleTitle.toLowerCase().includes('подсобник')) vacantSlots.push(slot.slotId);
-                }));
-                let count = 0;
-                for (const floater of shift.floaters) {
-                    if (count >= vacantSlots.length) break;
-                    if (!usedIdsForDate.has(floater.id)) {
-                        const slotId = vacantSlots[count];
-                        if (!newAssignments[slotId]) {
-                            newAssignments[slotId] = { ...floater, originalId: floater.id, id: `auto_${slotId}_${Date.now()}` };
-                            usedIdsForDate.add(floater.id);
-                            count++;
-                        }
-                    }
-                }
-            });
-        });
-        updateAssignments(newAssignments);
-    }, [manualAssignments, scheduleDates, selectedDate, getShiftsForDate, updateAssignments]);
-
-    // --- CHESS TABLE WORKER LIFECYCLE ---
-    useEffect(() => {
-        if (!USE_CHESS_WORKER) return;
-        if (chessTableWorkerRef.current) return;
-
-        const worker = new Worker(new URL('../chessTable.worker.js', import.meta.url), { type: 'module' });
-        chessTableWorkerRef.current = worker;
-
-        worker.onmessage = (e) => {
-            const { requestId, result, error } = e.data || {};
-            if (!requestId || requestId !== chessTableWorkerReqIdRef.current) return;
-
-            if (error) {
-                setChessTableWorkerStatus({ status: 'error', error: String(error), requestId });
-                return;
-            }
-
-            const workers = (result?.workers || []).map(w => ({
-                ...w,
-                homeBrigades: new Set(w.homeBrigades || [])
-            }));
-
-            setChessTableWorkerResult(result ? { ...result, workers } : null);
-            setChessTableWorkerStatus({ status: 'ready', error: null, requestId });
-        };
-
-        worker.onerror = (err) => {
-            setChessTableWorkerStatus((prev) => ({ ...prev, status: 'error', error: err?.message || 'Worker error' }));
-        };
-
-        return () => {
-            try { worker.terminate(); } catch (_) {}
-            chessTableWorkerRef.current = null;
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    useEffect(() => {
-        if (!USE_CHESS_WORKER) return;
-        if (viewMode !== 'chess') return;
-        const worker = chessTableWorkerRef.current;
-        if (!worker) return;
-        if (!rawTables?.demand || !Array.isArray(scheduleDates) || scheduleDates.length === 0) return;
-
-        const requestId = ++chessTableWorkerReqIdRef.current;
-        setChessTableWorkerStatus({ status: 'calculating', error: null, requestId });
-
-        // Structured-clone friendly payload (no Set/Map)
-        const workerRegistryForWorker = {};
-        Object.entries(workerRegistry || {}).forEach(([key, value]) => {
-            workerRegistryForWorker[key] = {
-                ...value,
-                competencies: Array.from(value?.competencies || [])
-            };
-        });
-
-        worker.postMessage({
-            requestId,
-            payload: {
+    const chessTableOperations = useChessTable({
+        viewMode,
+        rawTables,
                 scheduleDates,
-                demand: rawTables.demand,
                 lineTemplates,
                 floaters,
-                manualAssignments,
-                workerRegistry: workerRegistryForWorker,
+        workerRegistry,
                 factData,
+        manualAssignments,
                 manualLines,
                 autoReassignEnabled,
-                assignmentClones
-            }
-        });
-    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, manualLines, autoReassignEnabled, assignmentClones]);
+        assignmentClones,
+        shiftsByDate,
+        getShiftsForDate,
+        cloneCountsByName,
+        USE_CHESS_WORKER,
+        chessTableWorkerResult,
+        chessTableWorkerStatus: chessTableWorkerStatusState,
+        setChessTableWorkerResult,
+        setChessTableWorkerStatus
+    });
 
-    const chessTableBase = useMemo(() => {
-        // Avoid spending CPU when user isn't on the timesheet view.
-        if (viewMode !== 'chess') return null;
-        if (USE_CHESS_WORKER) return null;
-        if (!rawTables?.demand || !rawTables?.roster) return null;
+    const {
+        calculateChessTable: calculateChessTableFromModule,
+        chessTableBase: chessTableBaseFromModule,
+        chessTableWorkerStatus: chessTableWorkerStatusFromModule
+    } = chessTableOperations;
 
-        const sortedDates = Array.isArray(scheduleDates) ? scheduleDates : [];
-        if (sortedDates.length === 0) return null;
-
-        const getSurnameNorm = (fullName) => {
-            const first = String(fullName || '').trim().split(/\s+/)[0] || '';
-            return normalizeName(first);
-        };
-
-        const availabilityCache = new Map();
-        const getAvailabilityCached = (name, dateStr) => {
-            const k = `${name}|${dateStr}`;
-            if (availabilityCache.has(k)) return availabilityCache.get(k);
-            const v = checkWorkerAvailability(name, dateStr, workerRegistry);
-            availabilityCache.set(k, v);
-            return v;
-        };
-
-        // --- Build workers list (plan + floaters) ---
-        const workerMeta = new Map();
-        Object.keys(lineTemplates).forEach(lineKey => {
-            lineTemplates[lineKey].forEach(pos => {
-                const roster = pos?.roster || {};
-                Object.entries(roster).forEach(([bId, val]) => {
-                    if (!val) return;
-                    String(val).split(/[,;\n/]+/).map(n => n.trim()).filter(n => n.length > 1).forEach(name => {
-                        if (!workerMeta.has(name)) {
-                            workerMeta.set(name, { name, role: pos.role, homeLine: lineKey, homeBrigades: new Set(), category: 'staff', sortShift: 99 });
-                        }
-                        const w = workerMeta.get(name);
-                        w.homeBrigades.add(bId);
-                        w.sortShift = Math.min(w.sortShift, parseInt(bId) || 99);
-                    });
-                });
-            });
-        });
-
-        floaters.day.forEach(f => {
-            if (!f?.name) return;
-            if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Д', homeBrigades: new Set(), category: 'floater_day', sortShift: 100 });
-        });
-        floaters.night.forEach(f => {
-            if (!f?.name) return;
-            if (!workerMeta.has(f.name)) workerMeta.set(f.name, { name: f.name, role: 'Подсобник', homeLine: 'Резерв Н', homeBrigades: new Set(), category: 'floater_night', sortShift: 101 });
-        });
-
-        const workerRows = Array.from(workerMeta.values()).sort((a, b) => (a.category === 'staff' ? a.sortShift - b.sortShift : 10) || a.name.localeCompare(b.name));
-
-        const workerLookupByNorm = new Map();
-        const workersBySurname = new Map();
-        workerRows.forEach(w => {
-            const norm = normalizeName(w.name);
-            workerLookupByNorm.set(norm, w);
-            const surname = getSurnameNorm(w.name);
-            if (!workersBySurname.has(surname)) workersBySurname.set(surname, []);
-            workersBySurname.get(surname).push(w);
-        });
-
-        const workerRegistryLookupByNorm = new Map();
-        const workerRegistryBySurname = new Map();
-        Object.values(workerRegistry).forEach(w => {
-            if (!w?.name) return;
-            const norm = normalizeName(w.name);
-            workerRegistryLookupByNorm.set(norm, w);
-            const surname = getSurnameNorm(w.name);
-            if (!workerRegistryBySurname.has(surname)) workerRegistryBySurname.set(surname, []);
-            workerRegistryBySurname.get(surname).push(w);
-        });
-
-        // --- Facts index (by date) ---
-        const factLookupByDate = new Map(); // date -> Map<norm, entry>
-        const factBySurnameByDate = new Map(); // date -> Map<surnameNorm, entry[]>
-        if (factData) {
-            Object.entries(factData).forEach(([date, dateData]) => {
-                const dateMap = new Map();
-                const surnameMap = new Map();
-                Object.values(dateData || {}).forEach((factEntry) => {
-                    if (!factEntry) return;
-                    const rawName = factEntry.rawName || '';
-                    const norm = normalizeName(rawName);
-                    if (norm) dateMap.set(norm, factEntry);
-                    const surname = getSurnameNorm(rawName);
-                    if (!surnameMap.has(surname)) surnameMap.set(surname, []);
-                    surnameMap.get(surname).push(factEntry);
-                });
-                factLookupByDate.set(date, dateMap);
-                factBySurnameByDate.set(date, surnameMap);
-            });
-        }
-
-        const resolveFactEntry = (dateStr, workerName) => {
-            const dateMap = factLookupByDate.get(dateStr);
-            if (!dateMap) return null;
-            const normName = normalizeName(workerName);
-            const exact = dateMap.get(normName);
-            if (exact) return exact;
-            const surname = getSurnameNorm(workerName);
-            const surnameMap = factBySurnameByDate.get(dateStr);
-            const candidates = surnameMap?.get(surname) || [];
-            for (const candidate of candidates) {
-                if (candidate?.rawName && matchNames(workerName, candidate.rawName)) return candidate;
-            }
-            return null;
-        };
-
-        // --- Add unexpected workers (present in facts but not in plan) ---
-        if (factData) {
-            const unexpectedWorkersMap = new Map();
-            sortedDates.forEach(date => {
-                const surnameMap = factBySurnameByDate.get(date);
-                if (!surnameMap) return;
-                surnameMap.forEach((entries) => {
-                    entries.forEach((factEntry) => {
-                        if (!factEntry?.rawName) return;
-                        if (!factEntry.cleanTime) return;
-
-                        const factNormName = normalizeName(factEntry.rawName);
-                        if (workerLookupByNorm.has(factNormName)) return;
-
-                        const surname = getSurnameNorm(factEntry.rawName);
-                        const candidates = workersBySurname.get(surname) || [];
-                        let foundInPlan = false;
-                        for (const worker of candidates) {
-                            if (matchNames(worker.name, factEntry.rawName)) { foundInPlan = true; break; }
-                        }
-                        if (foundInPlan) return;
-
-                        if (!unexpectedWorkersMap.has(factNormName)) {
-                            let regEntry = workerRegistryLookupByNorm.get(factNormName);
-                            if (!regEntry) {
-                                const regCandidates = workerRegistryBySurname.get(surname) || [];
-                                for (const w of regCandidates) {
-                                    if (matchNames(w.name, factEntry.rawName)) { regEntry = w; break; }
-                                }
-                            }
-                            unexpectedWorkersMap.set(factNormName, {
-                                name: factEntry.rawName,
-                                role: regEntry ? regEntry.role : 'Неизвестно',
-                                homeLine: 'Вне плана',
-                                homeBrigades: new Set(),
-                                category: 'unexpected',
-                                sortShift: 102,
-                                cells: {}
-                            });
-                        }
-                    });
-                });
-            });
-
-            if (unexpectedWorkersMap.size > 0) {
-                unexpectedWorkersMap.forEach(worker => workerRows.push(worker));
-                workerRows.sort((a, b) => (a.category === 'staff' ? a.sortShift - b.sortShift : 10) || a.name.localeCompare(b.name));
-            }
-        }
-
-        workerRows.forEach(worker => { worker.cells = {}; });
-
-        // --- Fill cells ---
-        sortedDates.forEach(date => {
-            const shiftsOnDate = shiftsByDate.get(date) || getShiftsForDate(date);
-            const workingWorkers = new Map();
-            const idleWorkers = new Map();
-
-            shiftsOnDate.forEach(shift => {
-                const isNight = shift.type.toLowerCase().includes('ночь');
-                const shiftCode = isNight ? 'Н' : 'Д';
-                shift.lineTasks.forEach(task => {
-                    task.slots.forEach(slot => {
-                        if ((slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned') && slot.assigned) {
-                            const wName = slot.assigned.name;
-                            if (slot.assigned.type === 'external') {
-                                workingWorkers.set(wName, { code: 'РВ', brigadeId: shift.id, isRv: true });
-                            } else {
-                                const current = workingWorkers.get(wName);
-                                const code = current && current.code !== shiftCode && !current.isRv ? 'Д/Н' : shiftCode;
-                                workingWorkers.set(wName, { code, brigadeId: shift.id });
-                            }
-                        }
-                    });
-                });
-                shift.unassignedPeople.forEach(p => { if (p.isAvailable) idleWorkers.set(p.name, shift.id); });
-                shift.floaters.forEach(f => idleWorkers.set(f.name, shift.id));
-            });
-
-            workerRows.forEach(worker => {
-                let text = '';
-                let color = 'bg-white';
-                let brigadeId = null;
-                let verificationStatus = null;
-
-                const avail = getAvailabilityCached(worker.name, date);
-                if (!avail.available) {
-                    if (avail.type === 'vacation') { text = 'О'; color = 'bg-emerald-50 text-emerald-700'; }
-                    else if (avail.type === 'sick') { text = 'Б'; color = 'bg-amber-50 text-amber-700'; }
-                    else if (avail.type === 'fired') { text = 'У'; color = 'bg-slate-200 text-slate-500'; }
-                } else if (workingWorkers.has(worker.name)) {
-                    const workData = workingWorkers.get(worker.name);
-                    text = workData.code;
-                    brigadeId = workData.brigadeId;
-                    if (text === 'Д') color = 'bg-green-100 text-green-800 font-bold';
-                    else if (text === 'Н') color = 'bg-blue-100 text-blue-800 font-bold';
-                    else if (text === 'Д/Н') color = 'bg-teal-100 text-teal-800 font-bold';
-                    else if (text === 'РВ') color = 'bg-orange-100 text-orange-700 font-bold';
-
-                    const factEntry = resolveFactEntry(date, worker.name);
-                    if (factEntry) {
-                        if (factEntry.cleanTime) {
-                            verificationStatus = 'ok';
-                        } else {
-                            verificationStatus = 'missing';
-                        }
-                    }
-                } else if (idleWorkers.has(worker.name)) {
-                    text = '—';
-                    color = 'bg-yellow-100 text-yellow-800 font-bold';
-                    brigadeId = idleWorkers.get(worker.name);
-
-                    const factEntry = resolveFactEntry(date, worker.name);
-                    if (factEntry) {
-                        if (factEntry.cleanTime) {
-                            verificationStatus = 'unassigned';
-                        } else {
-                            verificationStatus = 'missing';
-                        }
-                    }
-                } else {
-                    const factEntry = resolveFactEntry(date, worker.name);
-                    if (factEntry && factEntry.cleanTime) {
-                        verificationStatus = 'unexpected';
-                        text = '!';
-                        color = 'bg-orange-50 text-orange-700 font-bold';
-                    }
-                }
-
-                worker.cells[date] = { text, color, brigadeId, verificationStatus };
-            });
-        });
-
-        return { dates: sortedDates, workers: workerRows, cloneCountsByName };
-    }, [viewMode, rawTables, scheduleDates, lineTemplates, floaters.day, floaters.night, workerRegistry, factData, shiftsByDate, getShiftsForDate, cloneCountsByName]);
-
-    const calculateChessTable = useCallback(() => {
-        if (USE_CHESS_WORKER) return chessTableWorkerResult;
-        return chessTableBase;
-    }, [USE_CHESS_WORKER, chessTableWorkerResult, chessTableBase]);
-
-    const exportWithExcelJS = async (tableData) => {
-        const { dates, workers } = tableData;
-        const filteredWorkers = workers.filter(w => {
-            if (chessSearch && !w.name.toLowerCase().includes(chessSearch.toLowerCase())) return false;
-            if (chessFilterShift !== 'all') {
-                if (chessFilterShift === 'floaters') return w.category.startsWith('floater');
-                return w.homeBrigades.has(chessFilterShift);
-            }
-            return true;
-        });
-        const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet('Табель');
-        worksheet.getColumn(1).width = 30;
-        worksheet.getColumn(2).width = 10;
-        worksheet.getColumn(3).width = 25;
-        dates.forEach((_, idx) => { worksheet.getColumn(idx + 4).width = 8; });
-        const formattedDates = dates.map(date => {
-            const [day, month] = date.split('.');
-            return `${day}.${month}`;
-        });
-        const headerRow = worksheet.addRow(['ФИО Сотрудника', 'Бригада', 'Должность', ...formattedDates]);
-        headerRow.eachCell((cell, colNumber) => {
-            cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
-            cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: false };
-            cell.border = { top: { style: 'thin', color: { argb: 'FF000000' } }, bottom: { style: 'thin', color: { argb: 'FF000000' } }, left: { style: 'thin', color: { argb: 'FF000000' } }, right: { style: 'thin', color: { argb: 'FF000000' } } };
-        });
-        headerRow.height = 20;
-
-        filteredWorkers.forEach(worker => {
-            const rowData = [
-                worker.name,
-                Array.from(worker.homeBrigades).join(', '),
-                worker.role,
-                ...dates.map(date => {
-                    const cell = worker.cells[date] || { text: '', color: 'bg-white', verificationStatus: null };
-                    return cell.text || '';
-                })
-            ];
-            const row = worksheet.addRow(rowData);
-            row.getCell(1).font = { size: 11 };
-            row.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
-            row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
-            row.getCell(2).font = { size: 11, bold: true };
-            row.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
-            row.getCell(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE7E6E6' } };
-            row.getCell(3).font = { size: 10 };
-            row.getCell(3).alignment = { horizontal: 'left', vertical: 'middle' };
-            row.getCell(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
-
-            dates.forEach((date, dateIdx) => {
-                const cell = worker.cells[date] || { text: '', color: 'bg-white', verificationStatus: null };
-                const excelCell = row.getCell(dateIdx + 4);
-                const cellText = cell.text || '';
-                let fillColor = 'FFFFFFFF';
-                if (cellText.includes('Д') && !cellText.includes('Д/Н')) fillColor = 'FFC6EFCE';
-                else if (cellText.includes('Н')) fillColor = 'FFBDD7EE';
-                else if (cellText.includes('Д/Н')) fillColor = 'FFB7DEE8';
-                else if (cellText.includes('РВ')) fillColor = 'FFFFE699';
-                else if (cellText.includes('—') || cellText.includes('-')) fillColor = 'FFFFF2CC';
-                else if (cellText.includes('О')) fillColor = 'FFD5E8D4';
-                else if (cellText.includes('Б')) fillColor = 'FFFCE4D6';
-                else if (cellText.includes('У')) fillColor = 'FFE2E2E2';
-                else if (cellText.includes('!')) fillColor = 'FFFFE699';
-
-                excelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
-                excelCell.font = { size: 11, bold: true };
-                excelCell.alignment = { horizontal: 'center', vertical: 'middle' };
-
-                if (cell.verificationStatus === 'ok') {
-                    excelCell.border = { top: { style: 'medium', color: { argb: 'FF00B050' } }, bottom: { style: 'medium', color: { argb: 'FF00B050' } }, left: { style: 'medium', color: { argb: 'FF00B050' } }, right: { style: 'medium', color: { argb: 'FF00B050' } } };
-                    excelCell.value = (cellText || '') + ' ✓';
-                } else if (cell.verificationStatus === 'missing') {
-                    excelCell.border = { top: { style: 'medium', color: { argb: 'FFFF0000' } }, bottom: { style: 'medium', color: { argb: 'FFFF0000' } }, left: { style: 'medium', color: { argb: 'FFFF0000' } }, right: { style: 'medium', color: { argb: 'FFFF0000' } } };
-                    excelCell.value = (cellText || '') + ' ✗';
-                } else if (cell.verificationStatus === 'unassigned') {
-                     excelCell.border = { top: { style: 'thin', color: { argb: 'FFCCCCCC' } }, bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } }, left: { style: 'thin', color: { argb: 'FFCCCCCC' } }, right: { style: 'thin', color: { argb: 'FFCCCCCC' } } };
-                    excelCell.value = (cellText || '') + ' ⏰';
-                } else if (cell.verificationStatus === 'unexpected') {
-                     excelCell.border = { top: { style: 'thin', color: { argb: 'FFCCCCCC' } }, bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } }, left: { style: 'thin', color: { argb: 'FFCCCCCC' } }, right: { style: 'thin', color: { argb: 'FFCCCCCC' } } };
-                    excelCell.value = (cellText || '') + ' !';
-                } else {
-                    excelCell.border = { top: { style: 'thin', color: { argb: 'FFCCCCCC' } }, bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } }, left: { style: 'thin', color: { argb: 'FFCCCCCC' } }, right: { style: 'thin', color: { argb: 'FFCCCCCC' } } };
-                }
-            });
-            [1, 2, 3].forEach(col => {
-                const cell = row.getCell(col);
-                if (!cell.border) cell.border = { top: { style: 'thin', color: { argb: 'FFCCCCCC' } }, bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } }, left: { style: 'thin', color: { argb: 'FFCCCCCC' } }, right: { style: 'thin', color: { argb: 'FFCCCCCC' } } };
-            });
-        });
-
-        worksheet.views = [{ state: 'frozen', xSplit: 3, ySplit: 1, topLeftCell: 'D2', activeCell: 'D2' }];
-        dates.forEach((_, idx) => { worksheet.getColumn(idx + 4).width = 6; });
-        worksheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: filteredWorkers.length + 1, column: dates.length + 3 } };
-
-        const today = new Date();
-        const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
-        const filterSuffix = chessFilterShift !== 'all' ? `_${chessFilterShift === 'floaters' ? 'Резерв' : `Бригада${chessFilterShift}`}` : '';
-        const fileName = `Табель_${dateStr}${filterSuffix}.xlsx`;
-
-        const buffer = await workbook.xlsx.writeBuffer();
-        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        link.click();
-        window.URL.revokeObjectURL(url);
-    };
-
-     const exportWithXLSX = (tableData) => {
-        const { dates, workers } = tableData;
-        const filteredWorkers = workers.filter(w => {
-            if (chessSearch && !w.name.toLowerCase().includes(chessSearch.toLowerCase())) return false;
-            if (chessFilterShift !== 'all') {
-                if (chessFilterShift === 'floaters') return w.category.startsWith('floater');
-                return w.homeBrigades.has(chessFilterShift);
-            }
-            return true;
-        });
-
-        const excelData = [];
-        const headerRow = ['ФИО Сотрудника', 'Бригада', 'Должность', ...dates];
-        excelData.push(headerRow);
-
-        filteredWorkers.forEach(worker => {
-            const row = [
-                worker.name,
-                Array.from(worker.homeBrigades).join(', '),
-                worker.role,
-                ...dates.map(date => {
-                    const cell = worker.cells[date] || { text: '', color: 'bg-white', verificationStatus: null };
-                    let cellText = cell.text || '';
-                    if (cell.verificationStatus === 'ok') cellText += ' ✓';
-                    else if (cell.verificationStatus === 'missing') cellText += ' ✗';
-                    else if (cell.verificationStatus === 'unexpected') cellText += ' !';
-                    return cellText;
-                })
-            ];
-            excelData.push(row);
-        });
-
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.aoa_to_sheet(excelData);
-        
-        // ... styling logic omitted for brevity in Context, but core logic is preserved
-        // Standard XLSX export usually sufficient without heavy styling code in Context
-        // unless specifically requested. Using ExcelJS mostly anyway.
-        
-        const colWidths = [{ wch: 30 }, { wch: 10 }, { wch: 25 }, ...dates.map(() => ({ wch: 8 }))];
-        ws['!cols'] = colWidths;
-        ws['!freeze'] = { xSplit: 3, ySplit: 1, topLeftCell: 'D2', activePane: 'bottomRight', state: 'frozen' };
-        ws['!autofilter'] = { ref: `A1:${XLSX.utils.encode_cell({ r: filteredWorkers.length, c: dates.length + 2 })}` };
-        XLSX.utils.book_append_sheet(wb, ws, 'Табель');
-        
-        const today = new Date();
-        const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
-        const filterSuffix = chessFilterShift !== 'all' ? `_${chessFilterShift === 'floaters' ? 'Резерв' : `Бригада${chessFilterShift}`}` : '';
-        const fileName = `Табель_${dateStr}${filterSuffix}.xlsx`;
-        XLSX.writeFile(wb, fileName);
-    };
+    const calculateChessTable = calculateChessTableFromModule;
+    const chessTableBase = chessTableBaseFromModule;
+    const chessTableWorkerStatus = chessTableWorkerStatusFromModule;
 
     const exportScheduleByLinesToExcel = useCallback(async () => {
-        if (!scheduleDates.length) {
-            notify({ type: 'error', message: 'Нет данных для экспорта' });
-            return;
-        }
-
-        const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet('График по линиям');
-
-        const headerRow1 = ['Линия', 'Должность'];
-        const headerRow2 = ['', ''];
-
-        scheduleDates.forEach(date => {
-            const [day, month] = date.split('.');
-            const shortDate = month ? `${day}.${month}` : date;
-            headerRow1.push(shortDate, '');
-            headerRow2.push('День', 'Ночь');
+        return exportScheduleByLinesToExcelFromModule({
+            scheduleDates,
+            lineTemplates,
+            getShiftsForDate,
+            notify
         });
-
-        const r1 = worksheet.addRow(headerRow1);
-        const r2 = worksheet.addRow(headerRow2);
-
-        let colIndex = 3;
-        scheduleDates.forEach(() => {
-            worksheet.mergeCells(1, colIndex, 1, colIndex + 1);
-            colIndex += 2;
-        });
-
-        const applyBorder = (cell) => {
-            cell.border = {
-                top: { style: 'thin', color: { argb: 'FFCCCCCC' } },
-                left: { style: 'thin', color: { argb: 'FFCCCCCC' } },
-                bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } },
-                right: { style: 'thin', color: { argb: 'FFCCCCCC' } }
-            };
-        };
-
-        const dayFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
-        const nightFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F2FD' } };
-        const vacancyFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE0B2' } }; // светло-оранжевый
-
-        [r1, r2].forEach((row) => {
-            row.eachCell((cell, colNumber) => {
-                cell.font = { bold: true };
-                cell.alignment = { horizontal: colNumber <= 2 ? 'left' : 'center', vertical: 'middle' };
-                applyBorder(cell);
-            });
-        });
-
-        scheduleDates.forEach((_, idx) => {
-            const dayCol = 3 + idx * 2;
-            const nightCol = dayCol + 1;
-            r2.getCell(dayCol).fill = dayFill;
-            r2.getCell(nightCol).fill = nightFill;
-        });
-
-        // --- Collect lines and roles from BOTH templates and actual schedule ---
-        const linesMap = new Map(); // key -> { displayName, sortIndex, roles: Map<roleName, maxCount> }
-
-        // 1. Pre-fill from lineTemplates
-        Object.entries(lineTemplates).forEach(([lineKey, positions], idx) => {
-            const rolesMap = new Map();
-            positions.forEach(pos => {
-                rolesMap.set(pos.role, Math.max(rolesMap.get(pos.role) || 0, parseInt(pos.count) || 1));
-            });
-            linesMap.set(lineKey, { displayName: lineKey, sortIndex: idx, roles: rolesMap });
-        });
-
-        // 2. Scan actual schedule for missing lines/roles/counts
-        scheduleDates.forEach(date => {
-            const shifts = getShiftsForDate(date);
-            shifts.forEach(shift => {
-                if (!shift.lineTasks) return;
-                shift.lineTasks.forEach(task => {
-                    const lineName = task.displayName || 'Без названия';
-                    
-                    // Find matching key
-                    let matchedKey = null;
-                    for (const k of linesMap.keys()) {
-                        if (isLineMatch(k, lineName) || k === lineName) {
-                            matchedKey = k;
-                            break;
-                        }
-                    }
-
-                    if (!matchedKey) {
-                        matchedKey = lineName;
-                        if (!linesMap.has(matchedKey)) {
-                            linesMap.set(matchedKey, { displayName: lineName, sortIndex: 9999, roles: new Map() });
-                        }
-                    }
-
-                    const lineEntry = linesMap.get(matchedKey);
-                    
-                    // Count slots per role in this task
-                    const currentRoleCounts = {};
-                    task.slots.forEach(slot => {
-                        const role = slot.roleTitle || 'Оператор';
-                        currentRoleCounts[role] = (currentRoleCounts[role] || 0) + 1;
-                    });
-
-                    // Update max counts
-                    Object.entries(currentRoleCounts).forEach(([role, count]) => {
-                        const max = lineEntry.roles.get(role) || 0;
-                        if (count > max) {
-                            lineEntry.roles.set(role, count);
-                        }
-                    });
-                });
-            });
-        });
-
-        const sortedLines = Array.from(linesMap.entries()).sort((a, b) => a[1].sortIndex - b[1].sortIndex);
-
-        const resolveWorkerName = (shift, lineKey, role, slotIndex) => {
-            if (!shift) return '';
-            const lineTask = shift.lineTasks.find(lt => isLineMatch(lt.displayName, lineKey) || lt.displayName === lineKey);
-            if (!lineTask) return '';
-            const slotsForRole = lineTask.slots.filter(s => s.roleTitle === role);
-            const slot = slotsForRole[slotIndex];
-            if (!slot) return '';
-            if (slot.status === 'filled' || slot.status === 'manual' || slot.status === 'reassigned' || slot.status === 'outsourced') {
-                const name = slot.assigned?.name?.trim();
-                if (name) return name;
-            }
-            // Слот есть (вакансия), но человека нет — пишем "Вакансия"
-            return 'Вакансия';
-        };
-
-        sortedLines.forEach(([lineKey, lineData]) => {
-            let isFirstLineRow = true;
-            
-            // Sort roles? Maybe alphabetical or keep insertion order?
-            // lineTemplates order is preferred if available.
-            // We can just iterate the map.
-            
-            lineData.roles.forEach((count, role) => {
-                for (let i = 0; i < count; i++) {
-                    const roleLabel = `${role}${count > 1 ? ` ${i + 1}` : ''}`.trim();
-                    const rowData = [isFirstLineRow ? lineData.displayName : '', roleLabel];
-
-                    scheduleDates.forEach(date => {
-                        const shifts = getShiftsForDate(date);
-                        const dayShift = shifts.find(s => String(s.type || '').toLowerCase().includes('день'));
-                        const nightShift = shifts.find(s => String(s.type || '').toLowerCase().includes('ночь'));
-                        rowData.push(resolveWorkerName(dayShift, lineKey, role, i));
-                        rowData.push(resolveWorkerName(nightShift, lineKey, role, i));
-                    });
-
-                    const row = worksheet.addRow(rowData);
-                    row.eachCell((cell, colNumber) => {
-                        applyBorder(cell);
-                        cell.alignment = { horizontal: colNumber <= 2 ? 'left' : 'center', vertical: 'middle' };
-                        if (colNumber === 1 && rowData[0]) {
-                            cell.font = { bold: true };
-                        }
-                    });
-
-                    scheduleDates.forEach((_, idx) => {
-                        const dayCol = 3 + idx * 2;
-                        const nightCol = dayCol + 1;
-                        row.getCell(dayCol).fill = dayFill;
-                        row.getCell(nightCol).fill = nightFill;
-                    });
-                    // Выделить цветом ячейки с вакансиями
-                    rowData.forEach((val, i) => {
-                        if (i >= 2 && val === 'Вакансия') {
-                            const col = i + 1;
-                            row.getCell(col).fill = vacancyFill;
-                        }
-                    });
-
-                    isFirstLineRow = false;
-                }
-            });
-        });
-
-        const collectFreeHands = (shift) => {
-            if (!shift) return [];
-            const items = [];
-            (shift.unassignedPeople || []).forEach(p => {
-                if (p?.isAvailable && p?.name) {
-                    const role = p.role ? ` — ${p.role}` : '';
-                    items.push(`${p.name}${role}`);
-                }
-            });
-            (shift.floaters || []).forEach(f => {
-                if (f?.name) {
-                    const role = f.role ? ` — ${f.role}` : '';
-                    items.push(`${f.name}${role}`);
-                }
-            });
-            return Array.from(new Set(items));
-        };
-
-        const emptyRow = Array(2 + scheduleDates.length * 2).fill('');
-        const spacerRow = worksheet.addRow(emptyRow);
-        spacerRow.eachCell((cell) => applyBorder(cell));
-
-        const labelRowData = ['Свободные руки', '', ...Array(scheduleDates.length * 2).fill('')];
-        const labelRow = worksheet.addRow(labelRowData);
-        worksheet.mergeCells(labelRow.number, 1, labelRow.number, 2);
-        labelRow.getCell(1).font = { bold: true };
-        labelRow.eachCell((cell) => applyBorder(cell));
-
-        const freeHandsRow = ['', ''];
-        scheduleDates.forEach(date => {
-            const shifts = getShiftsForDate(date);
-            const dayShift = shifts.find(s => String(s.type || '').toLowerCase().includes('день'));
-            const nightShift = shifts.find(s => String(s.type || '').toLowerCase().includes('ночь'));
-            const dayNames = collectFreeHands(dayShift).join('\n');
-            const nightNames = collectFreeHands(nightShift).join('\n');
-            freeHandsRow.push(dayNames, nightNames);
-        });
-
-        const freeHandsDataRow = worksheet.addRow(freeHandsRow);
-        freeHandsDataRow.eachCell((cell, colNumber) => {
-            applyBorder(cell);
-            if (colNumber > 2) {
-                cell.alignment = { horizontal: 'left', vertical: 'top', wrapText: true };
-            }
-        });
-        scheduleDates.forEach((_, idx) => {
-            const dayCol = 3 + idx * 2;
-            const nightCol = dayCol + 1;
-            freeHandsDataRow.getCell(dayCol).fill = dayFill;
-            freeHandsDataRow.getCell(nightCol).fill = nightFill;
-        });
-
-        const autoFitColumn = (column, minWidth = 10, maxWidth = 40) => {
-            let maxLen = minWidth;
-            column.eachCell({ includeEmpty: true }, (cell) => {
-                const value = cell.value;
-                if (value == null) return;
-                const text = typeof value === 'string' ? value : String(value);
-                maxLen = Math.max(maxLen, text.length + 2);
-            });
-            column.width = Math.min(Math.max(maxLen, minWidth), maxWidth);
-        };
-
-        worksheet.columns.forEach((column, idx) => {
-            const isTextColumn = idx === 0 || idx === 1;
-            autoFitColumn(column, isTextColumn ? 12 : 8, isTextColumn ? 45 : 22);
-        });
-
-        const buffer = await workbook.xlsx.writeBuffer();
-        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `График_по_линиям_${new Date().toISOString().split('T')[0]}.xlsx`;
-        link.click();
-        window.URL.revokeObjectURL(url);
     }, [scheduleDates, lineTemplates, getShiftsForDate, notify]);
 
     const exportChessTableToExcel = useCallback(async () => {
@@ -3087,9 +978,13 @@ export const DataProvider = ({ children }) => {
         }
         const tableData = calculateChessTable();
         if (!tableData) { notify({ type: 'error', message: 'Нет данных для экспорта' }); return; }
-        try { await exportWithExcelJS(tableData); } 
-        catch (err) { console.warn('ExcelJS export failed, trying XLSX:', err); exportWithXLSX(tableData); }
-    }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify]);
+        try { 
+            await exportWithExcelJS(tableData, chessSearch, chessFilterShift); 
+        } catch (err) { 
+            console.warn('ExcelJS export failed, trying XLSX:', err); 
+            exportWithXLSX(tableData, chessSearch, chessFilterShift); 
+        }
+    }, [USE_CHESS_WORKER, chessTableWorkerStatus.status, calculateChessTable, notify, chessSearch, chessFilterShift]);
 
     const display = useMemo(() => {
         const effectivePlanId = pendingUpdates[STORAGE_KEYS.CURRENT_PLAN_ID] ?? currentPlanId;
@@ -3166,8 +1061,7 @@ export const DataProvider = ({ children }) => {
     }), [planningStateVersion, planningStateToLoad]);
 
     const value = useMemo(() => ({
-        // State (display = pending ?? server when sync on)
-        file, loading, restoring, error, syncStatus, isReadOnly,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, setShowSyncLog, remoteSnapshot, isReadOnly,
         rawTables: display.rawTables, scheduleDates: display.scheduleDates, planHashes: display.planHashes,
         savedPlans: display.savedPlans, currentPlanId: display.currentPlanId, planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         lineTemplates: display.lineTemplates, floaters: display.floaters, workerRegistry: display.workerRegistry,
@@ -3198,14 +1092,11 @@ export const DataProvider = ({ children }) => {
         setSyncStatus,
         persistStateKey,
         cloudStatus,
+        pendingUpdates,
         wipeAllData,
-
-        // Actions / Setters
         setCurrentPlanId,
         setWorkerRegistry, setLineTemplates, setFloaters,
         fileInputRef,
-        
-        // Functions
         processExcelFile,
         parseExcelToPlanData,
         saveCurrentAsNewPlan,
@@ -3237,8 +1128,7 @@ export const DataProvider = ({ children }) => {
         calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
         applyAutoReassignForDate
     }), [
-        // ТОЛЬКО состояние, НЕ setState функции!
-        file, loading, restoring, error, syncStatus, cloudStatus, isReadOnly, wipeAllData,
+        file, loading, restoring, error, syncStatus, syncLog, showSyncLog, setShowSyncLog, remoteSnapshot, cloudStatus, pendingUpdates, isReadOnly, wipeAllData,
         display,
         planningStateVersion, planningStateToLoad, setPlanningStateToLoad,
         step, viewMode, selectedDate,
@@ -3255,7 +1145,6 @@ export const DataProvider = ({ children }) => {
         autoReassignEnabled,
         chessDisplayLimit,
         chessTableWorkerStatus,
-        // Только мемоизированные функции
         parseExcelToPlanData,
         saveCurrentAsNewPlan,
         loadPlan,
@@ -3280,10 +1169,7 @@ export const DataProvider = ({ children }) => {
         removeCloneEntry,
         exportChessTableToExcel,
         exportScheduleByLinesToExcel,
-        persistStateKey,
-        cloudStatus
-        // ❌ УБРАНЫ: все немемоизированные функции
-        // ❌ УБРАНЫ: все setState
+        persistStateKey
     ]);
 
     return (

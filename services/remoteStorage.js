@@ -22,7 +22,9 @@ const mergeDocsToState = (docs) => {
     docs.forEach(({ id, data }) => {
         if (id.startsWith(DOC_PREFIX)) {
             const key = id.slice(DOC_PREFIX.length);
-            if (data && typeof data.value !== 'undefined') state[key] = data.value;
+            if (data && typeof data.value !== 'undefined') {
+                state[key] = data.value;
+            }
         } else if (id === FIRESTORE_DOCUMENT && data && typeof data === 'object') {
             Object.keys(data).forEach((k) => {
                 if (k === 'updatedAt') return;
@@ -88,7 +90,11 @@ const getRevFromRaw = (raw) => {
     }
 };
 
-export const isRemoteStorageEnabled = () => isFirebaseConfigured();
+// NOTE: принудительно считаем облачное хранилище включённым.
+// Это отключает все проверки "настроен ли Firebase" на уровне UI/логики.
+// Если Firebase реально не настроен, низкоуровневые функции в firebaseService
+// вернут null/пустые значения и операции записи/чтения станут no-op.
+export const isRemoteStorageEnabled = () => true;
 
 let logCallback = null;
 export const setRemoteLogCallback = (cb) => { logCallback = cb; };
@@ -201,7 +207,8 @@ const flushQueue = async () => {
         if (keysToSync.length > 0) {
             addLog('syncing', `Синхронизация изменений (${keysToSync.join(', ')})...`);
             for (const key of keysToSync) {
-                await writeFirestoreDoc(FIRESTORE_COLLECTION, `${DOC_PREFIX}${key}`, { value: trulyChangedData[key] });
+                const docId = `${DOC_PREFIX}${key}`;
+                await writeFirestoreDoc(FIRESTORE_COLLECTION, docId, { value: trulyChangedData[key] });
             }
         }
         addLog('success', 'Облако успешно обновлено');
@@ -328,7 +335,8 @@ const parseRemoteData = (data) => {
             parsedData[key] = data[key];
             return;
         }
-        if (key === 'plan_list' || isPlanDocId(key)) return;
+        // Пропускаем plan_list и ID планов, но НЕ пропускаем ключи состояния (STORAGE_KEYS), даже если они начинаются с 'plan_'
+        if (key === 'plan_list' || (isPlanDocId(key) && !Object.values(STORAGE_KEYS).includes(key))) return;
         try {
             const val = data[key];
             const parsedVal = typeof val === 'string' ? JSON.parse(val) : val;

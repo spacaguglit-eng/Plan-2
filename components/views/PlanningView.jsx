@@ -99,7 +99,7 @@ const splitTransitionList = (value) => (
 );
 
 const PlanningView = () => {
-    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState, productionResults } = useData();
+    const { createPlanFromSchedule, loadPlan, loadPlanQueue, setCurrentPlanId, setPlanningStateToLoad, savedPlans, currentPlanId, planningStateVersion, planningStateToLoad, lineTemplates, floaters, workerRegistry, planningState: storedPlanning, persistStateKey, updatePlanPlanningState, productionResults, cloudStatus, syncStatus, isRemoteStorageEnabled } = useData();
     const getTemplateKeyForLine = useCallback((line) => {
         if (!line || !lineTemplates) return line;
         const key = Object.keys(lineTemplates).find((k) => isLineMatch(line, k));
@@ -164,7 +164,66 @@ const PlanningView = () => {
         lineOptions.includes(value) ? value : lineOptions[0]
     );
 
-    const defaultPlanningDate = storedPlanning?.products?.[0]?.date || '27.01.2026';
+    // Функция миграции: преобразует старый формат (массивы) в новый (объекты по линиям)
+    const migrateProductsToByLine = (productsArray) => {
+        if (!Array.isArray(productsArray)) return {};
+        const byLine = {};
+        productsArray.forEach((product) => {
+            const line = product?.line || 'Линия 1';
+            if (!byLine[line]) byLine[line] = [];
+            byLine[line].push(product);
+        });
+        return byLine;
+    };
+
+    const migrateCipToByLine = (cipArray, productsArray) => {
+        if (!Array.isArray(cipArray)) return {};
+        const byLine = {};
+        // Сначала мигрируем продукты, чтобы знать, к какой линии относится каждый CIP
+        const productsByLineMap = migrateProductsToByLine(productsArray || storedPlanning?.products || []);
+        const lineToIndexMap = new Map();
+        let currentIndex = 0;
+        Object.keys(productsByLineMap).forEach(line => {
+            productsByLineMap[line].forEach(() => {
+                lineToIndexMap.set(currentIndex, line);
+                currentIndex++;
+            });
+        });
+        
+        cipArray.forEach((cip, index) => {
+            const line = cip?.line || lineToIndexMap.get(index) || 'Линия 1';
+            if (!byLine[line]) byLine[line] = [];
+            byLine[line].push(cip);
+        });
+        return byLine;
+    };
+
+    // Инициализация: проверяем старый формат и мигрируем при необходимости
+    const initializeProductsByLine = () => {
+        if (storedPlanning?.productsByLine && typeof storedPlanning.productsByLine === 'object') {
+            return storedPlanning.productsByLine;
+        }
+        if (Array.isArray(storedPlanning?.products)) {
+            return migrateProductsToByLine(storedPlanning.products);
+        }
+        return {};
+    };
+
+    const initializeCipByLine = () => {
+        if (storedPlanning?.cipBetweenByLine && typeof storedPlanning.cipBetweenByLine === 'object') {
+            return storedPlanning.cipBetweenByLine;
+        }
+        if (Array.isArray(storedPlanning?.cipBetween)) {
+            return migrateCipToByLine(storedPlanning.cipBetween, storedPlanning?.products);
+        }
+        return {};
+    };
+
+    const defaultPlanningDate = (() => {
+        const productsByLine = initializeProductsByLine();
+        const firstLine = Object.keys(productsByLine)[0];
+        return productsByLine[firstLine]?.[0]?.date || '27.01.2026';
+    })();
 
     const buildDefaultShifts = (dateStr) => ([
         {
@@ -227,12 +286,41 @@ const PlanningView = () => {
     const [speedLines, setSpeedLines] = useState(
         () => storedPlanning?.speedLines || []
     );
-    const [products, setProducts] = useState(
-        () => storedPlanning?.products || []
-    );
-    const [cipBetween, setCipBetween] = useState(
-        () => storedPlanning?.cipBetween || []
-    );
+    // Храним данные по линиям: каждая линия - отдельный массив
+    const [productsByLine, setProductsByLine] = useState(initializeProductsByLine);
+    const [cipBetweenByLine, setCipBetweenByLine] = useState(initializeCipByLine);
+
+    // Вспомогательные функции для работы с данными текущей линии
+    const getProductsForLine = useCallback((line) => {
+        return productsByLine[line] || [];
+    }, [productsByLine]);
+
+    const getCipForLine = useCallback((line) => {
+        return cipBetweenByLine[line] || [];
+    }, [cipBetweenByLine]);
+
+    const setProductsForLine = useCallback((line, products) => {
+        setProductsByLine(prev => ({ ...prev, [line]: products }));
+    }, []);
+
+    const setCipForLine = useCallback((line, cips) => {
+        setCipBetweenByLine(prev => ({ ...prev, [line]: cips }));
+    }, []);
+
+    // Для обратной совместимости: геттеры для текущей выбранной линии
+    const products = useMemo(() => getProductsForLine(selectedPlanLine), [getProductsForLine, selectedPlanLine]);
+    const cipBetween = useMemo(() => getCipForLine(selectedPlanLine), [getCipForLine, selectedPlanLine]);
+
+    // Сеттеры для текущей линии (для обратной совместимости)
+    const setProducts = useCallback((value) => {
+        const next = typeof value === 'function' ? value(products) : value;
+        setProductsForLine(selectedPlanLine, next);
+    }, [selectedPlanLine, products, setProductsForLine]);
+
+    const setCipBetween = useCallback((value) => {
+        const next = typeof value === 'function' ? value(cipBetween) : value;
+        setCipForLine(selectedPlanLine, next);
+    }, [selectedPlanLine, cipBetween, setCipForLine]);
     const [lineWorkDates, setLineWorkDates] = useState(
         () => storedPlanning?.lineWorkDates || {}
     );
@@ -240,12 +328,12 @@ const PlanningView = () => {
     const eventCountByLine = useMemo(() => {
         const map = {};
         lineOptions.forEach((line) => {
-            const nProducts = products.filter((p) => lineMatchesSelected(p?.line, line)).length;
-            const nCips = cipBetween.filter((c) => lineMatchesSelected(c?.line, line)).length;
+            const nProducts = (productsByLine[line] || []).length;
+            const nCips = (cipBetweenByLine[line] || []).length;
             map[line] = nProducts + nCips;
         });
         return map;
-    }, [lineOptions, products, cipBetween, lineMatchesSelected]);
+    }, [lineOptions, productsByLine, cipBetweenByLine]);
 
     const [dragIndex, setDragIndex] = useState(null);
     const useStoredTransitionRules = storedPlanning?.transitionRulesVersion === TRANSITION_RULES_VERSION;
@@ -347,10 +435,9 @@ const PlanningView = () => {
     };
 
     const lineTransitionKeys = useMemo(() => (
-        products
-            .filter(product => lineMatchesSelected(product.line, selectedPlanLine))
+        getProductsForLine(selectedPlanLine)
             .map(product => getTransitionKeyForName(product.name))
-    ), [products, selectedPlanLine, getTransitionKeyForName, lineMatchesSelected]);
+    ), [getProductsForLine, selectedPlanLine, getTransitionKeyForName]);
 
     const eventOptionsForRules = useMemo(() => (
         lineEvents.map((item) => ({ key: item.category, label: item.category }))
@@ -437,13 +524,12 @@ const PlanningView = () => {
     const buildMissingTransitionMap = useCallback((line) => {
         const map = new Map();
         const vytesnenieCategory = PLANNING_EVENT_CATEGORIES.vytesnenie;
-        const lineProducts = products
-            .map((product, index) => ({ product, index }))
-            .filter(({ product }) => lineMatchesSelected(product.line, line));
+        const lineProducts = getProductsForLine(line);
+        const lineCips = getCipForLine(line);
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
-            const from = lineProducts[i];
-            const to = lineProducts[i + 1];
-            const cip = cipBetween[from.index];
+            const from = { product: lineProducts[i], index: i };
+            const to = { product: lineProducts[i + 1], index: i + 1 };
+            const cip = lineCips[i];
             const userEventKey = cip?.eventKey || '';
 
             if (userEventKey === vytesnenieCategory) {
@@ -458,10 +544,10 @@ const PlanningView = () => {
             if (rule) continue;
             const suggestedEvent = getEventKeyBetweenProducts(from.product, to.product);
             if (suggestedEvent != null) continue;
-            map.set(from.index, true);
+            map.set(i, true);
         }
         return map;
-    }, [products, cipBetween, transitionRuleMap, getTransitionKeyForName, lineMatchesSelected, getEventKeyBetweenProducts, hasMatchingDisplacementRule]);
+    }, [getProductsForLine, getCipForLine, transitionRuleMap, getTransitionKeyForName, getEventKeyBetweenProducts, hasMatchingDisplacementRule]);
 
     const missingTransitionByIndex = useMemo(
         () => buildMissingTransitionMap(selectedPlanLine),
@@ -639,31 +725,25 @@ const PlanningView = () => {
         };
     }, []);
 
+    // Миграция больше не нужна, так как данные уже разделены по линиям
     useEffect(() => {
-        if (normalizedLinesRef.current) return;
-        let changed = false;
-        const nextProducts = products.map((product) => {
-            if (product.line) return product;
-            changed = true;
-            return { ...product, line: selectedPlanLine };
-        });
-        const nextCipBetween = cipBetween.map((cip) => {
-            if (cip.line) return cip;
-            changed = true;
-            return { ...cip, line: selectedPlanLine };
-        });
-        if (changed) {
-            setProducts(nextProducts);
-            setCipBetween(nextCipBetween);
-        }
         normalizedLinesRef.current = true;
-    }, [products, cipBetween, selectedPlanLine]);
+    }, []);
 
     useEffect(() => {
         if (planningStateToLoad && typeof planningStateToLoad === 'object') {
             const loaded = planningStateToLoad;
-            if (Array.isArray(loaded.products)) setProducts(loaded.products);
-            if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
+            // Поддержка миграции старого формата
+            if (loaded.productsByLine && typeof loaded.productsByLine === 'object') {
+                setProductsByLine(loaded.productsByLine);
+            } else if (Array.isArray(loaded.products)) {
+                setProductsByLine(migrateProductsToByLine(loaded.products));
+            }
+            if (loaded.cipBetweenByLine && typeof loaded.cipBetweenByLine === 'object') {
+                setCipBetweenByLine(loaded.cipBetweenByLine);
+            } else if (Array.isArray(loaded.cipBetween)) {
+                setCipBetweenByLine(migrateCipToByLine(loaded.cipBetween, loaded.products));
+            }
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
             if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
             if (Array.isArray(loaded.speedLines)) {
@@ -696,8 +776,8 @@ const PlanningView = () => {
             }
             const loaded = storedPlanning;
             if (!loaded || typeof loaded !== 'object') {
-                setProducts([]);
-                setCipBetween([]);
+                setProductsByLine({});
+                setCipBetweenByLine({});
                 setSpeedLines([]);
                 setCipDurations({});
                 setBaseProducts([]);
@@ -712,8 +792,17 @@ const PlanningView = () => {
                 setLineEvents(DEFAULT_LINE_EVENTS);
                 return;
             }
-            if (Array.isArray(loaded.products)) setProducts(loaded.products);
-            if (Array.isArray(loaded.cipBetween)) setCipBetween(loaded.cipBetween);
+            // Поддержка миграции старого формата
+            if (loaded.productsByLine && typeof loaded.productsByLine === 'object') {
+                setProductsByLine(loaded.productsByLine);
+            } else if (Array.isArray(loaded.products)) {
+                setProductsByLine(migrateProductsToByLine(loaded.products));
+            }
+            if (loaded.cipBetweenByLine && typeof loaded.cipBetweenByLine === 'object') {
+                setCipBetweenByLine(loaded.cipBetweenByLine);
+            } else if (Array.isArray(loaded.cipBetween)) {
+                setCipBetweenByLine(migrateCipToByLine(loaded.cipBetween, loaded.products));
+            }
             if (loaded.cipDurations) setCipDurations(loaded.cipDurations);
             if (Array.isArray(loaded.baseProducts)) setBaseProducts(loaded.baseProducts);
             if (Array.isArray(loaded.speedLines)) {
@@ -767,8 +856,8 @@ const PlanningView = () => {
             cipDurations,
             baseProducts,
             speedLines,
-            products,
-            cipBetween,
+            productsByLine,
+            cipBetweenByLine,
             selectedPlanLine,
             transitionRules,
             transitionRulesVersion: TRANSITION_RULES_VERSION,
@@ -784,8 +873,8 @@ const PlanningView = () => {
         cipDurations,
         baseProducts,
         speedLines,
-        products,
-        cipBetween,
+        productsByLine,
+        cipBetweenByLine,
         selectedPlanLine,
         transitionRules,
         lineEvents,
@@ -1280,8 +1369,7 @@ const PlanningView = () => {
             stopTransitionOptimization();
         }
         if (!transitionWorkerRef.current) return;
-        const lineProducts = products
-            .filter(product => lineMatchesSelected(product.line, selectedPlanLine))
+        const lineProducts = getProductsForLine(selectedPlanLine)
             .map(product => product.name)
             .filter(Boolean);
         const templateKey = getTemplateKeyForLine(selectedPlanLine);
@@ -1318,17 +1406,15 @@ const PlanningView = () => {
 
     const applyOptimizedOrder = (orderKeysOrIndices) => {
         if (!Array.isArray(orderKeysOrIndices) || orderKeysOrIndices.length === 0) return;
-        const lineItems = [];
-        const lineIndices = [];
-        products.forEach((product, index) => {
-            if (!lineMatchesSelected(product.line, selectedPlanLine)) return;
-            lineIndices.push(index);
-            lineItems.push({
-                index,
-                product,
-                cip: cipBetween[index]
-            });
-        });
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        const lineCips = getCipForLine(selectedPlanLine);
+        
+        const lineItems = lineProducts.map((product, index) => ({
+            index,
+            product,
+            cip: lineCips[index]
+        }));
+        
         if (lineItems.length === 0) return;
 
         const useIndices = orderKeysOrIndices.every((x) => typeof x === 'number');
@@ -1364,28 +1450,64 @@ const PlanningView = () => {
             }
         }
 
-        const nextProducts = [...products];
-        const nextCipBetween = [...cipBetween];
-        lineIndices.forEach((idx, i) => {
-            const item = reordered[i];
-            if (!item) return;
-            nextProducts[idx] = { ...item.product };
-            if (idx < nextCipBetween.length) {
-                nextCipBetween[idx] = item.cip ? { ...item.cip } : item.cip;
-            }
-        });
-
-        const lineProducts = nextProducts
-            .map((product, index) => ({ product, index }))
-            .filter(({ product }) => lineMatchesSelected(product.line, selectedPlanLine));
+        const nextProducts = reordered.map(item => ({ ...item.product }));
+        const nextCips = [];
+        
         let missingRules = 0;
+        for (let i = 0; i < nextProducts.length - 1; i += 1) {
+            const from = nextProducts[i];
+            const to = nextProducts[i + 1];
+            const existingCip = reordered[i]?.cip;
+            if (!existingCip) {
+                nextCips.push({
+                    id: `cip_${Date.now()}_${i}`,
+                    date: from.date || nextProducts[0]?.date || '27.01.2026',
+                    manualDate: false,
+                    start: '',
+                    end: '',
+                    manualStart: false,
+                    manualEnd: false,
+                    line: selectedPlanLine,
+                    eventKey: ''
+                });
+            } else {
+                nextCips.push({ ...existingCip });
+            }
+            const eventKey = getEventKeyBetweenProducts(from, to);
+            if (eventKey == null) {
+                missingRules += 1;
+            } else {
+                nextCips[i] = {
+                    ...nextCips[i],
+                    eventKey
+                };
+            }
+        }
+
+        setProductsForLine(selectedPlanLine, nextProducts);
+        setCipForLine(selectedPlanLine, nextCips);
+        if (missingRules > 0) {
+            setTransitionError(`Нет правил перехода для ${missingRules} переход(ов).`);
+        }
+    };
+
+    const applyTransitionsForCurrentOrder = () => {
+        setTransitionError('');
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        const lineCips = getCipForLine(selectedPlanLine);
+        if (lineProducts.length < 2) {
+            setTransitionError('Недостаточно продуктов для расстановки переходов.');
+            return;
+        }
+        let missingRules = 0;
+        const nextCipBetween = [...lineCips];
         for (let i = 0; i < lineProducts.length - 1; i += 1) {
             const from = lineProducts[i];
             const to = lineProducts[i + 1];
-            if (!nextCipBetween[from.index]) {
-                nextCipBetween[from.index] = {
-                    id: `cip_${Date.now()}_${from.index}`,
-                    date: from.product.date || nextProducts[0]?.date || '27.01.2026',
+            if (!nextCipBetween[i]) {
+                nextCipBetween[i] = {
+                    id: `cip_${Date.now()}_${i}`,
+                    date: from.date || lineProducts[0]?.date || '27.01.2026',
                     manualDate: false,
                     start: '',
                     end: '',
@@ -1395,52 +1517,18 @@ const PlanningView = () => {
                     eventKey: ''
                 };
             }
-            const eventKey = getEventKeyBetweenProducts(from.product, to.product);
+            const eventKey = getEventKeyBetweenProducts(from, to);
             if (eventKey == null) {
                 missingRules += 1;
             } else {
-                nextCipBetween[from.index] = {
-                    ...nextCipBetween[from.index],
+                nextCipBetween[i] = {
+                    ...nextCipBetween[i],
                     line: selectedPlanLine,
                     eventKey
                 };
             }
         }
-
-        setProducts(nextProducts);
-        setCipBetween(nextCipBetween);
-        if (missingRules > 0) {
-            setTransitionError(`Нет правил перехода для ${missingRules} переход(ов).`);
-        }
-    };
-
-    const applyTransitionsForCurrentOrder = () => {
-        setTransitionError('');
-        const lineProducts = products
-            .map((product, index) => ({ product, index }))
-            .filter(({ product }) => lineMatchesSelected(product.line, selectedPlanLine));
-        if (lineProducts.length < 2) {
-            setTransitionError('Недостаточно продуктов для расстановки переходов.');
-            return;
-        }
-        let missingRules = 0;
-        const nextCipBetween = [...cipBetween];
-        for (let i = 0; i < lineProducts.length - 1; i += 1) {
-            const from = lineProducts[i];
-            const to = lineProducts[i + 1];
-            if (!nextCipBetween[from.index]) continue;
-            const eventKey = getEventKeyBetweenProducts(from.product, to.product);
-            if (eventKey == null) {
-                missingRules += 1;
-            } else {
-                nextCipBetween[from.index] = {
-                    ...nextCipBetween[from.index],
-                    line: selectedPlanLine,
-                    eventKey
-                };
-            }
-        }
-        setCipBetween(nextCipBetween);
+        setCipForLine(selectedPlanLine, nextCipBetween);
         if (missingRules > 0) {
             setTransitionError(`Нет правил перехода для ${missingRules} переход(ов).`);
         }
@@ -1478,7 +1566,8 @@ const PlanningView = () => {
                 return;
             }
             if (target === 'plan') {
-                const baseDate = products[0]?.date || '27.01.2026';
+                const lineProducts = getProductsForLine(selectedPlanLine);
+                const baseDate = lineProducts[0]?.date || '27.01.2026';
                 const hasMixedFormat = items.length > 0 && (items[0].kind === 'product' || items[0].kind === 'cip');
                 let productItems = [];
                 let cipEventKeys = [];
@@ -1641,33 +1730,33 @@ const PlanningView = () => {
     };
 
     const buildRows = (
-        nextProducts,
-        nextCipBetween,
         lineFilter = selectedPlanLine,
         missingMap = missingTransitionByIndex
     ) => {
         const rows = [];
         const safeMissing = missingMap || new Map();
-        nextProducts.forEach((p, i) => {
-            if (!lineMatchesSelected(p.line, lineFilter)) return;
+        // Получаем данные для конкретной линии
+        const lineProducts = getProductsForLine(lineFilter);
+        const lineCips = getCipForLine(lineFilter);
+        
+        lineProducts.forEach((p, i) => {
             rows.push({
                 kind: 'product',
                 index: i,
                 ...p,
+                line: lineFilter,
                 durationMinutes: getProductDurationMinutes(p)
             });
-            if (i < nextCipBetween.length) {
-                const cip = nextCipBetween[i];
+            if (i < lineCips.length) {
+                const cip = lineCips[i];
                 if (!cip) return;
-                const rowLine = cip.line || p.line || lineFilter;
-                if (!lineMatchesSelected(rowLine, lineFilter)) return;
                 const eventKey = cip.eventKey || (eventOptions[0]?.key ?? '');
-                const rawCipMinutes = getEventDurationMinutes(eventKey, rowLine);
+                const rawCipMinutes = getEventDurationMinutes(eventKey, lineFilter);
                 rows.push({
                     kind: 'cip',
                     index: i,
                     ...cip,
-                    line: rowLine,
+                    line: lineFilter,
                     eventKey,
                     missingTransition: safeMissing.get(i) === true,
                     durationMinutes: rawCipMinutes > 0 ? rawCipMinutes : CIP_FALLBACK_DURATION_MIN
@@ -1745,8 +1834,10 @@ const PlanningView = () => {
     };
 
     const syncRowsToState = (rows) => {
-        const nextProducts = products.map(p => ({ ...p }));
-        const nextCip = cipBetween.map(c => ({ ...c }));
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        const lineCips = getCipForLine(selectedPlanLine);
+        const nextProducts = lineProducts.map(p => ({ ...p }));
+        const nextCip = lineCips.map(c => ({ ...c }));
         rows.forEach((row) => {
             if (row.kind === 'product') {
                 nextProducts[row.index] = {
@@ -1770,8 +1861,8 @@ const PlanningView = () => {
                 };
             }
         });
-        setProducts(nextProducts);
-        setCipBetween(nextCip);
+        setProductsForLine(selectedPlanLine, nextProducts);
+        setCipForLine(selectedPlanLine, nextCip);
     };
 
     const demandLineHeaders = useMemo(() => [...lineOptions, 'Ручная линия'], []);
@@ -1919,16 +2010,16 @@ const PlanningView = () => {
                     cipDurations,
                     baseProducts,
                     speedLines,
-                    products,
-                    cipBetween,
+                    productsByLine,
+                    cipBetweenByLine,
                     selectedPlanLine,
                     transitionRules,
                     transitionRulesVersion: TRANSITION_RULES_VERSION,
                     lineEvents,
                     exportLines,
                     exportType,
-                displacementRules,
-                lineWorkDates
+                    displacementRules,
+                    lineWorkDates
                 }
             });
             setPlanCreateStatus('success');
@@ -1979,8 +2070,8 @@ const PlanningView = () => {
                     cipDurations,
                     baseProducts,
                     speedLines,
-                    products: [],
-                    cipBetween: [],
+                    productsByLine: {},
+                    cipBetweenByLine: {},
                     selectedPlanLine,
                     transitionRules,
                     transitionRulesVersion: TRANSITION_RULES_VERSION,
@@ -2001,28 +2092,28 @@ const PlanningView = () => {
     };
 
     const allRows = useMemo(() => {
-        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
+        const rows = buildRows(selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         return applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
-    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex]);
+    }, [productsByLine, cipBetweenByLine, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex, getProductsForLine, getCipForLine]);
 
     const allRowsAllLines = useMemo(() => {
         const combined = [];
         lineOptions.forEach((line) => {
             const missing = buildMissingTransitionMap(line);
-            const rows = buildRows(products, cipBetween, line, missing);
+            const rows = buildRows(line, missing);
             const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
             const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
             scheduled.forEach((r) => combined.push(r));
         });
         return combined;
-    }, [products, cipBetween, cipDurations, lineEvents, buildMissingTransitionMap]);
+    }, [productsByLine, cipBetweenByLine, cipDurations, lineEvents, buildMissingTransitionMap, getProductsForLine, getCipForLine]);
 
     const exportSections = useMemo(() => {
         return exportLines
             .map((line) => {
                 const missing = buildMissingTransitionMap(line);
-                const rows = buildRows(products, cipBetween, line, missing);
+                const rows = buildRows(line, missing);
                 const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
                 const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
                 if (!scheduled.length) return null;
@@ -2058,8 +2149,12 @@ const PlanningView = () => {
 
     const linesFromGraph = useMemo(() => {
         const set = new Set();
-        products.forEach((p) => { if (p?.line) set.add(p.line); });
-        cipBetween.forEach((c) => { if (c?.line) set.add(c.line); });
+        Object.keys(productsByLine).forEach(line => {
+            if (productsByLine[line]?.length > 0) set.add(line);
+        });
+        Object.keys(cipBetweenByLine).forEach(line => {
+            if (cipBetweenByLine[line]?.length > 0) set.add(line);
+        });
         const list = Array.from(set);
         const extractNum = (s) => {
             const m = String(s).match(/Линия\s*(\d+)/i);
@@ -2074,23 +2169,25 @@ const PlanningView = () => {
             return String(a).localeCompare(b, undefined, { numeric: true });
         });
         return sorted.length > 0 ? sorted : lineOptions;
-    }, [products, cipBetween, lineOptions]);
+    }, [productsByLine, cipBetweenByLine, lineOptions]);
 
     useEffect(() => {
-        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
+        const rows = buildRows(selectedPlanLine, missingTransitionByIndex);
         const anchorIndex = rows.findIndex(r => r.manualStart || r.manualEnd);
         const scheduled = applySchedule(rows, anchorIndex === -1 ? 0 : anchorIndex);
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        const lineCips = getCipForLine(selectedPlanLine);
         const needsUpdate = scheduled.some((row) => {
-            const src = row.kind === 'product' ? products[row.index] : cipBetween[row.index];
-            return src.start !== row.start || src.end !== row.end;
+            const src = row.kind === 'product' ? lineProducts[row.index] : lineCips[row.index];
+            return src && (src.start !== row.start || src.end !== row.end);
         });
         if (needsUpdate) {
             syncRowsToState(scheduled);
         }
-    }, [products, cipBetween, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex]);
+    }, [productsByLine, cipBetweenByLine, cipDurations, selectedPlanLine, lineEvents, missingTransitionByIndex, getProductsForLine, getCipForLine]);
 
     const handleTimeChange = (row, field, value) => {
-        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
+        const rows = buildRows(selectedPlanLine, missingTransitionByIndex);
         const index = rows.findIndex(r => r.kind === row.kind && r.index === row.index);
         if (index === -1) return;
         rows[index] = {
@@ -2104,7 +2201,7 @@ const PlanningView = () => {
     };
 
     const handleDateChange = (row, value) => {
-        const rows = buildRows(products, cipBetween, selectedPlanLine, missingTransitionByIndex);
+        const rows = buildRows(selectedPlanLine, missingTransitionByIndex);
         const index = rows.findIndex(r => r.kind === row.kind && r.index === row.index);
         if (index === -1) return;
         rows[index] = {
@@ -2117,25 +2214,26 @@ const PlanningView = () => {
     };
 
     const handleCipTypeChange = (index, value) => {
-        const next = cipBetween.map((item, i) => (i === index ? { ...item, eventKey: value } : item));
-        setCipBetween(next);
+        const lineCips = getCipForLine(selectedPlanLine);
+        const next = lineCips.map((item, i) => (i === index ? { ...item, eventKey: value } : item));
+        setCipForLine(selectedPlanLine, next);
     };
 
     const moveProduct = (from, to) => {
-        if (from === to || from < 0 || to < 0 || from >= products.length || to >= products.length) return;
-        const next = [...products];
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        if (from === to || from < 0 || to < 0 || from >= lineProducts.length || to >= lineProducts.length) return;
+        const next = [...lineProducts];
         const [item] = next.splice(from, 1);
         next.splice(to, 0, item);
-        setProducts(next);
+        setProductsForLine(selectedPlanLine, next);
     };
 
     const removeProductAt = (index) => {
-        if (index < 0 || index >= products.length) return;
-        setProducts(prev => [...prev.slice(0, index), ...prev.slice(index + 1)]);
-        setCipBetween(prev => {
-            if (index >= prev.length) return prev;
-            return [...prev.slice(0, index), ...prev.slice(index + 1)];
-        });
+        const lineProducts = getProductsForLine(selectedPlanLine);
+        const lineCips = getCipForLine(selectedPlanLine);
+        if (index < 0 || index >= lineProducts.length) return;
+        setProductsForLine(selectedPlanLine, [...lineProducts.slice(0, index), ...lineProducts.slice(index + 1)]);
+        setCipForLine(selectedPlanLine, index >= lineCips.length ? lineCips : [...lineCips.slice(0, index), ...lineCips.slice(index + 1)]);
     };
 
     const toggleExportLine = (line) => {
@@ -3100,8 +3198,8 @@ const PlanningView = () => {
                                                                     : 'border-slate-200/80 bg-slate-50/50 text-slate-600 focus:ring-slate-300/50'
                                                             }`}
                                                         >
-                                                            {eventOptions.map(option => (
-                                                                <option key={option.key} value={option.key}>{option.label}</option>
+                                                            {eventOptions.map((option, optIdx) => (
+                                                                <option key={`${option.key}-${optIdx}-${row.index}`} value={option.key}>{option.label}</option>
                                                             ))}
                                                         </select>
                                                         {isMissingTransition ? (

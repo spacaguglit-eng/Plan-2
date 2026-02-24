@@ -15,7 +15,8 @@ const VerificationView = () => {
         allEmployees: allEmployeesData,
         setAllEmployees,
         departmentMasterList,
-        setDepartmentMasterList
+        setDepartmentMasterList,
+        viewMode
     } = useData();
 
     const [selectedDate, setSelectedDate] = useState(factDates && factDates.length > 0 ? factDates[0] : '');

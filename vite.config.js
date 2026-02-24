@@ -16,8 +16,9 @@ export default defineConfig({
     open: false,
     strictPort: false,
     hmr: {
-      clientPort: 3000,
-      host: 'localhost', // HMR с этой машины; при доступе по сети перезагрузка страницы обновит код
+      protocol: 'ws',
+      host: 'localhost',
+      port: 3000,
     }
   },
   build: {
