@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileSpreadsheet, RotateCcw } from 'lucide-react';
+import { FileSpreadsheet, RotateCcw, List } from 'lucide-react';
 
 export const DayStatusHeader = ({
     stats,
@@ -8,9 +8,12 @@ export const DayStatusHeader = ({
     manualAssignments,
     onRunAutoReassign,
     onExportLines,
+    onShowRawLineEvents,
     onResetDay,
     onResetAll,
-    dateSelector
+    dateSelector,
+    exportMode = 'full',
+    onChangeExportMode
 }) => {
     if (!stats || !shiftsData || shiftsData.length === 0) return null;
     
@@ -52,14 +55,53 @@ export const DayStatusHeader = ({
                         </button>
                     )}
                     {onExportLines && (
-                        <button
-                            onClick={onExportLines}
-                            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
-                            title="Экспорт графика по линиям"
-                        >
-                            <FileSpreadsheet size={14} />
-                            Экспорт (Линии)
-                        </button>
+                        <div className="flex items-center gap-1">
+                            {onChangeExportMode && (
+                                <div className="inline-flex rounded-lg border border-emerald-200 bg-white text-[11px] overflow-hidden mr-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => onChangeExportMode('full')}
+                                        className={`px-2 py-1 font-semibold transition-colors ${
+                                            exportMode === 'full'
+                                                ? 'bg-emerald-600 text-white'
+                                                : 'text-emerald-700 hover:bg-emerald-50'
+                                        }`}
+                                    >
+                                        С людьми
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => onChangeExportMode('vacancies')}
+                                        className={`px-2 py-1 font-semibold transition-colors border-l border-emerald-200 ${
+                                            exportMode === 'vacancies'
+                                                ? 'bg-emerald-600 text-white'
+                                                : 'text-emerald-700 hover:bg-emerald-50'
+                                        }`}
+                                    >
+                                        Вакансии
+                                    </button>
+                                </div>
+                            )}
+                            <button
+                                onClick={() => onExportLines(exportMode)}
+                                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors shadow-sm"
+                                title={exportMode === 'vacancies' ? 'Экспорт плана только по вакансиям' : 'Экспорт графика по линиям с людьми'}
+                            >
+                                <FileSpreadsheet size={14} />
+                                Экспорт (Линии)
+                            </button>
+                            {onShowRawLineEvents && (
+                                <button
+                                    type="button"
+                                    onClick={onShowRawLineEvents}
+                                    className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+                                    title="Сырые данные по событиям на линиях (demand + production)"
+                                >
+                                    <List size={14} />
+                                    Сырые данные
+                                </button>
+                            )}
+                        </div>
                     )}
                 </div>
             </div>

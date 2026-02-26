@@ -43,8 +43,10 @@ import { useChessTable } from './modules/useChessTable';
 import {
     exportWithExcelJS,
     exportWithXLSX,
-    exportScheduleByLinesToExcel as exportScheduleByLinesToExcelFromModule
+    exportScheduleByLinesToExcel as exportScheduleByLinesToExcelFromModule,
+    getLineTimelineRawData as getLineTimelineRawDataFromModule
 } from './modules/exportUtils';
+import { parsePlanLineSheets } from './modules/planLineSheetsParser';
 
 const DATA_CONTEXT_DEFAULT = Object.freeze({ __DATA_PROVIDER: false });
 const DataContext = createContext(DATA_CONTEXT_DEFAULT);
@@ -845,8 +847,13 @@ export const DataProvider = ({ children }) => {
 
                 if (!loadedData['demand'] || !loadedData['roster']) throw new Error('Неверная структура файла.');
 
-                const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
                 const demandData = loadedData['demand'];
+                const rawDates = (demandData.slice(1) || []).map(row => normalizeExcelDate(row[11])).filter(d => d);
+                const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
+                const scheduleDatesFromDemand = uniqueTimestamps.map(ts => formatDateLocal(new Date(ts)));
+                loadedData.planLineEvents = parsePlanLineSheets(workbook, scheduleDatesFromDemand);
+
+                const { templates: newTemplates } = preAnalyzeRoster(loadedData['roster']);
                 const newHashes = buildPlanHashes(demandData, newTemplates);
 
                 const oldHashes = planHashes;
@@ -878,6 +885,11 @@ export const DataProvider = ({ children }) => {
                 setManualAssignments(keptAssignments);
                 setRawTables(loadedData);
                 setPlanHashes(newHashes);
+                const planEvents = loadedData.planLineEvents || [];
+                if (planEvents.length > 0) {
+                    const totalRows = planEvents.reduce((acc, p) => acc + (p.rows?.length || 0), 0);
+                    notify({ type: 'info', message: `Загружено расписание. События с листов линий плана: ${totalRows} интервалов (${planEvents.length} линий).` });
+                }
                 analyzeData(loadedData['demand'], loadedData['roster']);
                 saveSourceDataToLocal(loadedData, newHashes);
                 persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, keptAssignments);
@@ -964,6 +976,13 @@ export const DataProvider = ({ children }) => {
                 if (importRoster && hasRoster) {
                     nextRaw = { ...nextRaw, roster: loadedData['roster'] };
                 }
+                let datesForPlan = scheduleDates || [];
+                if (loadedData['demand']) {
+                    const rawDates = (loadedData['demand'].slice(1) || []).map(row => normalizeExcelDate(row[11])).filter(d => d);
+                    const uniqueTimestamps = [...new Set(rawDates.map(d => d.getTime()))].sort((a, b) => a - b);
+                    datesForPlan = uniqueTimestamps.map(ts => formatDateLocal(new Date(ts)));
+                }
+                nextRaw.planLineEvents = parsePlanLineSheets(workbook, datesForPlan);
 
                 let nextPlanHashes = { ...planHashes };
                 let keptAssignments = manualAssignments || {};
@@ -1421,14 +1440,22 @@ export const DataProvider = ({ children }) => {
     const chessTableBase = chessTableBaseFromModule;
     const chessTableWorkerStatus = chessTableWorkerStatusFromModule;
 
-    const exportScheduleByLinesToExcel = useCallback(async () => {
+    const exportScheduleByLinesToExcel = useCallback(async (mode = 'full') => {
         return exportScheduleByLinesToExcelFromModule({
             scheduleDates,
             lineTemplates,
             getShiftsForDate,
-            notify
+            notify,
+            mode,
+            productionResults,
+            demandTable: rawTables?.demand ?? null,
+            planLineEvents: rawTables?.planLineEvents ?? []
         });
-    }, [scheduleDates, lineTemplates, getShiftsForDate, notify]);
+    }, [scheduleDates, lineTemplates, getShiftsForDate, notify, productionResults, rawTables]);
+
+    const getLineTimelineRawData = useCallback(() => {
+        return getLineTimelineRawDataFromModule(rawTables?.demand ?? null, productionResults ?? [], scheduleDates ?? [], rawTables?.planLineEvents ?? []);
+    }, [rawTables?.demand, rawTables?.planLineEvents, productionResults, scheduleDates]);
 
     const exportChessTableToExcel = useCallback(async () => {
         if (USE_CHESS_WORKER && chessTableWorkerStatus.status === 'calculating') {
@@ -1595,6 +1622,7 @@ export const DataProvider = ({ children }) => {
         cloneAssignedWorker,
         removeCloneEntry,
         calculateChessTable, exportChessTableToExcel, exportScheduleByLinesToExcel,
+        getLineTimelineRawData,
         applyAutoReassignForDate,
         resetAssignmentsForShift,
         resetAssignmentsForDay,
@@ -1643,6 +1671,7 @@ export const DataProvider = ({ children }) => {
         removeCloneEntry,
         exportChessTableToExcel,
         exportScheduleByLinesToExcel,
+        getLineTimelineRawData,
         persistStateKey,
         wipeDataCategories
     ]);

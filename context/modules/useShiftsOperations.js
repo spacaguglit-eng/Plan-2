@@ -303,6 +303,37 @@ export const useShiftsOperations = ({
     // Callbacks
     updateAssignments
 }) => {
+    const parseDateString = (dateStr) => {
+        if (!dateStr) return null;
+        const parts = String(dateStr).split('.');
+        if (parts.length !== 3) return null;
+        const [d, m, y] = parts.map((v) => parseInt(v, 10));
+        if (!Number.isFinite(d) || !Number.isFinite(m) || !Number.isFinite(y)) return null;
+        return new Date(y, m - 1, d);
+    };
+
+    const getShiftBounds = (dateStr, shiftType) => {
+        const baseDate = parseDateString(dateStr);
+        if (!baseDate) return { start: null, end: null };
+        const lower = String(shiftType || '').toLowerCase();
+        const isNight = lower.includes('ночь');
+
+        const start = new Date(baseDate);
+        const end = new Date(baseDate);
+
+        if (isNight) {
+            // Ночная смена: 20:00 текущего дня — 08:00 следующего
+            start.setHours(20, 0, 0, 0);
+            end.setDate(end.getDate() + 1);
+            end.setHours(8, 0, 0, 0);
+        } else {
+            // Дневная смена: 08:00–20:00
+            start.setHours(8, 0, 0, 0);
+            end.setHours(20, 0, 0, 0);
+        }
+
+        return { start, end };
+    };
     /**
      * Строит смены из карты бригад для конкретной даты
      */
@@ -321,6 +352,7 @@ export const useShiftsOperations = ({
 
         return Object.values(brigadesMap).map(brigade => {
             const shiftTypeLower = brigade.type ? brigade.type.toLowerCase() : '';
+            const { start: shiftStart, end: shiftEnd } = getShiftBounds(targetDate, brigade.type);
             const lineTasks = [];
 
             const allShiftWorkers = [];
@@ -521,6 +553,8 @@ export const useShiftsOperations = ({
                 id: brigade.id,
                 name: brigade.name,
                 type: brigade.type,
+                startTime: shiftStart,
+                endTime: shiftEnd,
                 lineTasks,
                 unassignedPeople,
                 floaters: freeFloaters,

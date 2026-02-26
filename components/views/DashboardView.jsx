@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown, RotateCcw } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal } from '../modals/RvPickerModal';
+import { LineEventsRawModal } from '../modals/LineEventsRawModal';
 import { DayStatusHeader } from '../common/DayStatusHeader';
 import { CustomDateSelector } from '../common/CustomDateSelector';
 import { normalizeName } from '../../utils';
@@ -195,6 +196,7 @@ const DashboardView = () => {
         cloneAssignedWorker,
         removeCloneEntry,
         exportScheduleByLinesToExcel,
+        getLineTimelineRawData,
         isGlobalFill,
         setIsGlobalFill,
         autoReassignEnabled,
@@ -228,6 +230,24 @@ const DashboardView = () => {
         endDate: '',
         endTime: ''
     });
+    const [showLineEventsRawModal, setShowLineEventsRawModal] = useState(false);
+    const [exportMode, setExportMode] = useState(() => {
+        if (typeof window === 'undefined') return 'full';
+        try {
+            const stored = window.localStorage.getItem('plan_export_mode_lines');
+            return stored === 'vacancies' ? 'vacancies' : 'full';
+        } catch {
+            return 'full';
+        }
+    }); // 'full' | 'vacancies'
+
+    useEffect(() => {
+        try {
+            window.localStorage.setItem('plan_export_mode_lines', exportMode);
+        } catch {
+            // ignore
+        }
+    }, [exportMode]);
     // Create normalized registry map for robust lookup
     const normalizedRegistry = useMemo(() => {
         const map = new Map();
@@ -496,8 +516,11 @@ const DashboardView = () => {
                 manualAssignments={manualAssignments}
                 onRunAutoReassign={() => applyAutoReassignForDate(selectedDate)}
                 onExportLines={exportScheduleByLinesToExcel}
+                onShowRawLineEvents={getLineTimelineRawData ? () => setShowLineEventsRawModal(true) : undefined}
                 onResetDay={() => resetAssignmentsForDay(selectedDate)}
                 onResetAll={resetAssignmentsAll}
+                exportMode={exportMode}
+                onChangeExportMode={setExportMode}
                 dateSelector={
                     <div className="flex items-center gap-3 flex-wrap">
                         <CustomDateSelector
@@ -553,6 +576,16 @@ const DashboardView = () => {
                     onAssign={handleAssignRv}
                 />
             )}
+            {showLineEventsRawModal && getLineTimelineRawData && (() => {
+                const { rawIntervals, lineTimelines } = getLineTimelineRawData();
+                return (
+                    <LineEventsRawModal
+                        rawIntervals={rawIntervals}
+                        lineTimelines={lineTimelines}
+                        onClose={() => setShowLineEventsRawModal(false)}
+                    />
+                );
+            })()}
             {(selectedShiftId && displayShifts.length === 0) && (
                 <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
                     На выбранную дату эта смена не выходит.

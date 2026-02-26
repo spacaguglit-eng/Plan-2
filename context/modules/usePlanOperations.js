@@ -65,6 +65,7 @@ export const usePlanOperations = ({
         // - расстановка (manualAssignments/manualLines/assignmentClones)
         // Всё, что относится к справочнику людей/линий, хранится глобально.
         const demandOnly = rawTables?.demand ? { demand: rawTables.demand } : {};
+        if (rawTables?.planLineEvents) demandOnly.planLineEvents = rawTables.planLineEvents;
         return {
             rawTables: demandOnly,
             scheduleDates,
@@ -83,6 +84,15 @@ export const usePlanOperations = ({
         if (!planData) return;
         const nextRaw = { ...(planData.rawTables || {}) };
         if (nextRaw.demand) nextRaw.demand = restoreDemandDates(nextRaw.demand);
+        if (nextRaw.planLineEvents && Array.isArray(nextRaw.planLineEvents)) {
+            nextRaw.planLineEvents = nextRaw.planLineEvents.map(({ lineName, rows }) => ({
+                lineName,
+                rows: (rows || []).map((r) => ({
+                    start: r.start ? new Date(r.start) : null,
+                    end: r.end ? new Date(r.end) : null
+                })).filter((r) => r.start && r.end)
+            }));
+        }
 
         // lineTemplates, floaters, workerRegistry — только если в плане есть roster (demand+roster дают анализ).
         // Иначе не трогаем глобальные люди/линии, чтобы не затирать их пустыми значениями при загрузке плана без roster.
@@ -135,8 +145,17 @@ export const usePlanOperations = ({
 
         const restoredDemand = restoreDemandDates(planDemandRaw);
 
-        // Обновляем только demand, roster оставляем как есть (глобальный)
+        // Обновляем только demand, roster оставляем как есть (глобальный). Восстанавливаем planLineEvents из плана при наличии.
         const nextRaw = { ...(rawTables || {}), demand: restoredDemand };
+        if (planData.rawTables?.planLineEvents && Array.isArray(planData.rawTables.planLineEvents)) {
+            nextRaw.planLineEvents = planData.rawTables.planLineEvents.map(({ lineName, rows }) => ({
+                lineName,
+                rows: (rows || []).map((r) => ({
+                    start: r.start ? new Date(r.start) : null,
+                    end: r.end ? new Date(r.end) : null
+                })).filter((r) => r.start && r.end)
+            }));
+        }
 
         // scheduleDates: берём из плана (если есть), иначе считаем по demand (не зависит от roster)
         let nextScheduleDates = Array.isArray(planData.scheduleDates) ? planData.scheduleDates : [];

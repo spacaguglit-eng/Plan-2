@@ -263,6 +263,59 @@ export const formatDateLocal = (date) => {
     return `${day}.${month}.${year}`;
 };
 
+/**
+ * Парсинг даты-времени из Excel (число = serial с долей дня, строка = локальный формат).
+ * @param {*} value - число (Excel serial), строка или Date
+ * @param {{ referenceYear?: number }} [options] - опционально год для формата «DD Месяц, HH:MM»
+ * @returns {Date|null}
+ */
+export const parseExcelDateTime = (value, options) => {
+    if (value == null || value === '') return null;
+    if (value instanceof Date) {
+        const d = value;
+        if (isNaN(d.getTime()) || d.getFullYear() < 2000) return null;
+        return d;
+    }
+    if (typeof value === 'number') {
+        const daySerial = Math.floor(value);
+        const fraction = value - daySerial;
+        const base = new Date(1899, 11, 30);
+        base.setDate(base.getDate() + daySerial);
+        const hours = fraction * 24;
+        const h = Math.floor(hours);
+        const min = Math.floor((hours - h) * 60);
+        base.setHours(h, min, 0, 0);
+        if (isNaN(base.getTime()) || base.getFullYear() < 2000) return null;
+        return base;
+    }
+    if (typeof value !== 'string') return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    const ddmm = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})/);
+    if (ddmm) {
+        const [, d, m, y, h, min] = ddmm.map(Number);
+        const date = new Date(y, m - 1, d, h, min, 0, 0);
+        if (isNaN(date.getTime()) || date.getFullYear() < 2000) return null;
+        return date;
+    }
+    const ruMonthGen = s.match(/(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)[,\s]+(\d{1,2}):(\d{2})/i);
+    const ruMonthNom = s.match(/(\d{1,2})\s+(январь|февраль|март|апрель|июнь|июль|август|сентябрь|октябрь|ноябрь|декабрь)[,\s]+(\d{1,2}):(\d{2})/i);
+    const ruMonth = ruMonthGen || ruMonthNom;
+    if (ruMonth) {
+        const months = { января:0, февраля:1, марта:2, апреля:3, мая:4, июня:5, июля:6, августа:7, сентября:8, октября:9, ноября:10, декабря:11, январь:0, февраль:1, март:2, апрель:3, май:4, июнь:5, июль:6, август:7, сентябрь:8, октябрь:9, ноябрь:10, декабрь:11 };
+        const [, day, monthName, h, min] = ruMonth;
+        const month = months[monthName.toLowerCase()];
+        if (month === undefined) return null;
+        const referenceYear = options?.referenceYear ?? new Date().getFullYear();
+        const date = new Date(referenceYear, month, parseInt(day, 10), parseInt(h, 10), parseInt(min, 10), 0, 0);
+        if (isNaN(date.getTime()) || date.getFullYear() < 2000) return null;
+        return date;
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime()) || d.getFullYear() < 2000) return null;
+    return d;
+};
+
 // Нормализация даты из Excel (преобразует в локальную дату без учета часового пояса)
 export const normalizeExcelDate = (dateVal) => {
     if (!dateVal) return null;
