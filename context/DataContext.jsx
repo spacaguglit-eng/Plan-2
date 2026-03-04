@@ -149,11 +149,18 @@ export const DataProvider = ({ children }) => {
     const [manualAssignments, setManualAssignments] = useState({});
     
     const [manualLines, setManualLinesState] = useState({});
+    const restoringRef = useRef(restoring);
+    useEffect(() => { restoringRef.current = restoring; }, [restoring]);
     const setManualLines = useCallback((value) => {
-        const next = typeof value === 'function' ? value(manualLines) : value;
-        setManualLinesState(next);
-        if (!restoring) persistStateKey(STORAGE_KEYS.MANUAL_LINES, next);
-    }, [manualLines, restoring, persistStateKey]);
+        setManualLinesState((prev) => {
+            const next = typeof value === 'function' ? value(prev) : value;
+            const pending = pendingUpdatesRef?.current || {};
+            if (!restoringRef.current) {
+                persistStateKey(STORAGE_KEYS.MANUAL_LINES, next);
+            }
+            return next;
+        });
+    }, [persistStateKey, pendingUpdatesRef]);
 
     const [assignmentClones, setAssignmentClonesState] = useState({});
     const setAssignmentClones = useCallback((value) => {

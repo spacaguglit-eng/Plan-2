@@ -949,10 +949,31 @@ const ProductionView = () => {
         };
 
         parts.push('<section class="report-section">');
-        parts.push('<h2 class="section-title">Разбор по линиям</h2>');
-        for (const item of chartData.byLine) {
-            parts.push(renderItem(item, 'line'));
+
+        // Если выбрано несколько дат — печатаем разбор по датам (внутри каждой даты простои сгруппированы по линиям).
+        // Каждую дату, начиная со второй, выводим с нового листа.
+        if (filterDates.length > 1 && chartData.byDate.length > 0) {
+            parts.push('<h2 class="section-title">Разбор по датам</h2>');
+
+            const byDateMap = new Map(chartData.byDate.map((item) => [item.date, item]));
+            const orderedDates = [...new Set(filterDates)].sort(naturalCompare);
+
+            orderedDates.forEach((date, index) => {
+                const item = byDateMap.get(date);
+                if (!item) return;
+                if (index > 0) {
+                    parts.push('<div class="page-break"></div>');
+                }
+                parts.push(renderItem(item, 'date'));
+            });
+        } else {
+            // Старое поведение: разбор по линиям (для одной даты или без фильтра дат)
+            parts.push('<h2 class="section-title">Разбор по линиям</h2>');
+            for (const item of chartData.byLine) {
+                parts.push(renderItem(item, 'line'));
+            }
         }
+
         parts.push('</section>');
         parts.push('</div>');
 
@@ -965,7 +986,7 @@ const ProductionView = () => {
             + '.report-meta{font-size:12px;color:#475569;margin-bottom:14px;}'
             + '.report-section{margin-top:10px;}'
             + '.section-title{font-size:16px;font-weight:700;margin:0 0 10px;padding:0 0 6px;border-bottom:2px solid #1f2937;color:#111827;}'
-            + '.item-block{margin-bottom:10px;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;break-inside:avoid;}'
+            + '.item-block{margin-bottom:10px;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;break-inside:auto;page-break-inside:auto;}'
             + '.item-header{display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:6px;}'
             + '.item-date{font-size:15px;color:#0f172a;}'
             + '.item-kpis{display:flex;gap:8px;flex-wrap:wrap;}'
@@ -980,7 +1001,8 @@ const ProductionView = () => {
             + '.item-unplanned-line{margin:2px 0 2px 20px;padding-left:8px;border-left:2px solid #9ca3af;color:#1f2937;}'
             + '.item-unplanned-line.shift-day{border-left-color:#eab308;background:#fef9c3;}'
             + '.item-unplanned-line.shift-night{border-left-color:#3b82f6;background:#dbeafe;}'
-            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;} .item-unplanned-line.shift-day{border-left-color:#b45309;background:#fef3c7;} .item-unplanned-line.shift-night{border-left-color:#1d4ed8;background:#dbeafe;}}</style></head><body>'
+            + '.page-break{page-break-before:always;break-before:page;}'
+            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;break-inside:auto;page-break-inside:auto;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;} .item-unplanned-line.shift-day{border-left-color:#b45309;background:#fef3c7;} .item-unplanned-line.shift-night{border-left-color:#1d4ed8;background:#dbeafe;}}</style></head><body>'
             + bodyHtml
             + '</body></html>';
         const w = window.open('', '_blank');
@@ -988,9 +1010,22 @@ const ProductionView = () => {
             w.document.write(html);
             w.document.close();
             w.focus();
-            if (offerPrintOnOpen) setTimeout(() => w.print(), 300);
+            if (offerPrintOnOpen) {
+                const triggerPrint = () => {
+                    try {
+                        w.print();
+                    } catch (_) {}
+                };
+                if ('onload' in w) {
+                    w.onload = () => {
+                        setTimeout(triggerPrint, 100);
+                    };
+                } else {
+                    setTimeout(triggerPrint, 300);
+                }
+            }
         }
-    }, [chartData, offerPrintOnOpen]);
+    }, [chartData, offerPrintOnOpen, filterDates]);
 
     useEffect(() => {
         if (!isElectron) return;

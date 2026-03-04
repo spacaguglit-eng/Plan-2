@@ -37,15 +37,28 @@ const formatDayIndexToDate = (dayIndex) => {
 const dateToInputValue = (dateStr) => {
     if (!dateStr || !String(dateStr).includes('.')) return '';
     const parts = String(dateStr).split('.');
-    const [d, m, y] = parts;
-    if (!d || !m || !y) return '';
+    const [dRaw, mRaw, yRaw] = parts;
+    const dNum = parseInt(dRaw, 10);
+    const mNum = parseInt(mRaw, 10);
+    const yNum = parseInt(yRaw, 10);
+    if (!Number.isFinite(dNum) || !Number.isFinite(mNum) || !Number.isFinite(yNum)) return '';
+    const d = String(dNum).padStart(2, '0');
+    const m = String(mNum).padStart(2, '0');
+    const y = String(yNum);
+    // HTML date input requires YYYY-MM-DD with zero-padded month/day
     return `${y}-${m}-${d}`;
 };
 
 const normalizeInputDate = (value) => {
     if (!value || !String(value).includes('-')) return value;
-    const [y, m, d] = String(value).split('-');
-    if (!y || !m || !d) return value;
+    const [yRaw, mRaw, dRaw] = String(value).split('-');
+    const dNum = parseInt(dRaw, 10);
+    const mNum = parseInt(mRaw, 10);
+    const yNum = parseInt(yRaw, 10);
+    if (!Number.isFinite(dNum) || !Number.isFinite(mNum) || !Number.isFinite(yNum)) return value;
+    const d = String(dNum).padStart(2, '0');
+    const m = String(mNum).padStart(2, '0');
+    const y = String(yNum);
     return `${d}.${m}.${y}`;
 };
 
@@ -54,6 +67,39 @@ const buildAbsMinutes = (dateStr, timeStr) => {
     if (dayIdx == null) return null;
     const minutes = parseTimeToMinutes(timeStr);
     return minutes == null ? null : dayIdx * 1440 + minutes;
+};
+
+const parseDateLocal = (value) => {
+    if (!value || !String(value).includes('.')) return null;
+    const [dRaw, mRaw, yRaw] = String(value).split('.');
+    const d = parseInt(dRaw, 10);
+    const m = parseInt(mRaw, 10);
+    const y = parseInt(yRaw, 10);
+    if (!Number.isFinite(d) || !Number.isFinite(m) || !Number.isFinite(y)) return null;
+    const dt = new Date(y, m - 1, d);
+    if (isNaN(dt.getTime())) return null;
+    dt.setHours(0, 0, 0, 0);
+    return dt;
+};
+
+const buildDateTimeLocal = (dateStr, timeStr) => {
+    const base = parseDateLocal(dateStr);
+    if (!base) return null;
+    const minutes = parseTimeToMinutes(timeStr);
+    if (minutes == null) return null;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    const dt = new Date(base);
+    dt.setHours(h, m, 0, 0);
+    return dt;
+};
+
+const formatLocalDateToDdMmYyyy = (date) => {
+    if (!date || isNaN(date.getTime())) return '';
+    const d = String(date.getDate()).padStart(2, '0');
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const y = String(date.getFullYear());
+    return `${d}.${m}.${y}`;
 };
 
 const addDaysToDate = (dateStr, days) => {
@@ -457,9 +503,9 @@ const DashboardView = () => {
         const endDate = manualLineForm.endDate || manualLineForm.startDate || selectedDate;
         const startTime = manualLineForm.startTime || fallbackStart;
         const endTime = manualLineForm.endTime || fallbackEnd;
-        let startAbs = buildAbsMinutes(startDate, startTime);
-        let endAbs = buildAbsMinutes(endDate, endTime);
-        if (startAbs == null || endAbs == null) {
+        const startDt = buildDateTimeLocal(startDate, startTime);
+        let endDt = buildDateTimeLocal(endDate, endTime);
+        if (!startDt || !endDt) {
             addManualLine({
                 date: selectedDate,
                 shiftId: shift.id,
@@ -470,27 +516,54 @@ const DashboardView = () => {
             closeManualLineForm();
             return;
         }
-        if (endAbs <= startAbs) endAbs += 1440;
+        // If user selected an end that is not after start, treat it as next day(s) until it becomes valid.
+        while (endDt.getTime() <= startDt.getTime()) {
+            endDt = new Date(endDt.getTime() + 86400000);
+        }
+
+        const startDayDt = new Date(startDt);
+        startDayDt.setHours(0, 0, 0, 0);
+        // inclusive end day: use endDt - 1ms
+        const endInclusive = new Date(endDt.getTime() - 1);
+        endInclusive.setHours(0, 0, 0, 0);
+        const startDayMs = startDayDt.getTime();
+        const endDayMs = endInclusive.getTime();
+
         const candidateDates = scheduleDates && scheduleDates.length > 0
-            ? scheduleDates
+            ? scheduleDates.filter(d => {
+                const dt = parseDateLocal(d);
+                if (!dt) return false;
+                const ms = dt.getTime();
+                return ms >= startDayMs && ms <= endDayMs;
+            })
             : (() => {
-                const startDay = Math.floor(startAbs / 1440);
-                const endDay = Math.floor((endAbs - 1) / 1440);
                 const dates = [];
-                for (let day = startDay; day <= endDay; day += 1) {
-                    dates.push(formatDayIndexToDate(day));
+                const cur = new Date(startDayDt);
+                while (cur.getTime() <= endDayMs) {
+                    dates.push(formatLocalDateToDdMmYyyy(cur));
+                    cur.setDate(cur.getDate() + 1);
                 }
                 return dates;
             })();
         candidateDates.forEach(dateStr => {
             const shiftsForDate = getShiftsForDate(dateStr);
-            const dayIdx = parseDateToDayIndex(dateStr);
-            if (dayIdx == null) return;
             shiftsForDate.forEach(targetShift => {
-                const isNight = String(targetShift.type || '').toLowerCase().includes('ночь');
-                const shiftStart = dayIdx * 1440 + (isNight ? 20 * 60 : 8 * 60);
-                const shiftEnd = (dayIdx + (isNight ? 1 : 0)) * 1440 + (isNight ? 8 * 60 : 20 * 60);
-                const overlap = Math.min(endAbs, shiftEnd) - Math.max(startAbs, shiftStart);
+                const shiftStartMs = targetShift?.startTime instanceof Date
+                    ? targetShift.startTime.getTime()
+                    : (buildDateTimeLocal(dateStr, String(targetShift?.type || '').toLowerCase().includes('ночь') ? '20:00' : '08:00')?.getTime() ?? null);
+                let shiftEndMs = targetShift?.endTime instanceof Date
+                    ? targetShift.endTime.getTime()
+                    : null;
+                if (shiftEndMs == null) {
+                    const isNight = String(targetShift?.type || '').toLowerCase().includes('ночь');
+                    const endBase = buildDateTimeLocal(dateStr, isNight ? '08:00' : '20:00');
+                    if (endBase) {
+                        if (isNight) endBase.setDate(endBase.getDate() + 1);
+                        shiftEndMs = endBase.getTime();
+                    }
+                }
+                if (shiftStartMs == null || shiftEndMs == null) return;
+                const overlap = Math.min(endDt.getTime(), shiftEndMs) - Math.max(startDt.getTime(), shiftStartMs);
                 if (overlap <= 0) return;
                 const key = `${dateStr}_${targetShift.id}`;
                 const existing = manualLines[key] || [];
