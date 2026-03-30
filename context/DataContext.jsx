@@ -47,6 +47,12 @@ import {
     getLineTimelineRawData as getLineTimelineRawDataFromModule
 } from './modules/exportUtils';
 import { parsePlanLineSheets } from './modules/planLineSheetsParser';
+import {
+    loadProductionTabSnapshot,
+    saveProductionTabResults,
+    saveProductionTabExcluded,
+    saveProductionTabNorms,
+} from '../services/productionTabStorage';
 
 const DATA_CONTEXT_DEFAULT = Object.freeze({ __DATA_PROVIDER: false });
 const DataContext = createContext(DATA_CONTEXT_DEFAULT);
@@ -210,6 +216,17 @@ export const DataProvider = ({ children }) => {
     const [productionExcludedDowntimeTypes, setProductionExcludedDowntimeTypesState] = useState(null);
     const [productionLineNorms, setProductionLineNormsState] = useState(null);
 
+    useEffect(() => {
+        try {
+            const snap = loadProductionTabSnapshot();
+            if (snap.results != null) setProductionResultsState(snap.results);
+            if (snap.excluded != null) setProductionExcludedDowntimeTypesState(snap.excluded);
+            if (snap.norms != null) setProductionLineNormsState(snap.norms);
+        } catch (e) {
+            console.error('loadProductionTabSnapshot', e);
+        }
+    }, []);
+
     const setAllEmployees = useCallback((value) => {
         const next = typeof value === 'function' ? value(allEmployees) : value;
         setAllEmployeesState(next);
@@ -228,18 +245,18 @@ export const DataProvider = ({ children }) => {
     const setProductionResults = useCallback((value) => {
         const next = typeof value === 'function' ? value(productionResults) : value;
         setProductionResultsState(next);
-        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_RESULTS, next);
-    }, [productionResults, restoring, persistStateKey]);
+        if (!restoring) saveProductionTabResults(next);
+    }, [productionResults, restoring]);
     const setProductionExcludedDowntimeTypes = useCallback((value) => {
         const next = typeof value === 'function' ? value(productionExcludedDowntimeTypes) : value;
         setProductionExcludedDowntimeTypesState(next);
-        if (!restoring) persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, next);
-    }, [productionExcludedDowntimeTypes, restoring, persistStateKey]);
+        if (!restoring) saveProductionTabExcluded(next);
+    }, [productionExcludedDowntimeTypes, restoring]);
     const setProductionLineNorms = useCallback((value) => {
         const next = typeof value === 'function' ? value(productionLineNorms) : value;
         setProductionLineNormsState(next);
-        if (!restoring)         persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, next);
-    }, [productionLineNorms, restoring, persistStateKey]);
+        if (!restoring) saveProductionTabNorms(next);
+    }, [productionLineNorms, restoring]);
 
     /**
      * Селективная очистка данных по конкретным ключам STORAGE_KEYS.
@@ -320,15 +337,15 @@ export const DataProvider = ({ children }) => {
 
             if (keySet.has(STORAGE_KEYS.PRODUCTION_RESULTS)) {
                 setProductionResultsState(null);
-                persistStateKey(STORAGE_KEYS.PRODUCTION_RESULTS, null);
+                saveProductionTabResults(null);
             }
             if (keySet.has(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES)) {
                 setProductionExcludedDowntimeTypesState(null);
-                persistStateKey(STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES, null);
+                saveProductionTabExcluded(null);
             }
             if (keySet.has(STORAGE_KEYS.PRODUCTION_LINE_NORMS)) {
                 setProductionLineNormsState(null);
-                persistStateKey(STORAGE_KEYS.PRODUCTION_LINE_NORMS, null);
+                saveProductionTabNorms(null);
             }
 
             notify({ type: 'success', message: 'Выбранные ключи очищены' });
@@ -572,9 +589,6 @@ export const DataProvider = ({ children }) => {
             setAllEmployees: setAllEmployeesState,
             setDepartmentMasterList: setDepartmentMasterListState,
             setPlanningState: setPlanningStateState,
-            setProductionResults: setProductionResultsState,
-            setProductionExcludedDowntimeTypes: setProductionExcludedDowntimeTypesState,
-            setProductionLineNorms: setProductionLineNormsState,
             applyPlanData,
             getCurrentPlans: () => savedPlansRef.current,
             hydrateWorkerRegistry,
@@ -1499,9 +1513,9 @@ export const DataProvider = ({ children }) => {
         allEmployees: pendingUpdates[STORAGE_KEYS.ALL_EMPLOYEES] ?? allEmployees,
         departmentMasterList: pendingUpdates[STORAGE_KEYS.DEPARTMENT_MASTER_LIST] ?? departmentMasterList,
         planningState: effectivePlanId ? (pendingUpdates[STORAGE_KEYS.PLANNING_STATE] ?? planningState) : null,
-        productionResults: pendingUpdates[STORAGE_KEYS.PRODUCTION_RESULTS] ?? productionResults,
-        productionExcludedDowntimeTypes: pendingUpdates[STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES] ?? productionExcludedDowntimeTypes,
-        productionLineNorms: pendingUpdates[STORAGE_KEYS.PRODUCTION_LINE_NORMS] ?? productionLineNorms ?? getDefaultLineNorms([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        productionResults,
+        productionExcludedDowntimeTypes,
+        productionLineNorms: productionLineNorms ?? getDefaultLineNorms([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
         };
     }, [
         pendingUpdates,

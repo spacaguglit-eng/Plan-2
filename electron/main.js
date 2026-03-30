@@ -5,6 +5,54 @@ const https = require('https');
 const http = require('http');
 const isDev = process.env.NODE_ENV === 'development';
 
+const DEV_SERVER_PORT = Number(process.env.VITE_DEV_SERVER_PORT || 3000);
+
+/** Electron стартует быстрее Vite — без ожидания порта получается белый экран и пустая консоль. */
+function waitForDevServer(port, timeoutMs = 120000) {
+  const url = `http://127.0.0.1:${port}/`;
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tryConnect = () => {
+      const req = http.get(url, { timeout: 1500 }, (res) => {
+        res.resume();
+        resolve();
+      });
+      req.on('error', () => {
+        req.destroy();
+        if (Date.now() - start > timeoutMs) {
+          reject(new Error(`Нет ответа от dev-сервера (${url}). Запустите Vite или проверьте порт.`));
+        } else {
+          setTimeout(tryConnect, 200);
+        }
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        if (Date.now() - start > timeoutMs) {
+          reject(new Error(`Таймаут ожидания dev-сервера (${url}).`));
+        } else {
+          setTimeout(tryConnect, 200);
+        }
+      });
+    };
+    tryConnect();
+  });
+}
+
+/** Второй запуск (двойной клик по батнику) не плодит окна — фокус на уже открытом. */
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+let mainWindow = null;
+
 ipcMain.handle('production:selectFiles', async () => {
   const { filePaths } = await dialog.showOpenDialog({
     properties: ['openFile', 'multiSelections'],
@@ -125,6 +173,40 @@ ipcMain.handle('production:getFileStats', async (_, filePaths) => {
   return result;
 });
 
+const PRODUCTION_PATHS_STORE = 'production-selected-paths.json';
+
+function getProductionPathsStoreFile() {
+  return path.join(app.getPath('userData'), PRODUCTION_PATHS_STORE);
+}
+
+async function readProductionSelectedPaths() {
+  try {
+    const filePath = getProductionPathsStoreFile();
+    const raw = await fs.promises.readFile(filePath, 'utf8');
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.filter((x) => typeof x === 'string' && String(x).trim());
+  } catch (_) {
+    return [];
+  }
+}
+
+async function writeProductionSelectedPaths(paths) {
+  const dir = app.getPath('userData');
+  await fs.promises.mkdir(dir, { recursive: true });
+  const clean = Array.isArray(paths)
+    ? paths.filter((p) => typeof p === 'string' && String(p).trim()).map((p) => String(p).trim())
+    : [];
+  await fs.promises.writeFile(getProductionPathsStoreFile(), JSON.stringify(clean), 'utf8');
+}
+
+ipcMain.handle('production:getSelectedPaths', async () => readProductionSelectedPaths());
+
+ipcMain.handle('production:setSelectedPaths', async (_, paths) => {
+  await writeProductionSelectedPaths(paths);
+  return { ok: true };
+});
+
 // Минимальный экран «Загрузка…» — показываем окно сразу, приложение грузится потом
 const LOADING_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
 <!DOCTYPE html>
@@ -149,7 +231,7 @@ const LOADING_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
 `)}`;
 
 function createWindow() {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 800,
@@ -163,17 +245,47 @@ function createWindow() {
     title: 'Планировщик смен',
     backgroundColor: '#f1f5f9',
   });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 
   // Сначала показываем окно с экраном «Загрузка…» — пользователь видит окно за доли секунды
   mainWindow.loadURL(LOADING_HTML);
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    // Затем грузим настоящее приложение в том же окне
     if (isDev) {
-      mainWindow.loadURL('http://localhost:3000');
-      mainWindow.webContents.openDevTools();
+      (async () => {
+        try {
+          await waitForDevServer(DEV_SERVER_PORT);
+          await mainWindow.loadURL(`http://127.0.0.1:${DEV_SERVER_PORT}/`);
+          mainWindow.webContents.openDevTools();
+        } catch (err) {
+          console.error(err);
+          const msg = String(err && err.message ? err.message : err);
+          const html = `data:text/html;charset=utf-8,${encodeURIComponent(
+            `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Ошибка</title></head><body style="font-family:system-ui;padding:2rem;background:#fef2f2;color:#991b1b">` +
+              `<h1>Не удалось подключиться к Vite</h1><p>${msg.replace(/</g, '&lt;')}</p>` +
+              `<p style="color:#64748b;font-size:14px">Убедитесь, что порт ${DEV_SERVER_PORT} свободен и команда <code>npm run dev</code> запущена (или используйте <code>npm run dev:electron</code>).</p></body></html>`
+          )}`;
+          await mainWindow.loadURL(html);
+          mainWindow.webContents.openDevTools();
+        }
+      })();
     } else {
-      mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+      const indexPath = path.join(__dirname, '../dist/index.html');
+      if (!fs.existsSync(indexPath)) {
+        console.error('Нет сборки: запустите npm run build перед npm run electron');
+        const errHtml = `data:text/html;charset=utf-8,${encodeURIComponent(
+          `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:system-ui;padding:2rem">` +
+            `<h1>Нет папки dist</h1><p>Выполните в каталоге проекта: <code>npm run build</code>, затем снова запустите Electron.</p></body></html>`
+        )}`;
+        mainWindow.loadURL(errHtml);
+      } else {
+        mainWindow.loadFile(indexPath);
+        mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+          console.error('did-fail-load', code, desc, url);
+        });
+      }
     }
   });
 }

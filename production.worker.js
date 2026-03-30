@@ -287,7 +287,7 @@ const timeIntervalsOverlap = (start1, end1, start2, end2) => {
 };
 
 // Парсинг рабочей книги Excel
-const parseWorkbook = (workbook, fileName) => {
+const parseWorkbook = (workbook, fileName, filePath = '') => {
     const results = [];
     
     // Извлекаем номер линии из названия файла
@@ -325,6 +325,7 @@ const parseWorkbook = (workbook, fileName) => {
             results.push({
                 date,
                 fileName,
+                filePath,
                 sheetName,
                 lineNumber: lineNumberFromFile,
                 lineName: lineNameFromFile,
@@ -337,71 +338,57 @@ const parseWorkbook = (workbook, fileName) => {
     return results;
 };
 
-// Парсинг файлов
+/** Парсинг одного файла; пустой workbook → []. */
+const parseOneFile = (fileData, index) => {
+    const fileName = fileData?.fileName || `file_${index + 1}`;
+
+    if (!fileData || !fileData.data) {
+        throw new Error(`Файл ${fileName} не содержит данных`);
+    }
+
+    let dataArray;
+    if (fileData.data instanceof ArrayBuffer) {
+        dataArray = new Uint8Array(fileData.data);
+    } else if (fileData.data instanceof Uint8Array) {
+        dataArray = fileData.data;
+    } else {
+        throw new Error(`Неподдерживаемый тип данных для файла ${fileName}`);
+    }
+
+    if (!dataArray || dataArray.length === 0) {
+        throw new Error(`Файл ${fileName} пуст`);
+    }
+
+    const workbook = XLSX.read(dataArray, {
+        type: 'array',
+        cellDates: false,
+        cellNF: true,
+        sheetStubs: true
+    });
+
+    if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+        console.warn(`[Worker] Файл ${fileName} не содержит листов`);
+        return [];
+    }
+
+    const filePath = fileData?.path || '';
+    return parseWorkbook(workbook, fileName, filePath);
+};
+
+// Парсинг файлов (все подряд; прогресс шлётся из onmessage по одному файлу)
 const parseFiles = (files) => {
-    const allResults = [];
-    
     if (!files || !Array.isArray(files) || files.length === 0) {
         throw new Error('Нет файлов для обработки');
     }
-    
-    console.log(`[Worker] Начало обработки ${files.length} файлов`);
-    
+    const allResults = [];
     for (let i = 0; i < files.length; i++) {
-        const fileData = files[i];
-        const fileName = fileData?.fileName || `file_${i + 1}`;
-        
         try {
-            console.log(`[Worker] Обработка файла ${i + 1}/${files.length}: ${fileName}`);
-            
-            // Проверяем наличие данных
-            if (!fileData || !fileData.data) {
-                throw new Error(`Файл ${fileName} не содержит данных`);
-            }
-            
-            // Преобразуем данные в Uint8Array
-            let dataArray;
-            if (fileData.data instanceof ArrayBuffer) {
-                console.log(`[Worker] Файл ${fileName}: ArrayBuffer, размер ${fileData.data.byteLength} байт`);
-                dataArray = new Uint8Array(fileData.data);
-            } else if (fileData.data instanceof Uint8Array) {
-                console.log(`[Worker] Файл ${fileName}: Uint8Array, размер ${fileData.data.length} байт`);
-                dataArray = fileData.data;
-            } else {
-                console.error(`[Worker] Файл ${fileName}: неподдерживаемый тип данных`, typeof fileData.data, fileData.data);
-                throw new Error(`Неподдерживаемый тип данных для файла ${fileName}`);
-            }
-            
-            if (!dataArray || dataArray.length === 0) {
-                throw new Error(`Файл ${fileName} пуст`);
-            }
-            
-            // Парсим Excel файл
-            console.log(`[Worker] Парсинг Excel файла ${fileName}...`);
-            const workbook = XLSX.read(dataArray, { 
-                type: 'array', 
-                cellDates: false, 
-                cellNF: true,
-                sheetStubs: true
-            });
-            
-            if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-                console.warn(`[Worker] Файл ${fileName} не содержит листов`);
-                continue;
-            }
-            
-            console.log(`[Worker] Файл ${fileName} содержит ${workbook.SheetNames.length} листов:`, workbook.SheetNames);
-            
-            const results = parseWorkbook(workbook, fileName);
-            console.log(`[Worker] Файл ${fileName}: извлечено ${results.length} результатов`);
-            allResults.push(...results);
+            allResults.push(...parseOneFile(files[i], i));
         } catch (err) {
-            console.error(`[Worker] Ошибка парсинга файла ${fileName}:`, err);
+            const fileName = files[i]?.fileName || `file_${i + 1}`;
             throw new Error(`Ошибка парсинга файла ${fileName}: ${err.message}`);
         }
     }
-    
-    console.log(`[Worker] Обработка завершена, всего результатов: ${allResults.length}`);
     return allResults;
 };
 
@@ -489,6 +476,7 @@ const calculateFlatRows = (results, excludedDowntimeTypes = []) => {
                 flatRows.push({
                     date: result.date,
                     fileName: result.fileName,
+                    filePath: result.filePath || '',
                     line: line || 'Не указано',
                     product: product || 'Не указано',
                     qty: Math.round(qty),
@@ -537,6 +525,7 @@ const calculateFlatDowntimeRows = (results) => {
                 flatDowntimeRows.push({
                     date: result.date,
                     fileName: result.fileName,
+                    filePath: result.filePath || '',
                     line: line,
                     category: downtime.category || 'Без категории',
                     type: downtime.type || '',
@@ -594,16 +583,32 @@ self.onmessage = (e) => {
                 throw new Error('Нет файлов для обработки');
             }
             
+            const files = payload.files;
+            const total = files.length;
+            const allResults = [];
+
             const startTime = performance.now();
-            const results = parseFiles(payload.files);
+            for (let i = 0; i < total; i++) {
+                const fileData = files[i];
+                const label = fileData?.fileName || `Файл ${i + 1}`;
+                self.postMessage({
+                    type: 'parseProgress',
+                    requestId,
+                    current: i + 1,
+                    total,
+                    fileName: label,
+                    phase: 'parse'
+                });
+                allResults.push(...parseOneFile(fileData, i));
+            }
             const endTime = performance.now();
-            
-            console.log(`[Worker] Парсинг завершен за ${(endTime - startTime).toFixed(2)}ms, результатов: ${results.length}`);
-            
-            self.postMessage({ 
-                type: 'parseFiles', 
-                requestId, 
-                results 
+
+            console.log(`[Worker] Парсинг завершен за ${(endTime - startTime).toFixed(2)}ms, результатов: ${allResults.length}`);
+
+            self.postMessage({
+                type: 'parseFiles',
+                requestId,
+                results: allResults
             });
         } else if (type === 'calculateFlatRows') {
             console.log(`[Worker] Начало расчета flatRows, результатов: ${payload.results?.length || 0}`);
@@ -611,6 +616,15 @@ self.onmessage = (e) => {
             if (!payload.results || !Array.isArray(payload.results)) {
                 throw new Error('Некорректные данные результатов');
             }
+
+            self.postMessage({
+                type: 'parseProgress',
+                requestId,
+                current: 1,
+                total: 1,
+                fileName: '',
+                phase: 'aggregate'
+            });
             
             const startTime = performance.now();
             const flatRows = calculateFlatRows(payload.results, payload.excludedDowntimeTypes || []);

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw, Clock, Printer } from 'lucide-react';
+import { Factory, FileUp, Loader2, Search, Filter, X, ChevronDown, Check, BarChart3, TrendingUp, ChevronRight, RefreshCw, Clock, Printer, Trash2 } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { STORAGE_KEYS } from '../../utils';
 import {
@@ -85,6 +85,42 @@ const naturalCompare = (a, b) => {
     }
     return partsA.length - partsB.length;
 };
+
+const normalizeTimeLabel = (timeValue) => {
+    const timeStr = String(timeValue || '').trim();
+    if (!timeStr) return '';
+    const match = timeStr.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!match) return timeStr;
+    const hours = String(parseInt(match[1], 10));
+    return `${hours}:${match[2]}`;
+};
+
+/** Нормализация названия продукта только для сравнения при слиянии (итоги по продуктам) */
+const normalizeProductKey = (name) => {
+    let s = String(name || '').trim().normalize('NFKC');
+    s = s.replace(/[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
+    s = s.replace(/\s+/g, ' ').trim();
+    return s;
+};
+
+/** День листа (1–31) или из dd.mm.yyyy */
+const parseSheetDayNumber = (dateValue) => {
+    const dateStr = String(dateValue || '').trim();
+    if (!dateStr) return null;
+    const fullDateMatch = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (fullDateMatch) return parseInt(fullDateMatch[1], 10);
+    const dayOnlyMatch = dateStr.match(/^([1-9]|[12]\d|3[01])$/);
+    if (dayOnlyMatch) return parseInt(dayOnlyMatch[1], 10);
+    return null;
+};
+
+const parseTimeToMinutesSort = (timeValue) => {
+    const m = String(timeValue || '').trim().match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return 0;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+};
+
+const shiftOrder = (shift) => (shift === 'День' ? 0 : shift === 'Ночь' ? 1 : 2);
 
 const buildConicGradient = (segments) => {
     if (!segments || segments.length === 0) return 'conic-gradient(#e2e8f0 0% 100%)';
@@ -221,7 +257,8 @@ const ProductionView = () => {
         productionExcludedDowntimeTypes,
         setProductionExcludedDowntimeTypes,
         productionLineNorms,
-        setProductionLineNorms
+        setProductionLineNorms,
+        wipeDataCategories
     } = useData();
     const fileInputRef = useRef(null);
     const results = productionResults ?? [];
@@ -248,12 +285,17 @@ const ProductionView = () => {
     // Worker state
     const productionWorkerRef = useRef(null);
     const productionWorkerReqIdRef = useRef(0);
+    /** Пока идёт парсинг Excel + расчёт flatRows (для прогресс-бара и игнора устаревших событий) */
+    const isProductionWorkingRef = useRef(false);
+    const [excelProgress, setExcelProgress] = useState(null);
     const [flatRows, setFlatRows] = useState([]);
     const [flatDowntimeRows, setFlatDowntimeRows] = useState([]);
     
     // Состояние для раскрытых графиков
     const [chartsDetailMode, setChartsDetailMode] = useState('summary'); // 'summary' | 'unplanned' — во втором режиме в категориях показываем вклад неплановых остановок
     const [offerPrintOnOpen, setOfferPrintOnOpen] = useState(true); // при открытии отчёта сразу предлагать печать
+    /** В текстовом отчёте «неплановые» дополнительно вывести строки плановых простоев */
+    const [printIncludePlanned, setPrintIncludePlanned] = useState(false);
     const [expandedCharts, setExpandedCharts] = useState({
         byDate: new Set(),
         byLine: new Set(),
@@ -279,26 +321,25 @@ const ProductionView = () => {
         error: null,
         checking: false,
     });
-    const [selectedFileNames, setSelectedFileNames] = useState(() => {
-        try {
-            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES) : null;
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                return Array.isArray(parsed) ? parsed : [];
-            }
-        } catch (_) {}
-        return [];
-    });
     const [hasFilesInRef, setHasFilesInRef] = useState(false);
     const [selectedFilePaths, setSelectedFilePaths] = useState([]);
 
     const isElectron = typeof window !== 'undefined' && window.electronAPI;
     const basename = (p) => String(p).replace(/^.*[/\\]/, '');
 
+    const persistSelectedFileNames = useCallback((names) => {
+        try {
+            if (Array.isArray(names)) {
+                localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(names));
+            }
+        } catch (_) {}
+    }, []);
+
     const processFiles = useCallback(async (files, options = {}) => {
         if (!files || files.length === 0) return;
         const silent = options.silent === true;
         setIsUpdating(true);
+        isProductionWorkingRef.current = true;
 
         if (!silent) {
             setIsParsing(true);
@@ -312,6 +353,8 @@ const ProductionView = () => {
             const worker = productionWorkerRef.current;
             if (!worker) {
                 setParseError('Worker не инициализирован');
+                isProductionWorkingRef.current = false;
+                setExcelProgress(null);
                 setIsUpdating(false);
                 if (!silent) setIsParsing(false);
                 return;
@@ -324,9 +367,11 @@ const ProductionView = () => {
                 try {
                     let data;
                     let fileName;
+                    let filePath = '';
                     if (file.arrayBuffer != null && file.fileName != null) {
                         data = file.arrayBuffer instanceof ArrayBuffer ? file.arrayBuffer : file.arrayBuffer;
                         fileName = file.fileName;
+                        filePath = file.path || '';
                     } else {
                         data = await file.arrayBuffer();
                         fileName = file.name;
@@ -336,7 +381,8 @@ const ProductionView = () => {
                     }
                     filesData.push({
                         data: data,
-                        fileName: fileName
+                        fileName: fileName,
+                        path: filePath
                     });
                     transferables.push(data);
                 } catch (fileErr) {
@@ -353,28 +399,31 @@ const ProductionView = () => {
             const timeoutId = setTimeout(() => {
                 console.error('Таймаут при обработке файлов');
                 setParseError('Таймаут: обработка файлов занимает слишком много времени. Попробуйте загрузить файлы по одному.');
+                isProductionWorkingRef.current = false;
+                setExcelProgress(null);
                 setIsUpdating(false);
                 if (!silent) setIsParsing(false);
             }, 120000); // 2 минуты
 
             const requestId = ++productionWorkerReqIdRef.current;
 
-            // Сохраняем обработчик для очистки таймаута
+            setExcelProgress({
+                current: 0,
+                total: filesData.length,
+                fileName: '',
+                phase: 'parse',
+            });
+
+            // Сохраняем обработчик для очистки таймаута (только финальный ответ parseFiles, не parseProgress)
             const timeoutRef = { current: timeoutId };
             const originalOnMessage = worker.onmessage;
 
-            // Временно перехватываем сообщения для очистки таймаута
             worker.onmessage = (e) => {
-                const { requestId: msgRequestId } = e.data || {};
-
-                // Очищаем таймаут при получении ответа для этого запроса
-                if (msgRequestId === requestId) {
+                const { type: msgType, requestId: msgRequestId } = e.data || {};
+                if (msgType === 'parseFiles' && msgRequestId === requestId) {
                     clearTimeout(timeoutRef.current);
-                    // Восстанавливаем оригинальный обработчик
                     worker.onmessage = originalOnMessage;
                 }
-
-                // Вызываем оригинальный обработчик
                 if (originalOnMessage) {
                     originalOnMessage(e);
                 }
@@ -390,6 +439,8 @@ const ProductionView = () => {
         } catch (err) {
             console.error('Ошибка при загрузке файлов:', err);
             setParseError(err?.message || 'Ошибка чтения Excel файла');
+            isProductionWorkingRef.current = false;
+            setExcelProgress(null);
             setIsUpdating(false);
             if (!silent) setIsParsing(false);
         }
@@ -459,6 +510,71 @@ const ProductionView = () => {
             return true;
         });
     }, [flatDowntimeRows, filterLine, filterDates, filterProduct]);
+
+    /**
+     * Итоги по продуктам: по каждой линии сортировка дата → время начала (хронология листа);
+     * смена — только tie-breaker при равном времени. Подряд одинаковые продукты сливаются
+     * (сумма qty; день/ночь одного названия подряд по времени — одна строка).
+     */
+    const productSummary = useMemo(() => {
+        const byLine = new Map();
+        filteredRows.forEach((row) => {
+            if (!row.product || !row.line) return;
+            const qty = typeof row.qty === 'number' ? row.qty : Number(row.qty);
+            if (Number.isNaN(qty)) return;
+            const line = row.line;
+            if (!byLine.has(line)) byLine.set(line, []);
+            byLine.get(line).push(row);
+        });
+
+        const mergeLineRows = (lineRows) => {
+            const sorted = [...lineRows].sort((a, b) => {
+                const c = naturalCompare(a.date, b.date);
+                if (c !== 0) return c;
+                const ta = parseTimeToMinutesSort(a.start);
+                const tb = parseTimeToMinutesSort(b.start);
+                if (ta !== tb) return ta - tb;
+                return shiftOrder(a.shift) - shiftOrder(b.shift);
+            });
+
+            const out = [];
+            let segIdx = 0;
+            for (const row of sorted) {
+                const qty = typeof row.qty === 'number' ? row.qty : Number(row.qty);
+                const productKey = normalizeProductKey(row.product);
+                const startDay = parseSheetDayNumber(row.date);
+                const endDay = parseSheetDayNumber(row.date);
+                const startTime = normalizeTimeLabel(row.start) || '—';
+                const endTime = normalizeTimeLabel(row.end) || '—';
+
+                const prev = out[out.length - 1];
+                if (prev && prev.productKey === productKey) {
+                    prev.totalQty += qty;
+                    if (endDay != null) prev.endDay = endDay;
+                    prev.endTime = endTime;
+                } else {
+                    out.push({
+                        key: `seg-${segIdx++}-${row.line}-${row.date}-${row.shift}-${row.start}`,
+                        product: row.product,
+                        productKey,
+                        totalQty: qty,
+                        startDay,
+                        endDay: endDay ?? startDay,
+                        startTime,
+                        endTime,
+                    });
+                }
+            }
+            return out.map(({ productKey, ...rest }) => rest);
+        };
+
+        return Array.from(byLine.entries())
+            .map(([line, rows]) => ({
+                line,
+                products: mergeLineRows(rows),
+            }))
+            .sort((a, b) => naturalCompare(a.line, b.line));
+    }, [filteredRows]);
 
     const buildLineSlidesForDates = useCallback((dates) => {
         if (!dates || dates.length === 0) return [];
@@ -573,17 +689,17 @@ const ProductionView = () => {
         filteredRows.forEach(row => {
             const lineKey = getLineNumberFromRow(row);
             if (!byDate.has(row.date)) {
-                byDate.set(row.date, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
+                byDate.set(row.date, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map(), plannedByCategory: new Map() });
             }
             if (!lineKeysByDate.has(row.date)) lineKeysByDate.set(row.date, new Set());
             if (lineKey) lineKeysByDate.get(row.date).add(lineKey);
             if (!byLine.has(row.line)) {
-                byLine.set(row.line, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
+                byLine.set(row.line, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map(), plannedByCategory: new Map() });
             }
             if (!datesByLine.has(row.line)) datesByLine.set(row.line, new Set());
             datesByLine.get(row.line).add(row.date);
             if (!byProduct.has(row.product)) {
-                byProduct.set(row.product, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map() });
+                byProduct.set(row.product, { plan: 0, fact: 0, count: 0, downtimeByCategory: new Map(), unplannedByCategory: new Map(), plannedByCategory: new Map() });
             }
             byDate.get(row.date).count += 1;
             byLine.get(row.line).count += 1;
@@ -713,6 +829,20 @@ const ProductionView = () => {
                                 end: downtime.end || '',
                                 shift: downtime.shift || ''
                             });
+                        } else {
+                            if (!dateData.plannedByCategory.has(category)) {
+                                dateData.plannedByCategory.set(category, []);
+                            }
+                            dateData.plannedByCategory.get(category).push({
+                                type: downtime.type || '',
+                                description: description || '',
+                                durationMinutes: duration,
+                                line: downtime.line,
+                                comment: downtime.comment || '',
+                                start: downtime.start || '',
+                                end: downtime.end || '',
+                                shift: downtime.shift || ''
+                            });
                         }
                     }
 
@@ -732,6 +862,20 @@ const ProductionView = () => {
                                 lineData.unplannedByCategory.set(category, []);
                             }
                             lineData.unplannedByCategory.get(category).push({
+                                type: downtime.type || '',
+                                description: description || '',
+                                durationMinutes: duration,
+                                date: downtime.date,
+                                comment: downtime.comment || '',
+                                start: downtime.start || '',
+                                end: downtime.end || '',
+                                shift: downtime.shift || ''
+                            });
+                        } else {
+                            if (!lineData.plannedByCategory.has(category)) {
+                                lineData.plannedByCategory.set(category, []);
+                            }
+                            lineData.plannedByCategory.get(category).push({
                                 type: downtime.type || '',
                                 description: description || '',
                                 durationMinutes: duration,
@@ -761,6 +905,21 @@ const ProductionView = () => {
                                     productData.unplannedByCategory.set(category, []);
                                 }
                                 productData.unplannedByCategory.get(category).push({
+                                    type: downtime.type || '',
+                                    description: description || '',
+                                    durationMinutes: duration,
+                                    date: downtime.date,
+                                    line: downtime.line,
+                                    comment: downtime.comment || '',
+                                    start: downtime.start || '',
+                                    end: downtime.end || '',
+                                    shift: downtime.shift || ''
+                                });
+                            } else {
+                                if (!productData.plannedByCategory.has(category)) {
+                                    productData.plannedByCategory.set(category, []);
+                                }
+                                productData.plannedByCategory.get(category).push({
                                     type: downtime.type || '',
                                     description: description || '',
                                     durationMinutes: duration,
@@ -853,6 +1012,9 @@ const ProductionView = () => {
                 downtimeCategories,
                 unplannedByCategory: data.unplannedByCategory
                     ? Object.fromEntries(Array.from(data.unplannedByCategory.entries()))
+                    : {},
+                plannedByCategory: data.plannedByCategory
+                    ? Object.fromEntries(Array.from(data.plannedByCategory.entries()))
                     : {}
             };
         };
@@ -881,10 +1043,52 @@ const ProductionView = () => {
 
         parts.push('<div class="report">');
         parts.push('<h1 class="report-title">Доля неплановых простоев</h1>');
+        if (printIncludePlanned) {
+            parts.push('<div class="report-sub">Включены строки плановых простоев (полный список по категориям).</div>');
+        }
         parts.push('<div class="report-meta">Сформировано: ' + esc(new Date().toLocaleString('ru')) + '</div>');
 
         const shiftClass = (s) => (s && String(s).trim() === 'Ночь' ? ' shift-night' : (s && String(s).trim() === 'День' ? ' shift-day' : ''));
         const shiftLabel = (s) => (s && (String(s).trim() === 'День' || String(s).trim() === 'Ночь') ? ' [' + String(s).trim() + '] ' : '');
+        const appendStopLines = (buf, stops, keyLabel, categoryRow, rowClass, plannedPrefix) => {
+            if (!stops || stops.length === 0) return;
+            const d = categoryRow;
+            if (keyLabel === 'line') {
+                for (const s of stops) {
+                    const descParts = [s.type, s.description].filter(Boolean);
+                    if (descParts[0] === d.category) descParts.shift();
+                    const desc = descParts.map((x) => esc(x)).join(' — ') || '';
+                    const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
+                    const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
+                    const sc = shiftClass(s.shift);
+                    const sl = shiftLabel(s.shift);
+                    buf.push('<div class="' + rowClass + sc + '">— ' + plannedPrefix + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                }
+            } else {
+                const byLine = new Map();
+                for (const s of stops) {
+                    const lineKey = s.line != null && String(s.line).trim() !== '' ? String(s.line).trim() : '—';
+                    if (!byLine.has(lineKey)) byLine.set(lineKey, []);
+                    byLine.get(lineKey).push(s);
+                }
+                const sortedLines = Array.from(byLine.keys()).sort((a, b) => (a === '—' ? 1 : b === '—' ? -1 : String(a).localeCompare(b, undefined, { numeric: true })));
+                for (const lineKey of sortedLines) {
+                    const lineStops = byLine.get(lineKey);
+                    const lineLabel = /^Линия\s/i.test(String(lineKey)) ? lineKey : 'Линия ' + lineKey;
+                    buf.push('<div class="item-line-group"><strong>' + esc(lineLabel) + '</strong></div>');
+                    for (const s of lineStops) {
+                        const descParts = [s.type, s.description].filter(Boolean);
+                        if (descParts[0] === d.category) descParts.shift();
+                        const desc = descParts.map((x) => esc(x)).join(' — ') || '';
+                        const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
+                        const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
+                        const sc = shiftClass(s.shift);
+                        const sl = shiftLabel(s.shift);
+                        buf.push('<div class="' + rowClass + sc + '">— ' + plannedPrefix + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
+                    }
+                }
+            }
+        };
         const renderItem = (item, keyLabel) => {
             const keyValue = item[keyLabel];
             const headerLabel = keyLabel === 'line'
@@ -905,42 +1109,10 @@ const ProductionView = () => {
                 for (const d of item.downtimeCategories) {
                     buf.push('<div class="item-category-row"><div class="item-category-name"><strong>' + esc(d.category) + '</strong></div><div class="item-category-min">' + (d.minutes || 0) + ' мин</div><div class="item-category-pct">' + (d.percent ?? 0).toFixed(2) + '%</div></div>');
                     const unplanned = (item.unplannedByCategory && item.unplannedByCategory[d.category]) || [];
-                    if (unplanned.length > 0) {
-                        if (keyLabel === 'line') {
-                            for (const s of unplanned) {
-                                const descParts = [s.type, s.description].filter(Boolean);
-                                if (descParts[0] === d.category) descParts.shift();
-                                const desc = descParts.map((x) => esc(x)).join(' — ') || '';
-                                const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
-                                const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
-                                const sc = shiftClass(s.shift);
-                                const sl = shiftLabel(s.shift);
-                                buf.push('<div class="item-unplanned-line' + sc + '">— ' + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
-                            }
-                        } else {
-                            const byLine = new Map();
-                            for (const s of unplanned) {
-                                const lineKey = s.line != null && String(s.line).trim() !== '' ? String(s.line).trim() : '—';
-                                if (!byLine.has(lineKey)) byLine.set(lineKey, []);
-                                byLine.get(lineKey).push(s);
-                            }
-                            const sortedLines = Array.from(byLine.keys()).sort((a, b) => (a === '—' ? 1 : b === '—' ? -1 : String(a).localeCompare(b, undefined, { numeric: true })));
-                            for (const lineKey of sortedLines) {
-                                const stops = byLine.get(lineKey);
-                                const lineLabel = /^Линия\s/i.test(String(lineKey)) ? lineKey : 'Линия ' + lineKey;
-                                buf.push('<div class="item-line-group"><strong>' + esc(lineLabel) + '</strong></div>');
-                                for (const s of stops) {
-                                    const descParts = [s.type, s.description].filter(Boolean);
-                                    if (descParts[0] === d.category) descParts.shift();
-                                    const desc = descParts.map((x) => esc(x)).join(' — ') || '';
-                                    const commentPart = (s.comment && String(s.comment).trim()) ? ' — ' + esc(s.comment) : '';
-                                    const timeRange = (s.start && s.end) ? ' ' + esc(s.start) + ' - ' + esc(s.end) : '';
-                                    const sc = shiftClass(s.shift);
-                                    const sl = shiftLabel(s.shift);
-                                    buf.push('<div class="item-unplanned-line' + sc + '">— ' + esc(d.category) + sl + '— ' + desc + timeRange + ' · ' + (s.durationMinutes ?? 0) + ' мин' + commentPart + '</div>');
-                                }
-                            }
-                        }
+                    appendStopLines(buf, unplanned, keyLabel, d, 'item-unplanned-line', '');
+                    if (printIncludePlanned) {
+                        const planned = (item.plannedByCategory && item.plannedByCategory[d.category]) || [];
+                        appendStopLines(buf, planned, keyLabel, d, 'item-planned-line', '<span class="planned-tag">плановый</span> · ');
                     }
                 }
             }
@@ -968,10 +1140,10 @@ const ProductionView = () => {
             });
         } else {
             // Старое поведение: разбор по линиям (для одной даты или без фильтра дат)
-            parts.push('<h2 class="section-title">Разбор по линиям</h2>');
-            for (const item of chartData.byLine) {
-                parts.push(renderItem(item, 'line'));
-            }
+        parts.push('<h2 class="section-title">Разбор по линиям</h2>');
+        for (const item of chartData.byLine) {
+            parts.push(renderItem(item, 'line'));
+        }
         }
 
         parts.push('</section>');
@@ -984,6 +1156,8 @@ const ProductionView = () => {
             + '.report{max-width:980px;margin:0 auto;}'
             + '.report-title{font-size:22px;font-weight:700;margin:0 0 6px;color:#0f172a;}'
             + '.report-meta{font-size:12px;color:#475569;margin-bottom:14px;}'
+            + '.report-sub{font-size:12px;color:#047857;margin-bottom:8px;font-weight:600;}'
+            + '.planned-tag{font-size:11px;font-weight:700;color:#065f46;text-transform:uppercase;}'
             + '.report-section{margin-top:10px;}'
             + '.section-title{font-size:16px;font-weight:700;margin:0 0 10px;padding:0 0 6px;border-bottom:2px solid #1f2937;color:#111827;}'
             + '.item-block{margin-bottom:10px;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;break-inside:auto;page-break-inside:auto;}'
@@ -1001,8 +1175,11 @@ const ProductionView = () => {
             + '.item-unplanned-line{margin:2px 0 2px 20px;padding-left:8px;border-left:2px solid #9ca3af;color:#1f2937;}'
             + '.item-unplanned-line.shift-day{border-left-color:#eab308;background:#fef9c3;}'
             + '.item-unplanned-line.shift-night{border-left-color:#3b82f6;background:#dbeafe;}'
+            + '.item-planned-line{margin:2px 0 2px 20px;padding-left:8px;border-left:2px solid #10b981;color:#064e3b;background:#ecfdf5;}'
+            + '.item-planned-line.shift-day{border-left-color:#059669;background:#d1fae5;}'
+            + '.item-planned-line.shift-night{border-left-color:#047857;background:#a7f3d0;}'
             + '.page-break{page-break-before:always;break-before:page;}'
-            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;break-inside:auto;page-break-inside:auto;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;} .item-unplanned-line.shift-day{border-left-color:#b45309;background:#fef3c7;} .item-unplanned-line.shift-night{border-left-color:#1d4ed8;background:#dbeafe;}}</style></head><body>'
+            + '@media print{body{margin:10mm;color:#000;} .item-block{border-color:#999;break-inside:auto;page-break-inside:auto;} .section-title{border-bottom-color:#000;} .kpi{background:#fff;} .item-unplanned-line{border-left-color:#666;} .item-unplanned-line.shift-day{border-left-color:#b45309;background:#fef3c7;} .item-unplanned-line.shift-night{border-left-color:#1d4ed8;background:#dbeafe;} .item-planned-line{border-left-color:#047857;background:#ecfdf5;} .item-planned-line.shift-day{background:#d1fae5;} .item-planned-line.shift-night{background:#a7f3d0;}}</style></head><body>'
             + bodyHtml
             + '</body></html>';
         const w = window.open('', '_blank');
@@ -1025,21 +1202,40 @@ const ProductionView = () => {
                 }
             }
         }
-    }, [chartData, offerPrintOnOpen, filterDates]);
+    }, [chartData, offerPrintOnOpen, filterDates, printIncludePlanned]);
 
     useEffect(() => {
-        if (!isElectron) return;
-        try {
-            const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
-            if (raw) {
-                const paths = JSON.parse(raw);
+        if (!isElectron || !window.electronAPI?.productionGetSelectedPaths) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                let paths = await window.electronAPI.productionGetSelectedPaths();
+                if (cancelled) return;
+                if (!Array.isArray(paths) || paths.length === 0) {
+                    try {
+                        const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
+                        if (raw) {
+                            const parsed = JSON.parse(raw);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                paths = parsed;
+                                await window.electronAPI.productionSetSelectedPaths(paths);
+                            }
+                        }
+                    } catch (_) {}
+                }
+                if (cancelled) return;
                 if (Array.isArray(paths) && paths.length > 0) {
                     setSelectedFilePaths(paths);
-                    setSelectedFileNames(paths.map(basename));
+                    persistSelectedFileNames(paths.map(basename));
                     setHasFilesInRef(true);
+                    try {
+                        localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS, JSON.stringify(paths));
+                        localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(paths.map(basename)));
+                    } catch (_) {}
                 }
-            }
-        } catch (_) {}
+            } catch (_) {}
+        })();
+        return () => { cancelled = true; };
     }, [isElectron]);
 
     const handleFileChange = (event) => {
@@ -1048,7 +1244,7 @@ const ProductionView = () => {
         if (files.length === 0) return;
         lastSelectedFilesRef.current = files;
         const names = files.map(f => f.name);
-        setSelectedFileNames(names);
+        persistSelectedFileNames(names);
         setHasFilesInRef(true);
         try {
             localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(names));
@@ -1061,9 +1257,10 @@ const ProductionView = () => {
                 const paths = await window.electronAPI.productionSelectFiles();
                 if (paths && paths.length > 0) {
                     setSelectedFilePaths(paths);
-                    setSelectedFileNames(paths.map(basename));
+                    persistSelectedFileNames(paths.map(basename));
                     setHasFilesInRef(true);
                     try {
+                        await window.electronAPI.productionSetSelectedPaths(paths);
                         localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS, JSON.stringify(paths));
                         localStorage.setItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES, JSON.stringify(paths.map(basename)));
                     } catch (_) {}
@@ -1082,14 +1279,28 @@ const ProductionView = () => {
             let pathsToUse = selectedFilePaths;
             if (pathsToUse.length === 0) {
                 try {
+                    const ipcPaths = await window.electronAPI.productionGetSelectedPaths?.();
+                    if (Array.isArray(ipcPaths) && ipcPaths.length > 0) {
+                        pathsToUse = ipcPaths;
+                        setSelectedFilePaths(ipcPaths);
+                        persistSelectedFileNames(ipcPaths.map(basename));
+                        setHasFilesInRef(true);
+                    }
+                } catch (_) {}
+            }
+            if (pathsToUse.length === 0) {
+                try {
                     const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
                     if (raw) {
                         const parsed = JSON.parse(raw);
                         if (Array.isArray(parsed) && parsed.length > 0) {
                             pathsToUse = parsed;
                             setSelectedFilePaths(parsed);
-                            setSelectedFileNames(parsed.map(basename));
+                            persistSelectedFileNames(parsed.map(basename));
                             setHasFilesInRef(true);
+                            try {
+                                await window.electronAPI.productionSetSelectedPaths?.(parsed);
+                            } catch (_) {}
                         }
                     }
                 } catch (_) {}
@@ -1113,6 +1324,40 @@ const ProductionView = () => {
         }
     }, [processFiles, isElectron, selectedFilePaths]);
 
+    const handleWipeProductionTab = useCallback(async () => {
+        if (!window.confirm(
+            'Удалить все данные вкладки «Производство»: загруженные отчёты, исключения по простоям, нормативы и список выбранных файлов?'
+        )) return;
+        await wipeDataCategories([
+            STORAGE_KEYS.PRODUCTION_RESULTS,
+            STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES,
+            STORAGE_KEYS.PRODUCTION_LINE_NORMS
+        ]);
+        try {
+            localStorage.removeItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_NAMES);
+            localStorage.removeItem(STORAGE_KEYS.PRODUCTION_SELECTED_FILE_PATHS);
+        } catch (_) {}
+        try {
+            await window.electronAPI?.productionSetSelectedPaths?.([]);
+        } catch (_) {}
+        lastSelectedFilesRef.current = [];
+        lastMtimesRef.current = {};
+        pendingBackgroundMergeRef.current = null;
+        persistSelectedFileNames([]);
+        setSelectedFilePaths([]);
+        setHasFilesInRef(false);
+        setFlatRows([]);
+        setFlatDowntimeRows([]);
+        setParseError('');
+        setFilterLine('');
+        setFilterDates([]);
+        setFilterProduct('');
+        setIsDowntimeSelectorOpen(false);
+        setIsDateFilterOpen(false);
+        setShowSyncModal(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    }, [wipeDataCategories]);
+
     /** Фоновое обновление только изменённых файлов: парсим entries и мержим в productionResults по fileName */
     const runBackgroundMerge = useCallback(async (entries, changedFileNames) => {
         const worker = productionWorkerRef.current;
@@ -1125,7 +1370,7 @@ const ProductionView = () => {
                 : null;
             const fileName = file.fileName || (file.path && basename(file.path)) || '';
             if (!data || data.byteLength === 0) continue;
-            filesData.push({ data, fileName });
+            filesData.push({ data, fileName, path: file.path || '' });
             transferables.push(data);
         }
         if (filesData.length === 0) return;
@@ -1242,12 +1487,36 @@ const ProductionView = () => {
             productionWorkerRef.current = worker;
 
             worker.onmessage = (e) => {
-                const { type, requestId, results, flatRows: workerFlatRows, flatDowntimeRows: workerFlatDowntimeRows, error } = e.data || {};
-                
-                
+                const {
+                    type,
+                    requestId: msgRid,
+                    results,
+                    flatRows: workerFlatRows,
+                    flatDowntimeRows: workerFlatDowntimeRows,
+                    error,
+                    current: progCurrent,
+                    total: progTotal,
+                    fileName: progFileName,
+                    phase: progPhase,
+                } = e.data || {};
+
+                if (type === 'parseProgress') {
+                    if (isProductionWorkingRef.current) {
+                        setExcelProgress({
+                            current: progCurrent ?? 0,
+                            total: progTotal ?? 1,
+                            fileName: progFileName || '',
+                            phase: progPhase || 'parse',
+                        });
+                    }
+                    return;
+                }
+
                 if (error) {
                     console.error('Ошибка от воркера:', error);
                     setParseError(error);
+                    isProductionWorkingRef.current = false;
+                    setExcelProgress(null);
                     setIsUpdating(false);
                     setIsParsing(false);
                     return;
@@ -1265,17 +1534,27 @@ const ProductionView = () => {
                     } else {
                         setProductionResults(results || []);
                     }
-                    setIsUpdating(false);
                     setIsParsing(false);
+                    const hasResults = Array.isArray(results) && results.length > 0;
+                    if (!hasResults) {
+                        isProductionWorkingRef.current = false;
+                        setExcelProgress(null);
+                        setIsUpdating(false);
+                    }
                 } else if (type === 'calculateFlatRows') {
                     setFlatRows(workerFlatRows || []);
                     setFlatDowntimeRows(workerFlatDowntimeRows || []);
+                    isProductionWorkingRef.current = false;
+                    setExcelProgress(null);
+                    setIsUpdating(false);
                 }
             };
 
             worker.onerror = (err) => {
                 console.error('Worker error:', err);
                 setParseError(err?.message || 'Ошибка воркера при обработке файлов');
+                isProductionWorkingRef.current = false;
+                setExcelProgress(null);
                 setIsUpdating(false);
                 setIsParsing(false);
             };
@@ -1385,8 +1664,47 @@ const ProductionView = () => {
         ? Math.max(0, Math.ceil((syncStatus.nextCheckAt - Date.now()) / 1000))
         : null;
 
+    const excelProgressPct =
+        excelProgress && excelProgress.phase === 'parse' && excelProgress.total > 0
+            ? Math.min(100, Math.round((excelProgress.current / excelProgress.total) * 100))
+            : excelProgress?.phase === 'aggregate'
+                ? 100
+                : 0;
+
     return (
         <div className="h-full flex flex-col bg-slate-50">
+            {excelProgress && (
+                <div className="fixed bottom-0 left-0 right-0 z-40 px-4 pb-4 pointer-events-none flex justify-center">
+                    <div className="pointer-events-auto w-full max-w-2xl rounded-2xl border border-rose-200/90 bg-white/95 backdrop-blur-md shadow-2xl shadow-rose-950/15 px-5 py-4">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                            <div className="flex items-center gap-2.5 text-sm font-semibold text-slate-800">
+                                <Loader2 className="w-4 h-4 shrink-0 animate-spin text-rose-600" aria-hidden />
+                                <span>
+                                    {excelProgress.phase === 'aggregate'
+                                        ? 'Построение таблиц и простоев…'
+                                        : 'Разбор файлов Excel'}
+                                </span>
+                            </div>
+                            {excelProgress.phase === 'parse' && excelProgress.total > 0 && (
+                                <span className="text-xs font-semibold text-slate-500 tabular-nums shrink-0">
+                                    {excelProgress.current} / {excelProgress.total}
+                                </span>
+                            )}
+                        </div>
+                        <div className="h-3 rounded-full bg-slate-100 overflow-hidden ring-1 ring-inset ring-slate-200/90">
+                            <div
+                                className="h-full rounded-full bg-gradient-to-r from-rose-500 via-amber-400 to-teal-500 transition-[width] duration-300 ease-out motion-reduce:transition-none"
+                                style={{ width: `${excelProgressPct}%` }}
+                            />
+                        </div>
+                        {excelProgress.phase === 'parse' && excelProgress.fileName ? (
+                            <p className="mt-2.5 text-xs text-slate-600 truncate" title={excelProgress.fileName}>
+                                {excelProgress.fileName}
+                            </p>
+                        ) : null}
+                    </div>
+                </div>
+            )}
             {showSyncModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setShowSyncModal(false)}>
                     <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-lg w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -1561,17 +1879,23 @@ const ProductionView = () => {
                         onChange={handleFileChange}
                     />
                 </div>
-                {selectedFileNames.length > 0 && (
-                    <div className="mt-2 text-xs text-slate-500">
-                        Выбрано: {selectedFileNames.join(', ')}
-                    </div>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2 mb-3 -mt-2">
+                    <button
+                        type="button"
+                        onClick={handleWipeProductionTab}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-white text-red-700 border border-red-300 rounded-lg text-sm font-semibold hover:bg-red-50 transition-colors shadow-sm"
+                        title="Очистить данные вкладки в приложении и в облаке"
+                    >
+                        <Trash2 size={16} className="flex-shrink-0" />
+                        Удалить все данные вкладки
+                    </button>
+                </div>
                     <div className="flex flex-wrap gap-3">
                     <div className="relative flex-1 min-w-[200px]">
                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                         <input
                             type="text"
-                                placeholder={activeTab === 'production' ? 'Поиск по продукту...' : 'Поиск по простою...'}
+                            placeholder={activeTab === 'production' || activeTab === 'productSummary' ? 'Поиск по продукту...' : 'Поиск по простою...'}
                             value={filterProduct}
                             onChange={(e) => setFilterProduct(e.target.value)}
                             className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
@@ -1689,6 +2013,16 @@ const ProductionView = () => {
                                 Производство
                             </button>
                             <button
+                                onClick={() => setActiveTab('productSummary')}
+                                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
+                                    activeTab === 'productSummary'
+                                        ? 'bg-rose-600 text-white shadow-sm'
+                                        : 'bg-slate-50 text-slate-600 hover:bg-rose-50 hover:text-rose-600'
+                                }`}
+                            >
+                                Итоги по продуктам
+                            </button>
+                            <button
                                 onClick={() => setActiveTab('downtime')}
                                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 ${
                                     activeTab === 'downtime'
@@ -1787,6 +2121,65 @@ const ProductionView = () => {
                                         )}
                                     </tbody>
                                 </table>
+                            )}
+                            {activeTab === 'productSummary' && (
+                                <div className="w-full text-sm text-left">
+                                    {productSummary.length === 0 ? (
+                                        <div className="px-4 py-8 text-center text-slate-400">
+                                            Нет данных для отображения
+                                        </div>
+                                    ) : (
+                                        productSummary.map((lineGroup) => (
+                                            <div key={lineGroup.line} className="mb-6 border border-slate-200 rounded-lg overflow-hidden">
+                                                <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 font-semibold text-slate-700">
+                                                    Линия {lineGroup.line}
+                                                </div>
+                                                <table className="w-full text-sm text-left">
+                                                    <thead className="bg-slate-50 text-slate-600 font-semibold">
+                                                        <tr>
+                                                            <th className="px-4 py-3 border-b">Продукт</th>
+                                                            <th className="px-4 py-3 border-b text-center w-20">День</th>
+                                                            <th className="px-4 py-3 border-b">Начало</th>
+                                                            <th className="px-4 py-3 border-b">Конец</th>
+                                                            <th className="px-4 py-3 border-b text-right">Количество</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-100">
+                                                        {lineGroup.products.map((item) => {
+                                                            const sd = item.startDay;
+                                                            const ed = item.endDay;
+                                                            const dayLabel =
+                                                                sd == null && ed == null
+                                                                    ? '—'
+                                                                    : sd != null && ed != null && sd !== ed
+                                                                        ? `${sd}–${ed}`
+                                                                        : String(sd ?? ed ?? '—');
+                                                            return (
+                                                            <tr key={item.key} className="hover:bg-slate-50 transition-colors">
+                                                                <td className="px-4 py-3 text-slate-800 font-medium">
+                                                                    {item.product}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-slate-600 text-center tabular-nums">
+                                                                    {dayLabel}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-slate-600 tabular-nums">
+                                                                    {item.startTime || '—'}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-slate-600 tabular-nums">
+                                                                    {item.endTime || '—'}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-right text-slate-700 font-semibold">
+                                                                    {Math.round(item.totalQty).toLocaleString()}
+                                                                </td>
+                                                            </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
                             )}
                             {activeTab === 'downtime' && (
                                 <table className="w-full text-sm text-left">
@@ -1901,6 +2294,15 @@ const ProductionView = () => {
                                                                 className="rounded border-slate-300 text-slate-700 focus:ring-slate-500"
                                                             />
                                                             Сразу предложить печать
+                                                        </label>
+                                                        <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-slate-600" title="В блоке печати после неплановых показать плановые простои той же категории">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={printIncludePlanned}
+                                                                onChange={(e) => setPrintIncludePlanned(e.target.checked)}
+                                                                className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-500"
+                                                            />
+                                                            В печати показать плановые простои
                                                         </label>
                                                         <button
                                                             type="button"

@@ -26,9 +26,7 @@ const GLOBAL_KEYS = [
     STORAGE_KEYS.ALL_EMPLOYEES,
     STORAGE_KEYS.DEPARTMENT_MASTER_LIST,
     STORAGE_KEYS.PLANNING_STATE,
-    STORAGE_KEYS.PRODUCTION_RESULTS,
-    STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES,
-    STORAGE_KEYS.PRODUCTION_LINE_NORMS,
+    // Производство хранится только локально (services/productionTabStorage.js), не из облака
 ];
 
 const hasPlanEvents = (p) =>
@@ -78,9 +76,6 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         setAllEmployees,
         setDepartmentMasterList,
         setPlanningState,
-        setProductionResults,
-        setProductionExcludedDowntimeTypes,
-        setProductionLineNorms,
         applyPlanData,
         getCurrentPlans,
         hydrateWorkerRegistry,
@@ -270,9 +265,6 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         [STORAGE_KEYS.ALL_EMPLOYEES]: setAllEmployees,
         [STORAGE_KEYS.DEPARTMENT_MASTER_LIST]: setDepartmentMasterList,
         [STORAGE_KEYS.PLANNING_STATE]: setPlanningState,
-        [STORAGE_KEYS.PRODUCTION_RESULTS]: setProductionResults,
-        [STORAGE_KEYS.PRODUCTION_EXCLUDED_DOWNTIME_TYPES]: setProductionExcludedDowntimeTypes,
-        [STORAGE_KEYS.PRODUCTION_LINE_NORMS]: setProductionLineNorms,
     };
 
     const keysToApply = appliedPlanDataInThisRun

@@ -14,10 +14,11 @@ export default defineConfig({
     port: 3000,
     host: true, // true = 0.0.0.0 — доступ по локальной сети для нескольких пользователей
     open: false,
-    strictPort: false,
+    /** Повторный запуск dev не занимает 3001 молча — порт занят = ошибка, без второго Vite. */
+    strictPort: true,
     hmr: {
       protocol: 'ws',
-      host: 'localhost',
+      host: '127.0.0.1',
       port: 3000,
     }
   },
