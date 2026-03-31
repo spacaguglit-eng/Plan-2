@@ -10,17 +10,15 @@ import {
     computePlanByLineDate,
     isPlannedDowntime
 } from '../../utils/normsComparison';
-// Палитра отчёта: цвет и HEX для категорий простоев
-// Полуночный синий #003366 — база/план | Стальной серый #546E7A — нейтральный | Темный изумруд #00695C — успех
-// Винный #880E4F — риски | Глубокий охристый #B8860B — умеренные результаты | Темный индиго #283593 — инновации | Аспидно-сизый #37474F — итоги
+
 const DOWNTIME_CATEGORY_COLORS = {
-    'КИПиА':           { class: 'bg-[#283593]', hex: '#283593' }, // Темный индиго — инновации
-    'Механические':    { class: 'bg-[#880E4F]', hex: '#880E4F' }, // Винный — риски
-    'Энергетические':  { class: 'bg-[#B8860B]', hex: '#B8860B' }, // Глубокий охристый
-    'Организационные': { class: 'bg-[#546E7A]', hex: '#546E7A' }, // Стальной серый — нейтральный
-    'Сервисные':       { class: 'bg-[#00695C]', hex: '#00695C' }, // Темный изумруд — успех
-    'Технологические': { class: 'bg-[#37474F]', hex: '#37474F' }, // Аспидно-сизый — итоги
-    'Плановые':        { class: 'bg-[#003366]', hex: '#003366' }  // Полуночный синий — план/база
+    'КИПиА':           { class: 'bg-[#283593]', hex: '#283593' },
+    'Механические':    { class: 'bg-[#880E4F]', hex: '#880E4F' },
+    'Энергетические':  { class: 'bg-[#B8860B]', hex: '#B8860B' },
+    'Организационные': { class: 'bg-[#546E7A]', hex: '#546E7A' },
+    'Сервисные':       { class: 'bg-[#00695C]', hex: '#00695C' },
+    'Технологические': { class: 'bg-[#37474F]', hex: '#37474F' },
+    'Плановые':        { class: 'bg-[#003366]', hex: '#003366' }
 };
 
 const FALLBACK_CATEGORY_COLORS = [
@@ -31,12 +29,10 @@ const FALLBACK_CATEGORY_HEX = {
     'bg-yellow-400': '#facc15', 'bg-gray-400': '#9ca3af'
 };
 
-/** Цвет сегмента «Доступное время» на графиках (100% = work time) */
 const AVAILABLE_TIME_COLOR = '#22c55e';
 
 const CATEGORY_KEYS = Object.keys(DOWNTIME_CATEGORY_COLORS);
 
-/** Нормализация названия категории для подстановки цвета: trim + поиск по ключам без учёта регистра */
 const resolveCategoryKey = (category) => {
     const raw = (category || '').trim();
     if (!raw) return null;
@@ -65,7 +61,83 @@ const getCategoryColorHex = (category) => {
     return FALLBACK_CATEGORY_HEX[className] || '#94a3b8';
 };
 
-/** Естественная сортировка: 1, 2, 10 вместо 1, 10, 2 */
+/** Сводка по нескольким дням для печати отчёта неплановых (тот же формат, что у одного дня). */
+const mergeChartDateItemsForPrint = (items, chartsDetailMode) => {
+    if (!items || items.length === 0) return null;
+    if (items.length === 1) {
+        return { ...items[0] };
+    }
+    const plan = items.reduce((s, i) => s + (i.plan || 0), 0);
+    const fact = items.reduce((s, i) => s + (i.fact || 0), 0);
+    const count = items.reduce((s, i) => s + (i.count || 0), 0);
+    const efficiency = plan > 0 ? Math.round((fact / plan) * 100) : 0;
+
+    const workTimeTotal = items.reduce((sum, item) => {
+        const segs = item.downtimeCategories || [];
+        return sum + segs.reduce((s, d) => s + (d.minutes || 0), 0);
+    }, 0);
+
+    const catMinutes = new Map();
+    const catDescriptions = new Map();
+
+    for (const item of items) {
+        for (const d of item.downtimeCategories || []) {
+            const m = d.minutes || 0;
+            catMinutes.set(d.category, (catMinutes.get(d.category) || 0) + m);
+            if (chartsDetailMode === 'unplanned' && d.descriptions && d.descriptions.length > 0) {
+                if (!catDescriptions.has(d.category)) catDescriptions.set(d.category, new Set());
+                d.descriptions.forEach((desc) => catDescriptions.get(d.category).add(desc));
+            }
+        }
+    }
+
+    const avail = catMinutes.get('Доступное время') || 0;
+    const otherCats = [...catMinutes.entries()]
+        .filter(([c]) => c !== 'Доступное время')
+        .sort((a, b) => b[1] - a[1]);
+
+    const downtimeCategories = [
+        {
+            category: 'Доступное время',
+            minutes: Math.round(avail),
+            percent: workTimeTotal > 0 ? Math.round((avail / workTimeTotal) * 10000) / 100 : 0,
+            descriptions: []
+        },
+        ...otherCats.map(([category, minutes]) => {
+            const descSet = catDescriptions.get(category);
+            return {
+                category,
+                minutes: Math.round(minutes),
+                percent: workTimeTotal > 0 ? Math.round((minutes / workTimeTotal) * 10000) / 100 : 0,
+                descriptions: descSet ? [...descSet] : []
+            };
+        })
+    ];
+
+    const unplannedByCategory = {};
+    const plannedByCategory = {};
+    for (const item of items) {
+        for (const [cat, stops] of Object.entries(item.unplannedByCategory || {})) {
+            if (!unplannedByCategory[cat]) unplannedByCategory[cat] = [];
+            unplannedByCategory[cat].push(...(stops || []));
+        }
+        for (const [cat, stops] of Object.entries(item.plannedByCategory || {})) {
+            if (!plannedByCategory[cat]) plannedByCategory[cat] = [];
+            plannedByCategory[cat].push(...(stops || []));
+        }
+    }
+
+    return {
+        plan: Math.round(plan),
+        fact: Math.round(fact),
+        efficiency,
+        count,
+        downtimeCategories,
+        unplannedByCategory,
+        plannedByCategory
+    };
+};
+
 const naturalCompare = (a, b) => {
     const sa = String(a ?? '');
     const sb = String(b ?? '');
@@ -95,7 +167,6 @@ const normalizeTimeLabel = (timeValue) => {
     return `${hours}:${match[2]}`;
 };
 
-/** Нормализация названия продукта только для сравнения при слиянии (итоги по продуктам) */
 const normalizeProductKey = (name) => {
     let s = String(name || '').trim().normalize('NFKC');
     s = s.replace(/[\u00AB\u00BB\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"');
@@ -103,7 +174,6 @@ const normalizeProductKey = (name) => {
     return s;
 };
 
-/** День листа (1–31) или из dd.mm.yyyy */
 const parseSheetDayNumber = (dateValue) => {
     const dateStr = String(dateValue || '').trim();
     if (!dateStr) return null;
@@ -114,10 +184,68 @@ const parseSheetDayNumber = (dateValue) => {
     return null;
 };
 
+const parseSheetDateParts = (dateValue) => {
+    const dateStr = String(dateValue || '').trim();
+    if (!dateStr) return null;
+    const full = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (full) {
+        return {
+            day: parseInt(full[1], 10),
+            month: parseInt(full[2], 10),
+            year: parseInt(full[3], 10),
+        };
+    }
+    const dayOnly = dateStr.match(/^([1-9]|[12]\d|3[01])$/);
+    if (dayOnly) return { day: parseInt(dayOnly[1], 10), month: null, year: null };
+    return null;
+};
+
+const addOneCalendarDayParts = (parts) => {
+    if (!parts) return null;
+    if (parts.month != null && parts.year != null) {
+        const dt = new Date(parts.year, parts.month - 1, parts.day + 1);
+        return { day: dt.getDate(), month: dt.getMonth() + 1, year: dt.getFullYear() };
+    }
+    return { ...parts, day: (parts.day ?? 1) + 1 };
+};
+
+const resolveEndDatePartsForSegment = (startDateRaw, endDateRaw, startTime, endTime) => {
+    const endNorm = normalizeTimeLabel(endTime);
+    if (!endNorm) return parseSheetDateParts(endDateRaw) || parseSheetDateParts(startDateRaw);
+    const s = String(startDateRaw ?? '').trim();
+    const e = String(endDateRaw ?? '').trim();
+    if (s !== e) return parseSheetDateParts(endDateRaw) || parseSheetDateParts(startDateRaw);
+    const startParts = parseSheetDateParts(startDateRaw);
+    const sm = parseTimeToMinutesSort(startTime);
+    const em = parseTimeToMinutesSort(endTime);
+    if (em < sm) return addOneCalendarDayParts(startParts) || startParts;
+    return startParts;
+};
+
+const formatDayTimeCell = (dateRawOrParts, timeValue) => {
+    const parts =
+        dateRawOrParts != null && typeof dateRawOrParts === 'object' && 'day' in dateRawOrParts
+            ? dateRawOrParts
+            : parseSheetDateParts(dateRawOrParts);
+    const t = normalizeTimeLabel(timeValue);
+    if (!parts || !t) return '—';
+    const m = String(t).match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return `${parts.day}-${t}`;
+    const hh = String(parseInt(m[1], 10)).padStart(2, '0');
+    const mm = m[2];
+    return `${parts.day}-${hh}.${mm}`;
+};
+
 const parseTimeToMinutesSort = (timeValue) => {
     const m = String(timeValue || '').trim().match(/^(\d{1,2}):(\d{2})/);
     if (!m) return 0;
     return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+};
+
+const nightShiftSortMinutes = (timeValue) => {
+    const m = parseTimeToMinutesSort(timeValue);
+    if (m <= 6 * 60) return m + 24 * 60;
+    return m;
 };
 
 const shiftOrder = (shift) => (shift === 'День' ? 0 : shift === 'Ночь' ? 1 : 2);
@@ -281,21 +409,19 @@ const ProductionView = () => {
     const [isDowntimeSelectorOpen, setIsDowntimeSelectorOpen] = useState(false);
     const downtimeSelectorRef = useRef(null);
     const dateFilterRef = useRef(null);
-    
-    // Worker state
+
     const productionWorkerRef = useRef(null);
     const productionWorkerReqIdRef = useRef(0);
-    /** Пока идёт парсинг Excel + расчёт flatRows (для прогресс-бара и игнора устаревших событий) */
     const isProductionWorkingRef = useRef(false);
     const [excelProgress, setExcelProgress] = useState(null);
     const [flatRows, setFlatRows] = useState([]);
     const [flatDowntimeRows, setFlatDowntimeRows] = useState([]);
-    
-    // Состояние для раскрытых графиков
-    const [chartsDetailMode, setChartsDetailMode] = useState('summary'); // 'summary' | 'unplanned' — во втором режиме в категориях показываем вклад неплановых остановок
-    const [offerPrintOnOpen, setOfferPrintOnOpen] = useState(true); // при открытии отчёта сразу предлагать печать
-    /** В текстовом отчёте «неплановые» дополнительно вывести строки плановых простоев */
+
+    const [chartsDetailMode, setChartsDetailMode] = useState('summary');
+    const [offerPrintOnOpen, setOfferPrintOnOpen] = useState(true);
     const [printIncludePlanned, setPrintIncludePlanned] = useState(false);
+    /** byDay — каждый день отдельно; period — одна сводка за выбранный диапазон дат */
+    const [printBreakdownMode, setPrintBreakdownMode] = useState('byDay');
     const [expandedCharts, setExpandedCharts] = useState({
         byDate: new Set(),
         byLine: new Set(),
@@ -304,13 +430,10 @@ const ProductionView = () => {
     const [lineSlideIndex, setLineSlideIndex] = useState(0);
     const [isLineSlideVisible, setIsLineSlideVisible] = useState(true);
 
-    // Выбранные файлы: ref для сессии, state для отображения и кнопки «Обновить»
     const lastSelectedFilesRef = useRef([]);
-    /** Последние известные mtime по путям (для автопроверки изменений в Electron) */
     const lastMtimesRef = useRef({});
     const productionCheckIntervalRef = useRef(null);
     const runCheckRef = useRef(null);
-    /** Для фонового слияния: при получении parseFiles ответа мержим только эти файлы */
     const pendingBackgroundMergeRef = useRef(null);
     const [showSyncModal, setShowSyncModal] = useState(false);
     const [syncStatus, setSyncStatus] = useState({
@@ -323,6 +446,7 @@ const ProductionView = () => {
     });
     const [hasFilesInRef, setHasFilesInRef] = useState(false);
     const [selectedFilePaths, setSelectedFilePaths] = useState([]);
+    const [workerReady, setWorkerReady] = useState(false);
 
     const isElectron = typeof window !== 'undefined' && window.electronAPI;
     const basename = (p) => String(p).replace(/^.*[/\\]/, '');
@@ -360,7 +484,6 @@ const ProductionView = () => {
                 return;
             }
 
-            // Подготавливаем данные файлов для воркера (File или { arrayBuffer, fileName } из Electron)
             const filesData = [];
             const transferables = [];
             for (const file of files) {
@@ -395,7 +518,6 @@ const ProductionView = () => {
                 throw new Error('Нет файлов для обработки');
             }
 
-            // Таймаут для обнаружения зависаний (в silent-режиме спиннер не показываем)
             const timeoutId = setTimeout(() => {
                 console.error('Таймаут при обработке файлов');
                 setParseError('Таймаут: обработка файлов занимает слишком много времени. Попробуйте загрузить файлы по одному.');
@@ -414,7 +536,6 @@ const ProductionView = () => {
                 phase: 'parse',
             });
 
-            // Сохраняем обработчик для очистки таймаута (только финальный ответ parseFiles, не parseProgress)
             const timeoutRef = { current: timeoutId };
             const originalOnMessage = worker.onmessage;
 
@@ -458,7 +579,6 @@ const ProductionView = () => {
     const uniqueDowntimeTypes = useMemo(() => {
         const types = new Set();
         flatDowntimeRows.forEach(row => {
-            // Собираем только уникальные виды простоев (type), без категории
             if (row.type && row.type.trim()) {
                 types.add(row.type.trim());
             }
@@ -511,11 +631,6 @@ const ProductionView = () => {
         });
     }, [flatDowntimeRows, filterLine, filterDates, filterProduct]);
 
-    /**
-     * Итоги по продуктам: по каждой линии сортировка дата → время начала (хронология листа);
-     * смена — только tie-breaker при равном времени. Подряд одинаковые продукты сливаются
-     * (сумма qty; день/ночь одного названия подряд по времени — одна строка).
-     */
     const productSummary = useMemo(() => {
         const byLine = new Map();
         filteredRows.forEach((row) => {
@@ -531,8 +646,9 @@ const ProductionView = () => {
             const sorted = [...lineRows].sort((a, b) => {
                 const c = naturalCompare(a.date, b.date);
                 if (c !== 0) return c;
-                const ta = parseTimeToMinutesSort(a.start);
-                const tb = parseTimeToMinutesSort(b.start);
+                const bothNight = a.shift === 'Ночь' && b.shift === 'Ночь';
+                const ta = bothNight ? nightShiftSortMinutes(a.start) : parseTimeToMinutesSort(a.start);
+                const tb = bothNight ? nightShiftSortMinutes(b.start) : parseTimeToMinutesSort(b.start);
                 if (ta !== tb) return ta - tb;
                 return shiftOrder(a.shift) - shiftOrder(b.shift);
             });
@@ -542,15 +658,13 @@ const ProductionView = () => {
             for (const row of sorted) {
                 const qty = typeof row.qty === 'number' ? row.qty : Number(row.qty);
                 const productKey = normalizeProductKey(row.product);
-                const startDay = parseSheetDayNumber(row.date);
-                const endDay = parseSheetDayNumber(row.date);
                 const startTime = normalizeTimeLabel(row.start) || '—';
                 const endTime = normalizeTimeLabel(row.end) || '—';
 
                 const prev = out[out.length - 1];
                 if (prev && prev.productKey === productKey) {
                     prev.totalQty += qty;
-                    if (endDay != null) prev.endDay = endDay;
+                    prev.endDateRaw = row.date;
                     prev.endTime = endTime;
                 } else {
                     out.push({
@@ -558,8 +672,8 @@ const ProductionView = () => {
                         product: row.product,
                         productKey,
                         totalQty: qty,
-                        startDay,
-                        endDay: endDay ?? startDay,
+                        startDateRaw: row.date,
+                        endDateRaw: row.date,
                         startTime,
                         endTime,
                     });
@@ -595,14 +709,12 @@ const ProductionView = () => {
                 }
             }
 
-            // Рассчитываем среднюю скорость линии (среднее арифметическое всех скоростей продуктов)
             const speeds = lineRows.map(r => r.speed || 0).filter(s => s > 0);
             const avgSpeed = speeds.length > 0
                 ? speeds.reduce((sum, s) => sum + s, 0) / speeds.length
                 : 0;
 
             const downtimeMap = new Map();
-            /** По категории: описание -> { minutes, comments[] } */
             const descriptionDataMap = new Map();
             lineDowntimes
                 .filter(d => !excludedDowntimeTypes.has(String(d.type || '').trim()))
@@ -678,7 +790,6 @@ const ProductionView = () => {
         return () => clearTimeout(id);
     }, [lineSlideIndex, filterDates]);
 
-    // Данные для графиков — план/факт из planByLineDate/factByLineDate
     const chartData = useMemo(() => {
         const byDate = new Map();
         const byLine = new Map();
@@ -784,11 +895,8 @@ const ProductionView = () => {
             }
         });
 
-            // Добавляем простои по категориям
-            // Исключаем простои из excludedDowntimeTypes из отображения в графиках
             filteredDowntimeRows
                 .filter(downtime => {
-                    // Показываем только простои, которые НЕ исключены
                     const downtimeType = String(downtime.type || '').trim();
                     return !excludedDowntimeTypes.has(downtimeType);
                 })
@@ -797,14 +905,12 @@ const ProductionView = () => {
                     const category = downtime.category || 'Без категории';
                     const description = downtime.description || '';
 
-                    // Находим соответствующие production rows для привязки к продуктам
                     const matchingRows = filteredRows.filter(r => 
                         r.date === downtime.date && 
                         r.line === downtime.line && 
                         r.shift === downtime.shift
                     );
 
-                    // По датам
                     const dateData = byDate.get(downtime.date);
                     if (dateData) {
                         if (!dateData.downtimeByCategory.has(category)) {
@@ -846,7 +952,6 @@ const ProductionView = () => {
                         }
                     }
 
-                    // По линиям
                     const lineData = byLine.get(downtime.line);
                     if (lineData) {
                         if (!lineData.downtimeByCategory.has(category)) {
@@ -888,7 +993,6 @@ const ProductionView = () => {
                         }
                     }
 
-                    // По продуктам - используем продукт из соответствующей строки
                     matchingRows.forEach(row => {
                         const productData = byProduct.get(row.product);
                         if (productData) {
@@ -959,7 +1063,6 @@ const ProductionView = () => {
                         });
                     downtimeCategories = segments;
                 } else {
-                    // Режим «С вкладом неплановых»: полоски по сырым категориям (КИПиА, Механические и т.д.)
                     const rawEntries = Array.from((data.downtimeByCategory || new Map()).entries())
                         .map(([category, catData]) => ({
                             category,
@@ -1036,7 +1139,6 @@ const ProductionView = () => {
         };
     }, [filteredRows, filteredDowntimeRows, excludedDowntimeTypes, planByLineDate, factByLineDate, workTimeByLineDate, availableByLineDate, normsBreakdownByLineDate, chartsDetailMode]);
 
-    /** Экспорт отчёта «Доля неплановых простоев» в оформленном виде для печати */
     const openUnplannedReportPrint = useCallback(() => {
         const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const parts = [];
@@ -1122,28 +1224,41 @@ const ProductionView = () => {
 
         parts.push('<section class="report-section">');
 
-        // Если выбрано несколько дат — печатаем разбор по датам (внутри каждой даты простои сгруппированы по линиям).
-        // Каждую дату, начиная со второй, выводим с нового листа.
         if (filterDates.length > 1 && chartData.byDate.length > 0) {
-            parts.push('<h2 class="section-title">Разбор по датам</h2>');
-
             const byDateMap = new Map(chartData.byDate.map((item) => [item.date, item]));
             const orderedDates = [...new Set(filterDates)].sort(naturalCompare);
 
-            orderedDates.forEach((date, index) => {
-                const item = byDateMap.get(date);
-                if (!item) return;
-                if (index > 0) {
-                    parts.push('<div class="page-break"></div>');
+            if (printBreakdownMode === 'period') {
+                const collected = orderedDates.map((d) => byDateMap.get(d)).filter(Boolean);
+                if (collected.length > 0) {
+                    parts.push('<h2 class="section-title">Сводка за период</h2>');
+                    const merged = mergeChartDateItemsForPrint(collected, chartsDetailMode);
+                    const periodLabel = orderedDates.length === 1
+                        ? orderedDates[0]
+                        : `${orderedDates[0]} — ${orderedDates[orderedDates.length - 1]}`;
+                    merged.date = periodLabel;
+                    parts.push(renderItem(merged, 'date'));
+                } else {
+                    parts.push('<p class="report-meta">Нет данных по выбранным датам для сводки.</p>');
                 }
-                parts.push(renderItem(item, 'date'));
-            });
+            } else {
+                parts.push('<h2 class="section-title">Разбор по датам</h2>');
+                let pageIndex = 0;
+                orderedDates.forEach((date) => {
+                    const item = byDateMap.get(date);
+                    if (!item) return;
+                    if (pageIndex > 0) {
+                        parts.push('<div class="page-break"></div>');
+                    }
+                    parts.push(renderItem(item, 'date'));
+                    pageIndex += 1;
+                });
+            }
         } else {
-            // Старое поведение: разбор по линиям (для одной даты или без фильтра дат)
-        parts.push('<h2 class="section-title">Разбор по линиям</h2>');
-        for (const item of chartData.byLine) {
-            parts.push(renderItem(item, 'line'));
-        }
+            parts.push('<h2 class="section-title">Разбор по линиям</h2>');
+            for (const item of chartData.byLine) {
+                parts.push(renderItem(item, 'line'));
+            }
         }
 
         parts.push('</section>');
@@ -1202,7 +1317,7 @@ const ProductionView = () => {
                 }
             }
         }
-    }, [chartData, offerPrintOnOpen, filterDates, printIncludePlanned]);
+    }, [chartData, offerPrintOnOpen, filterDates, printIncludePlanned, printBreakdownMode, chartsDetailMode]);
 
     useEffect(() => {
         if (!isElectron || !window.electronAPI?.productionGetSelectedPaths) return;
@@ -1358,7 +1473,6 @@ const ProductionView = () => {
         if (fileInputRef.current) fileInputRef.current.value = '';
     }, [wipeDataCategories]);
 
-    /** Фоновое обновление только изменённых файлов: парсим entries и мержим в productionResults по fileName */
     const runBackgroundMerge = useCallback(async (entries, changedFileNames) => {
         const worker = productionWorkerRef.current;
         if (!worker || !entries?.length || !changedFileNames?.length) return;
@@ -1381,7 +1495,6 @@ const ProductionView = () => {
         );
     }, []);
 
-    // Автопроверка изменений файлов по mtime (только Electron)
     const PRODUCTION_CHECK_INTERVAL_MS = 60000;
     useEffect(() => {
         if (!isElectron || !window.electronAPI?.productionGetFileStats || selectedFilePaths.length === 0) {
@@ -1478,13 +1591,13 @@ const ProductionView = () => {
         runCheckRef.current?.();
     }, []);
 
-    // Инициализация воркера
     useEffect(() => {
         if (productionWorkerRef.current) return;
 
         try {
             const worker = new Worker(new URL('../../production.worker.js', import.meta.url), { type: 'module' });
             productionWorkerRef.current = worker;
+            setWorkerReady(true);
 
             worker.onmessage = (e) => {
                 const {
@@ -1565,6 +1678,7 @@ const ProductionView = () => {
         }
 
         return () => {
+            setWorkerReady(false);
             if (productionWorkerRef.current) {
                 try { 
                     productionWorkerRef.current.terminate(); 
@@ -1574,7 +1688,6 @@ const ProductionView = () => {
         };
     }, []);
 
-    // Прием данных напрямую от окна выбора файлов
     useEffect(() => {
         window.__receiveProductionFiles = async (files) => {
             if (Array.isArray(files)) {
@@ -1586,7 +1699,6 @@ const ProductionView = () => {
         };
     }, [processFiles]);
 
-    // Слушатель сообщений от окна выбора файлов (fallback)
     useEffect(() => {
         const onMessage = async (event) => {
             if (event.origin !== window.location.origin) return;
@@ -1599,10 +1711,8 @@ const ProductionView = () => {
         return () => window.removeEventListener('message', onMessage);
     }, [processFiles]);
 
-    // Пересчет flatRows при изменении excludedDowntimeTypes или results
     useEffect(() => {
-        if (!productionWorkerRef.current || results.length === 0) return;
-        
+        if (!workerReady || !productionWorkerRef.current || results.length === 0) return;
         const requestId = ++productionWorkerReqIdRef.current;
         productionWorkerRef.current.postMessage({
             type: 'calculateFlatRows',
@@ -1612,10 +1722,10 @@ const ProductionView = () => {
                 excludedDowntimeTypes: Array.from(excludedDowntimeTypes)
             }
         });
-    }, [excludedDowntimeTypes, results]);
+    }, [workerReady, excludedDowntimeTypes, results]);
 
-    // Закрытие селектора простоев при клике вне его
     useEffect(() => {
+        if (!isDowntimeSelectorOpen && !isDateFilterOpen) return;
         const handleClickOutside = (event) => {
             if (downtimeSelectorRef.current && !downtimeSelectorRef.current.contains(event.target)) {
                 setIsDowntimeSelectorOpen(false);
@@ -1624,24 +1734,10 @@ const ProductionView = () => {
                 setIsDateFilterOpen(false);
             }
         };
-        if (isDowntimeSelectorOpen) {
-            document.addEventListener('mousedown', handleClickOutside);
-            return () => document.removeEventListener('mousedown', handleClickOutside);
-        }
-    }, [isDowntimeSelectorOpen]);
-    useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (dateFilterRef.current && !dateFilterRef.current.contains(event.target)) {
-                setIsDateFilterOpen(false);
-            }
-        };
-        if (isDateFilterOpen) {
-            document.addEventListener('mousedown', handleClickOutside);
-            return () => document.removeEventListener('mousedown', handleClickOutside);
-        }
-    }, [isDateFilterOpen]);
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [isDowntimeSelectorOpen, isDateFilterOpen]);
 
-    // Добавляем CSS анимацию для пирога
     useEffect(() => {
         const style = document.createElement('style');
         style.textContent = '@keyframes pieGrow { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }';
@@ -1654,7 +1750,7 @@ const ProductionView = () => {
     }, []);
 
     const formatTime = (ms) => (ms != null ? new Date(ms).toLocaleString('ru') : '—');
-    const [countdownTick, setCountdownTick] = useState(0);
+    const [, setCountdownTick] = useState(0);
     useEffect(() => {
         if (!showSyncModal || syncStatus.nextCheckAt == null) return;
         const id = setInterval(() => setCountdownTick((t) => t + 1), 1000);
@@ -2129,55 +2225,62 @@ const ProductionView = () => {
                                             Нет данных для отображения
                                         </div>
                                     ) : (
-                                        productSummary.map((lineGroup) => (
-                                            <div key={lineGroup.line} className="mb-6 border border-slate-200 rounded-lg overflow-hidden">
-                                                <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 font-semibold text-slate-700">
-                                                    Линия {lineGroup.line}
-                                                </div>
-                                                <table className="w-full text-sm text-left">
-                                                    <thead className="bg-slate-50 text-slate-600 font-semibold">
-                                                        <tr>
-                                                            <th className="px-4 py-3 border-b">Продукт</th>
-                                                            <th className="px-4 py-3 border-b text-center w-20">День</th>
-                                                            <th className="px-4 py-3 border-b">Начало</th>
-                                                            <th className="px-4 py-3 border-b">Конец</th>
-                                                            <th className="px-4 py-3 border-b text-right">Количество</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-slate-100">
-                                                        {lineGroup.products.map((item) => {
-                                                            const sd = item.startDay;
-                                                            const ed = item.endDay;
-                                                            const dayLabel =
-                                                                sd == null && ed == null
-                                                                    ? '—'
-                                                                    : sd != null && ed != null && sd !== ed
-                                                                        ? `${sd}–${ed}`
-                                                                        : String(sd ?? ed ?? '—');
-                                                            return (
-                                                            <tr key={item.key} className="hover:bg-slate-50 transition-colors">
-                                                                <td className="px-4 py-3 text-slate-800 font-medium">
-                                                                    {item.product}
-                                                                </td>
-                                                                <td className="px-4 py-3 text-slate-600 text-center tabular-nums">
-                                                                    {dayLabel}
-                                                                </td>
-                                                                <td className="px-4 py-3 text-slate-600 tabular-nums">
-                                                                    {item.startTime || '—'}
-                                                                </td>
-                                                                <td className="px-4 py-3 text-slate-600 tabular-nums">
-                                                                    {item.endTime || '—'}
-                                                                </td>
-                                                                <td className="px-4 py-3 text-right text-slate-700 font-semibold">
-                                                                    {Math.round(item.totalQty).toLocaleString()}
-                                                                </td>
-                                                            </tr>
+                                        <div className="border border-slate-200 rounded-lg overflow-hidden">
+                                            <table className="w-full table-fixed text-sm text-left">
+                                                <colgroup>
+                                                    <col className="min-w-0 w-[40%]" />
+                                                    <col className="w-[22%]" />
+                                                    <col className="w-[22%]" />
+                                                    <col className="w-[16%]" />
+                                                </colgroup>
+                                                <thead className="bg-slate-50 text-slate-600 font-semibold">
+                                                    <tr>
+                                                        <th className="px-4 py-3 border-b min-w-0">Продукт</th>
+                                                        <th className="px-4 py-3 border-b">Начало</th>
+                                                        <th className="px-4 py-3 border-b">Конец</th>
+                                                        <th className="px-4 py-3 border-b text-right">Количество</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100">
+                                                    {productSummary.flatMap((lineGroup) => [
+                                                        <tr key={`line-${lineGroup.line}`}>
+                                                            <td
+                                                                colSpan={4}
+                                                                className="px-4 py-2 bg-slate-50 border-b border-slate-200 font-semibold text-slate-700"
+                                                            >
+                                                                Линия {lineGroup.line}
+                                                            </td>
+                                                        </tr>,
+                                                        ...lineGroup.products.map((item) => {
+                                                            const endParts = resolveEndDatePartsForSegment(
+                                                                item.startDateRaw,
+                                                                item.endDateRaw,
+                                                                item.startTime,
+                                                                item.endTime
                                                             );
-                                                        })}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        ))
+                                                            const startLabel = formatDayTimeCell(item.startDateRaw, item.startTime);
+                                                            const endLabel = formatDayTimeCell(endParts, item.endTime);
+                                                            return (
+                                                                <tr key={item.key} className="hover:bg-slate-50 transition-colors">
+                                                                    <td className="px-4 py-3 text-slate-800 font-medium min-w-0 align-top break-words">
+                                                                        {item.product}
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-slate-600 tabular-nums align-top whitespace-nowrap">
+                                                                        {startLabel}
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-slate-600 tabular-nums align-top whitespace-nowrap">
+                                                                        {endLabel}
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-right text-slate-700 font-semibold tabular-nums align-top whitespace-nowrap">
+                                                                        {Math.round(item.totalQty).toLocaleString()}
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        }),
+                                                    ])}
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     )}
                                 </div>
                             )}
@@ -2285,7 +2388,27 @@ const ProductionView = () => {
                                                     {chartsDetailMode === 'summary' ? 'Полоски и детализация по нормативным (плановым) категориям.' : 'Полоски по сырым категориям; раскройте дату или линию (▶) для списка неплановых остановок.'}
                                                 </span>
                                                 {chartsDetailMode === 'unplanned' && (
-                                                    <div className="inline-flex items-center gap-3">
+                                                    <div className="inline-flex items-center gap-3 flex-wrap">
+                                                        {filterDates.length > 1 && (
+                                                            <div className="flex rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setPrintBreakdownMode('byDay')}
+                                                                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${printBreakdownMode === 'byDay' ? 'bg-slate-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                                    title="В отчёте отдельный блок на каждую дату"
+                                                                >
+                                                                    По дням
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setPrintBreakdownMode('period')}
+                                                                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${printBreakdownMode === 'period' ? 'bg-slate-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                                    title="Один сводный блок за весь выбранный диапазон дат"
+                                                                >
+                                                                    За период
+                                                                </button>
+                                                            </div>
+                                                        )}
                                                         <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-slate-600">
                                                             <input
                                                                 type="checkbox"

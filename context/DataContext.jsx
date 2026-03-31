@@ -242,6 +242,7 @@ export const DataProvider = ({ children }) => {
         setPlanningStateState(next);
         if (!restoring) persistStateKey(STORAGE_KEYS.PLANNING_STATE, next);
     }, [planningState, restoring, persistStateKey]);
+    /** Производство: только localStorage через productionTabStorage — не persistStateKey / не облако. */
     const setProductionResults = useCallback((value) => {
         const next = typeof value === 'function' ? value(productionResults) : value;
         setProductionResultsState(next);

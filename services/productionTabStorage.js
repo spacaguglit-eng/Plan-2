@@ -1,7 +1,4 @@
-/**
- * Данные вкладки «Производство» только в localStorage, без синхронизации с облаком.
- * Ключи отделены от остальных STORAGE_KEYS приложения.
- */
+/** Вкладка «Производство»: только localStorage, не Firestore. */
 import { STORAGE_KEYS } from '../utils';
 
 const K = {
