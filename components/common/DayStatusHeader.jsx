@@ -15,7 +15,8 @@ export const DayStatusHeader = ({
     exportMode = 'full',
     onChangeExportMode
 }) => {
-    if (!stats || !shiftsData || shiftsData.length === 0) return null;
+    if (!stats) return null;
+    if ((!shiftsData || shiftsData.length === 0) && dateSelector == null) return null;
     
     return (
         <div className="mb-6 space-y-3 animate-in fade-in slide-in-from-top-4 duration-300">

@@ -53,6 +53,9 @@ export const normalizeManualRoleForId = (roleTitle) => {
     return String(roleTitle || 'role').replace(/\s+/g, '_');
 };
 
+/** Резерв под различие «закрытая/открытая» вакансия; в UI все пустые слоты одинаковые («Требуется»). */
+export const isClosedManualVacancy = (_manual) => false;
+
 /**
  * Создает ID для ручного слота
  */
@@ -124,6 +127,7 @@ export const normalizePlanData = (planData) => ({
     manualAssignments: planData.manualAssignments || {},
     manualLines: planData.manualLines || {},
     planningState: planData.planningState || null,
-    autoReassignEnabled: planData.autoReassignEnabled
+    autoReassignEnabled: planData.autoReassignEnabled,
+    rosterFillEnabled: planData.rosterFillEnabled
 });
 

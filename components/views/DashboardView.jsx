@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown, RotateCcw } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Sun, Moon, ArrowRightLeft, UserPlus, GripVertical, X, Wand2, CheckSquare, Square, GraduationCap, Ban, Users, Search, Plus, Copy, Briefcase, ChevronDown, RotateCcw, CalendarClock } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 import { RvPickerModal } from '../modals/RvPickerModal';
 import { LineEventsRawModal } from '../modals/LineEventsRawModal';
 import { DayStatusHeader } from '../common/DayStatusHeader';
 import { CustomDateSelector } from '../common/CustomDateSelector';
 import { normalizeName } from '../../utils';
+import { shiftLineCompositionSignature } from '../../context/modules/copyShiftUtils';
 
 const parseTimeToMinutes = (value) => {
     if (!value || !String(value).includes(':')) return null;
@@ -108,6 +109,84 @@ const addDaysToDate = (dateStr, days) => {
     return formatDayIndexToDate(dayIdx + days);
 };
 
+const formatShiftTimeRange = (shift) => {
+    const s = shift?.startTime;
+    const e = shift?.endTime;
+    if (!(s instanceof Date) || !(e instanceof Date) || isNaN(s.getTime()) || isNaN(e.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(s.getHours())}:${pad(s.getMinutes())}–${pad(e.getHours())}:${pad(e.getMinutes())}`;
+};
+
+const sanitizeCopyCell = (v) => String(v ?? '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+
+/** Совпадает с max-w меню выбора сотрудника; для clamp по горизонтали/вертикали. */
+const FREE_EMPLOYEE_MENU_W = 400;
+const FREE_EMPLOYEE_MENU_EST_H = 380;
+
+/**
+ * Держит popover «из свободных» в viewport: сдвиг влево у правого края, при необходимости — над кнопкой.
+ * @param anchorRect — getBoundingClientRect элемента-якоря (кнопка); иначе позиция от курсора.
+ */
+const clampFreeEmployeeMenuPosition = (rawLeft, rawTop, anchorRect = null) => {
+    if (typeof window === 'undefined') return { x: rawLeft, y: rawTop };
+    const pad = 8;
+    const w = FREE_EMPLOYEE_MENU_W;
+    const h = FREE_EMPLOYEE_MENU_EST_H;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let left = rawLeft;
+    if (left + w > vw - pad) left = vw - w - pad;
+    if (left < pad) left = pad;
+
+    let top;
+    if (anchorRect) {
+        const below = anchorRect.bottom + 4;
+        const above = anchorRect.top - h - 4;
+        if (below + h <= vh - pad) {
+            top = below;
+        } else if (above >= pad) {
+            top = above;
+        } else {
+            top = Math.max(pad, vh - h - pad);
+        }
+    } else {
+        top = rawTop;
+        if (top + h > vh - pad) top = vh - h - pad;
+        if (top < pad) top = pad;
+    }
+
+    return { x: left, y: top };
+};
+
+const formatShiftSlotLabel = (slot) => {
+    const role = sanitizeCopyCell(slot.roleTitle || '—');
+    if (slot.status === 'outsourced') return `${role}: аутсорс`;
+    if (slot.status === 'vacancy' || slot.status === 'unknown') return `${role}: вакансия`;
+    const name = slot.assigned?.name || slot.currentWorkerName;
+    if (name) return `${role}: ${sanitizeCopyCell(name)}`;
+    return `${role}: вакансия`;
+};
+
+/** Состав смены: линии со слотами (роль — ФИО) и резерв подсобников. */
+const formatShiftComposition = (shift, { singleLine = false } = {}) => {
+    const lineParts = [];
+    (shift.lineTasks || []).forEach((lt) => {
+        const lineName = sanitizeCopyCell(
+            (lt.displayName && String(lt.displayName).trim()) || lt.templateName || '—'
+        );
+        const slots = (lt.slots || []).map(formatShiftSlotLabel).filter(Boolean);
+        const slotStr = slots.length ? slots.join('; ') : '—';
+        lineParts.push(`${lineName}: ${slotStr}`);
+    });
+    const floaterNames = (shift.floaters || []).map((f) => f?.name).filter(Boolean);
+    if (floaterNames.length) {
+        lineParts.push(`Резерв: ${floaterNames.map(sanitizeCopyCell).join(', ')}`);
+    }
+    const sep = singleLine ? ' | ' : '\n';
+    return lineParts.join(sep);
+};
+
 const getCompetenciesList = (competencies) => {
     if (!competencies) return [];
     return Array.isArray(competencies) ? competencies : Array.from(competencies);
@@ -122,6 +201,14 @@ const hasCompetencyForRole = (worker, roleTitle) => {
 const hasAnyCompetencies = (competencies) => {
     if (!competencies) return false;
     return Array.isArray(competencies) ? competencies.length > 0 : competencies.size > 0;
+};
+
+/** Роль места слота; в скобках — штатная роль человека, если отличается. */
+const formatSlotRoleLine = (slotRoleTitle, ownRolePrimary, ownRoleFallback) => {
+    const slotRole = (slotRoleTitle && String(slotRoleTitle).trim()) || 'Не указано';
+    const ownRaw = ownRolePrimary || ownRoleFallback || '';
+    const ownRole = typeof ownRaw === 'string' ? ownRaw.trim() : '';
+    return ownRole && normalizeName(ownRole) !== normalizeName(slotRole) ? `${slotRole} (${ownRole})` : slotRole;
 };
 
 const FilledSlotCard = React.memo(({
@@ -144,7 +231,7 @@ const FilledSlotCard = React.memo(({
     const assignedWorker = slot.assigned;
     const workerName = assignedWorker?.name;
     const registryWorker = workerName ? findWorkerInRegistry(workerName) : null;
-    const displayRole = registryWorker?.role || assignedWorker?.role || 'Не указано';
+    const displayRole = formatSlotRoleLine(slot.roleTitle, registryWorker?.role, assignedWorker?.role);
     const competenciesList = getCompetenciesList(registryWorker?.competencies);
     const hasCompetencies = competenciesList.length > 0;
     const isCompFill = hasCompetencyForRole(registryWorker, slot.roleTitle);
@@ -247,6 +334,8 @@ const DashboardView = () => {
         setIsGlobalFill,
         autoReassignEnabled,
         setAutoReassignEnabled,
+        rosterFillEnabled,
+        setRosterFillEnabled,
         applyAutoReassignForDate,
         draggedWorker,
         updateAssignments,
@@ -260,9 +349,16 @@ const DashboardView = () => {
         loadPlan,
         resetAssignmentsForShift,
         resetAssignmentsForDay,
-        resetAssignmentsAll
+        resetAssignmentsAll,
+        copyShiftCompositionToTargets
     } = useData();
 
+    const [lineShiftsModalOpen, setLineShiftsModalOpen] = useState(false);
+    const [lineShiftsCopyMode, setLineShiftsCopyMode] = useState('tsv');
+    const [lineShiftsCopied, setLineShiftsCopied] = useState(false);
+    const lineShiftsTextareaRef = useRef(null);
+    const [copyShiftModalOpen, setCopyShiftModalOpen] = useState(false);
+    const [copyShiftSelectedTargets, setCopyShiftSelectedTargets] = useState([]);
     const [contextMenu, setContextMenu] = useState(null);
     const [contextMenuSearch, setContextMenuSearch] = useState('');
     const [selectedShiftId, setSelectedShiftId] = useState('');
@@ -331,19 +427,12 @@ const DashboardView = () => {
         };
     }, [workerRegistry, normalizedRegistry]);
 
-    const shiftsData = getShiftsForDate(selectedDate);
-    const displayShifts = useMemo(() => {
-        if (!shiftsData || shiftsData.length === 0) return [];
-        if (!selectedShiftId) return shiftsData;
-        return shiftsData.filter(s => String(s.id) === selectedShiftId);
-    }, [shiftsData, selectedShiftId]);
-
     const datesForSelector = useMemo(() => {
         if (!scheduleDates || scheduleDates.length === 0) return [];
         if (!selectedShiftId) return scheduleDates;
-        return scheduleDates.filter(dateStr => {
+        return scheduleDates.filter((dateStr) => {
             const shifts = getShiftsForDate(dateStr);
-            return shifts && shifts.some(s => String(s.id) === selectedShiftId);
+            return shifts && shifts.some((s) => String(s.id) === selectedShiftId);
         });
     }, [scheduleDates, selectedShiftId, getShiftsForDate]);
 
@@ -353,6 +442,45 @@ const DashboardView = () => {
             setSelectedDate(datesForSelector[0]);
         }
     }, [selectedShiftId, datesForSelector, selectedDate, setSelectedDate]);
+
+    const shiftsData = getShiftsForDate(selectedDate);
+    const copyShiftSource = useMemo(
+        () => (shiftsData || []).find((s) => String(s.id) === String(selectedShiftId)),
+        [shiftsData, selectedShiftId]
+    );
+    const copyShiftTargetsGrouped = useMemo(() => {
+        const all = (shiftsData || []).filter((s) => String(s.id) !== String(selectedShiftId));
+        if (!copyShiftSource) {
+            return { sameComposition: [], other: all };
+        }
+        const srcSig = shiftLineCompositionSignature(copyShiftSource);
+        const sameComposition = [];
+        const other = [];
+        all.forEach((s) => {
+            if (shiftLineCompositionSignature(s) === srcSig) {
+                sameComposition.push(s);
+            } else {
+                other.push(s);
+            }
+        });
+        return { sameComposition, other };
+    }, [shiftsData, selectedShiftId, copyShiftSource]);
+    const copyShiftTargetsTotal = copyShiftTargetsGrouped.sameComposition.length + copyShiftTargetsGrouped.other.length;
+    const copyShiftOtherDates = useMemo(
+        () => datesForSelector.filter((d) => d !== selectedDate),
+        [datesForSelector, selectedDate]
+    );
+    const copyShiftSelectableTotal = copyShiftTargetsTotal + copyShiftOtherDates.length;
+    const toggleCopyShiftTargetKey = useCallback((key) => {
+        setCopyShiftSelectedTargets((prev) =>
+            prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
+        );
+    }, []);
+    const displayShifts = useMemo(() => {
+        if (!shiftsData || shiftsData.length === 0) return [];
+        if (!selectedShiftId) return shiftsData;
+        return shiftsData.filter(s => String(s.id) === selectedShiftId);
+    }, [shiftsData, selectedShiftId]);
 
     const dayStats = calculateDailyStats ? calculateDailyStats[selectedDate] : null;
 
@@ -422,9 +550,190 @@ const DashboardView = () => {
         return Object.keys(manualAssignments || {}).some((key) => key.startsWith(prefix));
     }, [selectedDate, manualAssignments]);
 
-    if (!shiftsData || shiftsData.length === 0) {
-        return <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>;
-    }
+    const lineShiftsScheduleRows = useMemo(() => {
+        if (!scheduleDates || scheduleDates.length === 0) return [];
+        const byLine = new Map();
+        scheduleDates.forEach((dateStr) => {
+            const shifts = getShiftsForDate(dateStr) || [];
+            shifts.forEach((shift) => {
+                const timeRange = formatShiftTimeRange(shift);
+                const shiftCompositionLine = formatShiftComposition(shift, { singleLine: true });
+                (shift.lineTasks || []).forEach((lt) => {
+                    const name = (lt.displayName && String(lt.displayName).trim()) || lt.templateName || '—';
+                    const dedupe = `${dateStr}_${shift.id}_${name}`;
+                    if (!byLine.has(name)) byLine.set(name, []);
+                    const arr = byLine.get(name);
+                    if (!arr.some((x) => x.dedupe === dedupe)) {
+                        arr.push({
+                            dedupe,
+                            dateStr,
+                            dayIndex: parseDateToDayIndex(dateStr) ?? 0,
+                            shiftName: shift.name,
+                            shiftType: shift.type,
+                            timeRange,
+                            shiftComposition: shiftCompositionLine
+                        });
+                    }
+                });
+            });
+        });
+        const keys = [...byLine.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
+        return keys.map((lineName) => {
+            const entries = byLine.get(lineName).sort((a, b) => {
+                if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+                return String(a.shiftName).localeCompare(String(b.shiftName), 'ru');
+            });
+            return { lineName, entries };
+        });
+    }, [scheduleDates, getShiftsForDate]);
+
+    const lineShiftsByShiftEntries = useMemo(() => {
+        if (!scheduleDates || scheduleDates.length === 0) return [];
+        const map = new Map();
+        scheduleDates.forEach((dateStr) => {
+            const shifts = getShiftsForDate(dateStr) || [];
+            shifts.forEach((shift) => {
+                const key = `${dateStr}::${shift.id}`;
+                if (map.has(key)) return;
+                map.set(key, {
+                    key,
+                    dateStr,
+                    dayIndex: parseDateToDayIndex(dateStr) ?? 0,
+                    shiftName: shift.name,
+                    shiftType: shift.type,
+                    timeRange: formatShiftTimeRange(shift),
+                    composition: formatShiftComposition(shift, { singleLine: false }),
+                    compositionOneLine: formatShiftComposition(shift, { singleLine: true })
+                });
+            });
+        });
+        return [...map.values()].sort((a, b) => {
+            if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+            return String(a.shiftName).localeCompare(String(b.shiftName), 'ru');
+        });
+    }, [scheduleDates, getShiftsForDate]);
+
+    const lineShiftsCopyTsv = useMemo(() => {
+        const row = (cells) => cells.map(sanitizeCopyCell).join('\t');
+        if (lineShiftsScheduleRows.length > 0) {
+            const lines = [row(['Линия', 'Дата', 'Бригада', 'Тип смены', 'Время', 'Состав смены'])];
+            lineShiftsScheduleRows.forEach(({ lineName, entries }) => {
+                entries.forEach((e) => {
+                    lines.push(
+                        row([
+                            lineName,
+                            e.dateStr,
+                            e.shiftName,
+                            e.shiftType,
+                            e.timeRange || '',
+                            e.shiftComposition || ''
+                        ])
+                    );
+                });
+            });
+            return lines.join('\n');
+        }
+        if (lineShiftsByShiftEntries.length > 0) {
+            const lines = [row(['Дата', 'Бригада', 'Тип смены', 'Время', 'Состав смены'])];
+            lineShiftsByShiftEntries.forEach((e) => {
+                lines.push(
+                    row([
+                        e.dateStr,
+                        e.shiftName,
+                        e.shiftType,
+                        e.timeRange || '',
+                        e.compositionOneLine || ''
+                    ])
+                );
+            });
+            return lines.join('\n');
+        }
+        return '';
+    }, [lineShiftsScheduleRows, lineShiftsByShiftEntries]);
+
+    const lineShiftsCopyPlain = useMemo(() => {
+        const byLine = lineShiftsScheduleRows.length
+            ? lineShiftsScheduleRows
+                  .map(({ lineName, entries }) => {
+                      const body = entries
+                          .map((e) => {
+                              const t = e.timeRange ? ` · ${e.timeRange}` : '';
+                              const comp = e.shiftComposition ? `\n     ${e.shiftComposition}` : '';
+                              return `  ${e.dateStr} — ${e.shiftName} (${e.shiftType})${t}${comp}`;
+                          })
+                          .join('\n');
+                      return `${lineName}\n${body}`;
+                  })
+                  .join('\n\n')
+            : '';
+        if (!lineShiftsByShiftEntries.length) return byLine;
+        const block = lineShiftsByShiftEntries
+            .map((e) => {
+                const t = e.timeRange ? ` · ${e.timeRange}` : '';
+                const head = `${e.dateStr} · ${e.shiftName} (${e.shiftType})${t}`;
+                return `${head}\n${e.composition}`;
+            })
+            .join('\n\n');
+        if (!byLine) return `--- Состав по сменам ---\n\n${block}`;
+        return `${byLine}\n\n--- Состав по сменам (без дублей по строкам линий) ---\n\n${block}`;
+    }, [lineShiftsScheduleRows, lineShiftsByShiftEntries]);
+
+    const lineShiftsCopyCompositionOnly = useMemo(() => {
+        if (!lineShiftsByShiftEntries.length) return '';
+        return lineShiftsByShiftEntries
+            .map((e) => {
+                const t = e.timeRange ? ` · ${e.timeRange}` : '';
+                const head = `${e.dateStr} · ${e.shiftName} (${e.shiftType})${t}`;
+                return `${head}\n${e.composition}`;
+            })
+            .join('\n\n');
+    }, [lineShiftsByShiftEntries]);
+
+    const lineShiftsTextareaValue =
+        lineShiftsCopyMode === 'tsv'
+            ? lineShiftsCopyTsv
+            : lineShiftsCopyMode === 'plain'
+                ? lineShiftsCopyPlain
+                : lineShiftsCopyCompositionOnly;
+
+    const copyLineShiftsBuffer = useCallback(async () => {
+        const text =
+            lineShiftsCopyMode === 'tsv'
+                ? lineShiftsCopyTsv
+                : lineShiftsCopyMode === 'plain'
+                    ? lineShiftsCopyPlain
+                    : lineShiftsCopyCompositionOnly;
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            setLineShiftsCopied(true);
+            window.setTimeout(() => setLineShiftsCopied(false), 2000);
+        } catch {
+            const el = lineShiftsTextareaRef.current;
+            if (el) {
+                el.focus();
+                el.select();
+                try {
+                    document.execCommand('copy');
+                    setLineShiftsCopied(true);
+                    window.setTimeout(() => setLineShiftsCopied(false), 2000);
+                } catch {
+                    // остаётся выделение — пользователь копирует вручную
+                }
+            }
+        }
+    }, [lineShiftsCopyMode, lineShiftsCopyTsv, lineShiftsCopyPlain, lineShiftsCopyCompositionOnly]);
+
+    const selectLineShiftsText = useCallback(() => {
+        const el = lineShiftsTextareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.select();
+    }, []);
+
+    useEffect(() => {
+        if (!lineShiftsModalOpen) setLineShiftsCopied(false);
+    }, [lineShiftsModalOpen]);
 
     const shiftFilterOptions = [
         { value: '', label: 'Все смены' },
@@ -615,6 +924,61 @@ const DashboardView = () => {
                             </select>
                             <ChevronDown size={16} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
                         </div>
+                        <label
+                            className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 select-none shrink-0"
+                            title="Вкл: свободные из пула автоматически закрывают вакансии — карточки синие (автоподстановка). Выкл: вакансии красные, пока не назначите вручную. Зелёные карточки — штат из матрицы, этим переключателем не отключаются. Настройка сохраняется."
+                        >
+                            {autoReassignEnabled ? (
+                                <CheckSquare size={18} className="text-blue-600 flex-shrink-0" />
+                            ) : (
+                                <Square size={18} className="text-slate-400 flex-shrink-0" />
+                            )}
+                            <span className="whitespace-nowrap">Авто из свободных</span>
+                            <input
+                                type="checkbox"
+                                className="hidden"
+                                checked={autoReassignEnabled}
+                                onChange={(e) => setAutoReassignEnabled(e.target.checked)}
+                            />
+                        </label>
+                        <label
+                            className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 select-none shrink-0"
+                            title="Вкл: ФИО из штатной матрицы подставляются в слоты (зелёные карточки). Выкл: слоты по штату пустые; ручные назначения и «Авто из свободных» не отключаются. Настройка сохраняется."
+                        >
+                            {rosterFillEnabled ? (
+                                <CheckSquare size={18} className="text-emerald-600 flex-shrink-0" />
+                            ) : (
+                                <Square size={18} className="text-slate-400 flex-shrink-0" />
+                            )}
+                            <span className="whitespace-nowrap">Штат из матрицы</span>
+                            <input
+                                type="checkbox"
+                                className="hidden"
+                                checked={rosterFillEnabled}
+                                onChange={(e) => setRosterFillEnabled(e.target.checked)}
+                            />
+                        </label>
+                        <button
+                            type="button"
+                            disabled={!selectedShiftId || copyShiftSelectableTotal === 0}
+                            onClick={() => {
+                                setCopyShiftSelectedTargets([]);
+                                setCopyShiftModalOpen(true);
+                            }}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-900 text-sm font-semibold hover:bg-violet-100 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
+                            title="Текущая смена — из фильтра выше. Дальше выберите целевые смены в окне."
+                        >
+                            <Copy size={16} /> Копировать смену
+                        </button>
+                        <button
+                            type="button"
+                            disabled={!scheduleDates?.length}
+                            onClick={() => setLineShiftsModalOpen(true)}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-sky-200 bg-sky-50 text-sky-900 text-sm font-semibold hover:bg-sky-100 disabled:opacity-45 disabled:cursor-not-allowed shadow-sm"
+                            title="По всем дням календаря: когда и в каких сменах работает каждая линия"
+                        >
+                            <CalendarClock size={16} /> Линии по сменам
+                        </button>
                         <div className="relative w-64">
                             <select
                                 value={currentPlanId || ''}
@@ -659,7 +1023,284 @@ const DashboardView = () => {
                     />
                 );
             })()}
-            {(selectedShiftId && displayShifts.length === 0) && (
+            {lineShiftsModalOpen && (
+                <div
+                    className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="line-shifts-modal-title"
+                    onClick={() => setLineShiftsModalOpen(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-xl max-w-4xl w-full border border-slate-200 overflow-hidden max-h-[min(90vh,800px)] flex flex-col"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3 flex-shrink-0">
+                            <div className="min-w-0 flex-1">
+                                <h3 id="line-shifts-modal-title" className="text-lg font-bold text-slate-800">
+                                    Линии по сменам
+                                </h3>
+                                <p className="text-sm text-slate-500 mt-1">
+                                    Колонка «Состав смены» — все линии смены и резерв. «Текст» дублирует состав внизу.
+                                    «Только состав» — одна секция на смену, удобно копировать.
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                                {(lineShiftsScheduleRows.length > 0 || lineShiftsByShiftEntries.length > 0) && (
+                                    <button
+                                        type="button"
+                                        onClick={copyLineShiftsBuffer}
+                                        className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm"
+                                    >
+                                        <Copy size={16} />
+                                        {lineShiftsCopied ? 'Скопировано' : 'Копировать'}
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => setLineShiftsModalOpen(false)}
+                                    className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                                    aria-label="Закрыть"
+                                >
+                                    <X size={20} />
+                                </button>
+                            </div>
+                        </div>
+                        <div className="px-5 py-3 flex flex-col flex-1 min-h-0 gap-3">
+                            {lineShiftsScheduleRows.length === 0 && lineShiftsByShiftEntries.length === 0 ? (
+                                <p className="text-sm text-slate-500 py-4">Нет данных по линиям в календаре.</p>
+                            ) : (
+                                <>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 text-xs overflow-hidden flex-wrap">
+                                            <button
+                                                type="button"
+                                                onClick={() => setLineShiftsCopyMode('tsv')}
+                                                className={`px-3 py-1.5 font-semibold transition-colors ${
+                                                    lineShiftsCopyMode === 'tsv'
+                                                        ? 'bg-slate-800 text-white'
+                                                        : 'text-slate-600 hover:bg-slate-100'
+                                                }`}
+                                            >
+                                                Таблица (Excel)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setLineShiftsCopyMode('plain')}
+                                                className={`px-3 py-1.5 font-semibold transition-colors border-l border-slate-200 ${
+                                                    lineShiftsCopyMode === 'plain'
+                                                        ? 'bg-slate-800 text-white'
+                                                        : 'text-slate-600 hover:bg-slate-100'
+                                                }`}
+                                            >
+                                                Текст
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setLineShiftsCopyMode('composition')}
+                                                className={`px-3 py-1.5 font-semibold transition-colors border-l border-slate-200 ${
+                                                    lineShiftsCopyMode === 'composition'
+                                                        ? 'bg-slate-800 text-white'
+                                                        : 'text-slate-600 hover:bg-slate-100'
+                                                }`}
+                                            >
+                                                Только состав
+                                            </button>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={selectLineShiftsText}
+                                            className="text-xs font-semibold text-slate-600 px-2 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50"
+                                        >
+                                            Выделить всё
+                                        </button>
+                                    </div>
+                                    <textarea
+                                        ref={lineShiftsTextareaRef}
+                                        readOnly
+                                        value={lineShiftsTextareaValue}
+                                        className="w-full flex-1 min-h-[240px] max-h-[min(50vh,420px)] font-mono text-xs leading-relaxed text-slate-800 bg-slate-50 border border-slate-200 rounded-xl p-3 resize-y focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                                        spellCheck={false}
+                                    />
+                                </>
+                            )}
+                        </div>
+                        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex justify-end flex-shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setLineShiftsModalOpen(false)}
+                                className="px-4 py-2 rounded-lg text-sm font-semibold bg-slate-800 text-white hover:bg-slate-900"
+                            >
+                                Закрыть
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {copyShiftModalOpen && (
+                <div
+                    className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="copy-shift-modal-title"
+                    onClick={() => setCopyShiftModalOpen(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-xl max-w-md w-full border border-slate-200 overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
+                            <div>
+                                <h3 id="copy-shift-modal-title" className="text-lg font-bold text-slate-800">
+                                    Копировать состав смены
+                                </h3>
+                                <p className="text-sm text-slate-500 mt-1">
+                                    Источник:{' '}
+                                    <span className="font-semibold text-slate-700">
+                                        {copyShiftSource ? `${copyShiftSource.name} (${copyShiftSource.type})` : '—'}
+                                    </span>
+                                    {selectedDate ? ` · ${selectedDate}` : ''}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setCopyShiftModalOpen(false)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                                aria-label="Закрыть"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="px-5 py-3 max-h-[min(60vh,420px)] overflow-y-auto">
+                            <p className="text-xs text-slate-500 mb-3">
+                                Доступны все дни, где эта смена есть в календаре, плюс другие бригады на текущую дату.
+                                Копируются только совпадающие линии и роли; человек переносится, если доступен в целевой
+                                день/смену.
+                            </p>
+                            {copyShiftSelectableTotal === 0 ? (
+                                <p className="text-sm text-slate-500 py-2">Нет целей для копирования.</p>
+                            ) : (
+                                <div className="space-y-4">
+                                    {copyShiftOtherDates.length > 0 && (
+                                        <div>
+                                            <div className="text-[11px] font-bold uppercase tracking-wide text-emerald-700 mb-2">
+                                                Та же смена на других днях
+                                            </div>
+                                            <ul className="space-y-1">
+                                                {copyShiftOtherDates.map((d) => {
+                                                    const k = `${d}::${selectedShiftId}`;
+                                                    return (
+                                                        <li key={k}>
+                                                            <label className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={copyShiftSelectedTargets.includes(k)}
+                                                                    onChange={() => toggleCopyShiftTargetKey(k)}
+                                                                    className="rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                                                                />
+                                                                <span className="font-medium text-slate-800">{d}</span>
+                                                                <span className="text-sm text-slate-500">
+                                                                    ({copyShiftSource?.name || 'смена'} · {copyShiftSource?.type || ''})
+                                                                </span>
+                                                            </label>
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {copyShiftTargetsGrouped.sameComposition.length > 0 && (
+                                        <div>
+                                            <div className="text-[11px] font-bold uppercase tracking-wide text-violet-700 mb-2">
+                                                На эту дату — тот же состав линий, что у источника
+                                            </div>
+                                            <ul className="space-y-1">
+                                                {copyShiftTargetsGrouped.sameComposition.map((s) => {
+                                                    const k = `${selectedDate}::${s.id}`;
+                                                    return (
+                                                        <li key={k}>
+                                                            <label className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={copyShiftSelectedTargets.includes(k)}
+                                                                    onChange={() => toggleCopyShiftTargetKey(k)}
+                                                                    className="rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                                                                />
+                                                                <span className="font-medium text-slate-800">{s.name}</span>
+                                                                <span className="text-sm text-slate-500">({s.type})</span>
+                                                            </label>
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {copyShiftTargetsGrouped.other.length > 0 && (
+                                        <div>
+                                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">
+                                                На эту дату — остальные смены
+                                            </div>
+                                            <ul className="space-y-1">
+                                                {copyShiftTargetsGrouped.other.map((s) => {
+                                                    const k = `${selectedDate}::${s.id}`;
+                                                    return (
+                                                        <li key={k}>
+                                                            <label className="flex items-center gap-3 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={copyShiftSelectedTargets.includes(k)}
+                                                                    onChange={() => toggleCopyShiftTargetKey(k)}
+                                                                    className="rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                                                                />
+                                                                <span className="font-medium text-slate-800">{s.name}</span>
+                                                                <span className="text-sm text-slate-500">({s.type})</span>
+                                                            </label>
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-5 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setCopyShiftModalOpen(false)}
+                                className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-200/80"
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                type="button"
+                                disabled={copyShiftSelectedTargets.length === 0}
+                                onClick={() => {
+                                    const specs = copyShiftSelectedTargets
+                                        .map((key) => {
+                                            const i = key.indexOf('::');
+                                            if (i < 0) return null;
+                                            return {
+                                                dateStr: key.slice(0, i),
+                                                shiftId: key.slice(i + 2)
+                                            };
+                                        })
+                                        .filter(Boolean);
+                                    copyShiftCompositionToTargets(selectedDate, selectedShiftId, specs);
+                                    setCopyShiftModalOpen(false);
+                                }}
+                                className="px-4 py-2 rounded-lg text-sm font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-45 disabled:cursor-not-allowed"
+                            >
+                                Копировать
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {(!shiftsData || shiftsData.length === 0) && (
+                <div className="text-center py-20 text-slate-400">Нет смен на выбранную дату</div>
+            )}
+            {(selectedShiftId && displayShifts.length === 0 && shiftsData?.length > 0) && (
                 <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
                     На выбранную дату эта смена не выходит.
                 </div>
@@ -675,7 +1316,7 @@ const DashboardView = () => {
                     const hasManualForShift = hasManualAssignmentsForShift(shift.id);
                     return (
                         <div id={`brigade-${shift.id}`} key={shift.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="px-6 py-4 border-b flex items-center justify-between bg-slate-50">
+                        <div className="px-6 py-4 border-b flex flex-wrap items-center justify-between gap-3 bg-slate-50">
                             <div className="flex items-center gap-4">
                                 <div className="p-3 rounded-xl bg-blue-600 text-white font-bold text-xl">{shift.name}</div>
                                 <div>
@@ -683,7 +1324,7 @@ const DashboardView = () => {
                                     <div className="text-sm text-slate-500">Мест: <b>{shift.totalRequired}</b> | Занято: <b>{shift.filledSlots}</b></div>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex flex-wrap items-center gap-3">
                                 <label className="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors select-none">
                                     {isGlobalFill ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} className="text-slate-400" />} <span>Заполнить глобально</span> <input type="checkbox" className="hidden" checked={isGlobalFill} onChange={(e) => setIsGlobalFill(e.target.checked)} />
                                 </label>
@@ -851,7 +1492,9 @@ const DashboardView = () => {
                                                                 <div className="w-8 h-8 bg-orange-200 text-orange-700 rounded-full flex items-center justify-center font-bold text-xs">{slot.assigned.name[0]}</div>
                                                                 <div className="min-w-0">
                                                                     <div className="font-semibold text-slate-700 text-sm truncate">{slot.assigned.name}</div>
-                                                                    <div className="text-xs text-slate-500 truncate">{slot.assigned.role || extRegistryWorker?.role || 'Не указано'}</div>
+                                                                    <div className="text-xs text-slate-500 truncate">
+                                                                        {formatSlotRoleLine(slot.roleTitle, extRegistryWorker?.role, slot.assigned?.role)}
+                                                                    </div>
                                                                     {extHasCompetencies && (
                                                                         <div className="text-[9px] text-slate-500 mt-0.5 truncate" title={extCompetenciesList.join(', ')}>
                                                                             {extCompetenciesList.join(', ')}
@@ -921,14 +1564,19 @@ const DashboardView = () => {
                                                             onDrop={(e) => handleDrop(e, slot.slotId)}
                                                             onContextMenu={(e) => {
                                                                 e.preventDefault();
-                                                                if (slot.status === 'vacancy' && !slot.isManualVacancy) {
+                                                                if (slot.status === 'vacancy') {
                                                                     const availableEmployees = [
                                                                         ...(shift?.unassignedPeople || []).filter(p => p.isAvailable),
                                                                         ...(shift?.floaters || [])
                                                                     ];
+                                                                    const { x, y } = clampFreeEmployeeMenuPosition(
+                                                                        e.clientX - 6,
+                                                                        e.clientY - 6,
+                                                                        null
+                                                                    );
                                                                     setContextMenu({
-                                                                        x: e.clientX,
-                                                                        y: e.clientY,
+                                                                        x,
+                                                                        y,
                                                                         slotId: slot.slotId,
                                                                         roleTitle: slot.roleTitle,
                                                                         availableEmployees
@@ -938,7 +1586,7 @@ const DashboardView = () => {
                                                             }}
                                                             className={`flex items-center gap-3 p-2 rounded-lg border-2 border-dashed ${draggedWorker ? 'border-blue-400 bg-blue-50' : 'border-red-200 bg-red-50/30'} transition-colors relative group`}
                                                         >
-                                                            {slot.isManualVacancy && (
+                                                            {slot.assigned?.type === 'vacancy' && (
                                                                 <button onClick={() => handleRemoveAssignment(slot.slotId)} className="absolute bottom-1 right-1 w-5 h-5 bg-gray-500 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity shadow-sm z-10 flex items-center justify-center">
                                                                     <X size={10} />
                                                                 </button>
@@ -948,11 +1596,11 @@ const DashboardView = () => {
                                                             </div>
                                                             <div className="flex-1">
                                                                 <div className={`text-sm font-bold ${draggedWorker ? 'text-blue-500' : 'text-red-400'}`}>
-                                                                    {draggedWorker ? 'Поставить' : (slot.isManualVacancy ? 'Закрыто' : 'Требуется')}
+                                                                    {draggedWorker ? 'Поставить' : 'Требуется'}
                                                                 </div>
                                                                 <div className={`text-xs font-bold ${draggedWorker ? 'text-blue-400' : 'text-slate-600'}`}>{slot.roleTitle}</div>
                                                             </div>
-                                                            {!draggedWorker && !slot.isManualVacancy && (
+                                                            {!draggedWorker && (
                                                                 <div className="flex items-center gap-2">
                                                                     <button
                                                                         type="button"
@@ -965,9 +1613,14 @@ const DashboardView = () => {
                                                                                 ...(shift?.floaters || [])
                                                                             ];
                                                                             setTimeout(() => {
+                                                                                const { x, y } = clampFreeEmployeeMenuPosition(
+                                                                                    rect.left,
+                                                                                    rect.bottom + 4,
+                                                                                    rect
+                                                                                );
                                                                                 setContextMenu({
-                                                                                    x: rect.left,
-                                                                                    y: rect.bottom + 4,
+                                                                                    x,
+                                                                                    y,
                                                                                     slotId: slot.slotId,
                                                                                     roleTitle: slot.roleTitle,
                                                                                     availableEmployees
@@ -1083,11 +1736,10 @@ const DashboardView = () => {
             </div>
             {contextMenu && (
                 <div 
-                    className="fixed bg-white border border-slate-200 rounded-lg shadow-xl z-50 min-w-[280px] max-w-[400px]"
+                    className="fixed bg-white border border-slate-200 rounded-lg shadow-xl z-[200] min-w-[280px] max-w-[400px]"
                     style={{ 
                         left: `${contextMenu.x}px`, 
-                        top: `${contextMenu.y}px`,
-                        transform: 'translate(-10px, -10px)'
+                        top: `${contextMenu.y}px`
                     }}
                     onClick={(e) => e.stopPropagation()}
                     onMouseDown={(e) => e.stopPropagation()}

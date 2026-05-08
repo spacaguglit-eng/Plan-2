@@ -16,6 +16,7 @@ export const useChessTable = ({
     manualAssignments,
     manualLines,
     autoReassignEnabled,
+    rosterFillEnabled,
     assignmentClones,
     shiftsByDate,
     getShiftsForDate,
@@ -98,10 +99,11 @@ export const useChessTable = ({
                 factData,
                 manualLines,
                 autoReassignEnabled,
+                rosterFillEnabled,
                 assignmentClones
             }
         });
-    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, manualLines, autoReassignEnabled, assignmentClones, setChessTableWorkerStatus]);
+    }, [USE_CHESS_WORKER, viewMode, rawTables, scheduleDates, lineTemplates, floaters, manualAssignments, workerRegistry, factData, manualLines, autoReassignEnabled, rosterFillEnabled, assignmentClones, setChessTableWorkerStatus]);
 
     // Базовая логика расчета табеля (когда Worker не используется)
     const chessTableBase = useMemo(() => {

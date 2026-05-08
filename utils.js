@@ -15,6 +15,8 @@ export const STORAGE_KEYS = {
     SAVED_PLANS: 'plan_saved_plans',
     CURRENT_PLAN_ID: 'plan_current_plan_id',
     AUTO_REASSIGN_ENABLED: 'plan_auto_reassign_enabled',
+    /** Подстановка ФИО из штатной матрицы в слоты (зелёные карточки). */
+    ROSTER_FILL_ENABLED: 'plan_roster_fill_enabled',
     MANUAL_LINES: 'plan_manual_lines',
     ASSIGNMENT_CLONES: 'plan_assignment_clones',
     DEPARTMENT_MASTER_LIST: 'plan_department_master_list',

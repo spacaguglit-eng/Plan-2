@@ -18,6 +18,7 @@ const PLAN_SCOPED_KEYS = [
  */
 const GLOBAL_KEYS = [
     STORAGE_KEYS.AUTO_REASSIGN_ENABLED,
+    STORAGE_KEYS.ROSTER_FILL_ENABLED,
     STORAGE_KEYS.CURRENT_PLAN_ID,
     STORAGE_KEYS.FACT_DATA,
     STORAGE_KEYS.FACT_DATES,
@@ -65,6 +66,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         setManualLines,
         setAssignmentClones,
         setAutoReassignEnabled,
+        setRosterFillEnabled,
         setFactData,
         setFactDates,
         setRawTables,
@@ -257,6 +259,7 @@ export function applyRemoteSnapshot(snapshot, ctx) {
         [STORAGE_KEYS.MANUAL_LINES]: setManualLines,
         [STORAGE_KEYS.ASSIGNMENT_CLONES]: setAssignmentClones,
         [STORAGE_KEYS.AUTO_REASSIGN_ENABLED]: setAutoReassignEnabled,
+        [STORAGE_KEYS.ROSTER_FILL_ENABLED]: setRosterFillEnabled,
         [STORAGE_KEYS.CURRENT_PLAN_ID]: setCurrentPlanId,
         [STORAGE_KEYS.FACT_DATA]: setFactData,
         [STORAGE_KEYS.FACT_DATES]: setFactDates,

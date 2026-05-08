@@ -209,17 +209,30 @@ const addOneCalendarDayParts = (parts) => {
     return { ...parts, day: (parts.day ?? 1) + 1 };
 };
 
-const resolveEndDatePartsForSegment = (startDateRaw, endDateRaw, startTime, endTime) => {
+/** Ночная смена: 00:00–06:00 на листе — утро после полуночи, календарный день +1 (как в nightShiftSortMinutes). */
+const resolveStartDatePartsForSegment = (startDateRaw, startTime, shift) => {
+    const parts = parseSheetDateParts(startDateRaw);
+    if (!parts) return null;
+    const sm = parseTimeToMinutesSort(startTime);
+    if (shift === 'Ночь' && sm <= 6 * 60) return addOneCalendarDayParts(parts) || parts;
+    return parts;
+};
+
+const resolveEndDatePartsForSegment = (startDateRaw, endDateRaw, startTime, endTime, shift) => {
     const endNorm = normalizeTimeLabel(endTime);
     if (!endNorm) return parseSheetDateParts(endDateRaw) || parseSheetDateParts(startDateRaw);
     const s = String(startDateRaw ?? '').trim();
     const e = String(endDateRaw ?? '').trim();
-    if (s !== e) return parseSheetDateParts(endDateRaw) || parseSheetDateParts(startDateRaw);
-    const startParts = parseSheetDateParts(startDateRaw);
+    const startPartsBase = parseSheetDateParts(startDateRaw);
     const sm = parseTimeToMinutesSort(startTime);
     const em = parseTimeToMinutesSort(endTime);
-    if (em < sm) return addOneCalendarDayParts(startParts) || startParts;
-    return startParts;
+    const startPartsEffective =
+        shift === 'Ночь' && sm <= 6 * 60 ? addOneCalendarDayParts(startPartsBase) || startPartsBase : startPartsBase;
+
+    if (s !== e) return parseSheetDateParts(endDateRaw) || parseSheetDateParts(startDateRaw);
+    if (em < sm) return addOneCalendarDayParts(startPartsBase) || startPartsBase;
+    if (shift === 'Ночь' && sm <= 6 * 60 && em >= sm) return startPartsEffective;
+    return startPartsBase;
 };
 
 const formatDayTimeCell = (dateRawOrParts, timeValue) => {
@@ -234,6 +247,40 @@ const formatDayTimeCell = (dateRawOrParts, timeValue) => {
     const hh = String(parseInt(m[1], 10)).padStart(2, '0');
     const mm = m[2];
     return `${parts.day}-${hh}.${mm}`;
+};
+
+const shiftBoundsByDateAndType = (dateRaw, shiftRaw) => {
+    const parts = parseSheetDateParts(dateRaw);
+    if (!parts) return null;
+    const shift = String(shiftRaw || '').trim().toLowerCase();
+    const base = new Date(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
+    if (!Number.isFinite(base.getTime())) return null;
+
+    if (shift.includes('день')) {
+        const start = new Date(base);
+        const end = new Date(base);
+        start.setHours(8, 0, 0, 0);
+        end.setHours(20, 0, 0, 0);
+        return { start, end };
+    }
+    if (shift.includes('ноч')) {
+        const start = new Date(base);
+        const end = new Date(base);
+        start.setHours(20, 0, 0, 0);
+        end.setDate(end.getDate() + 1);
+        end.setHours(8, 0, 0, 0);
+        return { start, end };
+    }
+    return null;
+};
+
+const formatDateTimeForLineRange = (dateValue) => {
+    if (!(dateValue instanceof Date) || !Number.isFinite(dateValue.getTime())) return '—';
+    const dd = String(dateValue.getDate()).padStart(2, '0');
+    const mm = String(dateValue.getMonth() + 1).padStart(2, '0');
+    const hh = String(dateValue.getHours()).padStart(2, '0');
+    const min = String(dateValue.getMinutes()).padStart(2, '0');
+    return `${dd}.${mm} ${hh}:${min}`;
 };
 
 const parseTimeToMinutesSort = (timeValue) => {
@@ -672,6 +719,7 @@ const ProductionView = () => {
                         product: row.product,
                         productKey,
                         totalQty: qty,
+                        shift: row.shift,
                         startDateRaw: row.date,
                         endDateRaw: row.date,
                         startTime,
@@ -686,6 +734,18 @@ const ProductionView = () => {
             .map(([line, rows]) => ({
                 line,
                 products: mergeLineRows(rows),
+                fullShiftRange: (() => {
+                    let minStart = null;
+                    let maxEnd = null;
+                    rows.forEach((row) => {
+                        const bounds = shiftBoundsByDateAndType(row.date, row.shift);
+                        if (!bounds) return;
+                        if (!minStart || bounds.start < minStart) minStart = bounds.start;
+                        if (!maxEnd || bounds.end > maxEnd) maxEnd = bounds.end;
+                    });
+                    if (!minStart || !maxEnd) return null;
+                    return `${formatDateTimeForLineRange(minStart)} - ${formatDateTimeForLineRange(maxEnd)}`;
+                })(),
             }))
             .sort((a, b) => naturalCompare(a.line, b.line));
     }, [filteredRows]);
@@ -2248,7 +2308,7 @@ const ProductionView = () => {
                                                                 colSpan={4}
                                                                 className="px-4 py-2 bg-slate-50 border-b border-slate-200 font-semibold text-slate-700"
                                                             >
-                                                                Линия {lineGroup.line}
+                                                                {`Линия ${lineGroup.line}${lineGroup.fullShiftRange ? ` ${lineGroup.fullShiftRange}` : ''}`}
                                                             </td>
                                                         </tr>,
                                                         ...lineGroup.products.map((item) => {
@@ -2256,9 +2316,15 @@ const ProductionView = () => {
                                                                 item.startDateRaw,
                                                                 item.endDateRaw,
                                                                 item.startTime,
-                                                                item.endTime
+                                                                item.endTime,
+                                                                item.shift
                                                             );
-                                                            const startLabel = formatDayTimeCell(item.startDateRaw, item.startTime);
+                                                            const startParts = resolveStartDatePartsForSegment(
+                                                                item.startDateRaw,
+                                                                item.startTime,
+                                                                item.shift
+                                                            );
+                                                            const startLabel = formatDayTimeCell(startParts, item.startTime);
                                                             const endLabel = formatDayTimeCell(endParts, item.endTime);
                                                             return (
                                                                 <tr key={item.key} className="hover:bg-slate-50 transition-colors">

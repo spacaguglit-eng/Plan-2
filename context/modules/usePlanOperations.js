@@ -21,6 +21,7 @@ export const usePlanOperations = ({
     manualLines,
     assignmentClones,
     autoReassignEnabled,
+    rosterFillEnabled,
     savedPlans,
     currentPlanId,
     selectedDate,
@@ -35,6 +36,7 @@ export const usePlanOperations = ({
     setManualLines,
     setAssignmentClones,
     setAutoReassignEnabled,
+    setRosterFillEnabled,
     setSavedPlans,
     setCurrentPlanId,
     setSelectedDate,
@@ -73,9 +75,10 @@ export const usePlanOperations = ({
             manualAssignments,
             manualLines,
             assignmentClones,
-            autoReassignEnabled
+            autoReassignEnabled,
+            rosterFillEnabled
         };
-    }, [rawTables, scheduleDates, planHashes, manualAssignments, manualLines, assignmentClones, autoReassignEnabled]);
+    }, [rawTables, scheduleDates, planHashes, manualAssignments, manualLines, assignmentClones, autoReassignEnabled, rosterFillEnabled]);
 
     /**
      * Применяет данные плана к состоянию
@@ -123,13 +126,14 @@ export const usePlanOperations = ({
         const savedClones = planData.assignmentClones || {};
         setAssignmentClones(savedClones);
         setAutoReassignEnabled(planData.autoReassignEnabled ?? true);
+        setRosterFillEnabled(planData.rosterFillEnabled ?? true);
         if (planData.scheduleDates?.length > 0) {
             setSelectedDate(prev => planData.scheduleDates.includes(prev) ? prev : planData.scheduleDates[0]);
         }
         if (switchView) setStep('dashboard');
     }, [
         setRawTables, setScheduleDates, setPlanHashes, setLineTemplates, setFloaters, setWorkerRegistry,
-        setManualAssignments, setManualLines, setAssignmentClones, setAutoReassignEnabled,
+        setManualAssignments, setManualLines, setAssignmentClones, setAutoReassignEnabled, setRosterFillEnabled,
         setSelectedDate, setStep, persistStateKey
     ]);
 
@@ -183,6 +187,7 @@ export const usePlanOperations = ({
         const nextManualLines = planData.manualLines || {};
         const nextClones = planData.assignmentClones || {};
         const nextAutoReassignEnabled = planData.autoReassignEnabled ?? true;
+        const nextRosterFillEnabled = planData.rosterFillEnabled ?? true;
 
         setRawTables(nextRaw);
         setScheduleDates(nextScheduleDates);
@@ -191,6 +196,7 @@ export const usePlanOperations = ({
         setManualLines(nextManualLines);
         setAssignmentClones(nextClones);
         setAutoReassignEnabled(nextAutoReassignEnabled);
+        setRosterFillEnabled(nextRosterFillEnabled);
 
         persistStateKey(STORAGE_KEYS.RAW_TABLES, nextRaw);
         persistStateKey(STORAGE_KEYS.SCHEDULE_DATES, nextScheduleDates);
@@ -199,6 +205,7 @@ export const usePlanOperations = ({
         persistStateKey(STORAGE_KEYS.MANUAL_LINES, nextManualLines);
         persistStateKey(STORAGE_KEYS.ASSIGNMENT_CLONES, nextClones);
         persistStateKey(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, nextAutoReassignEnabled);
+        persistStateKey(STORAGE_KEYS.ROSTER_FILL_ENABLED, nextRosterFillEnabled);
 
         if (nextScheduleDates.length > 0) {
             setSelectedDate((prev) => (nextScheduleDates.includes(prev) ? prev : nextScheduleDates[0]));
@@ -213,6 +220,7 @@ export const usePlanOperations = ({
         setManualLines,
         setAssignmentClones,
         setAutoReassignEnabled,
+        setRosterFillEnabled,
         setSelectedDate,
         setStep,
         persistStateKey
@@ -254,7 +262,8 @@ export const usePlanOperations = ({
             manualAssignments: {},
             manualLines: {},
             assignmentClones: {},
-            autoReassignEnabled: true
+            autoReassignEnabled: true,
+            rosterFillEnabled: true
         };
     }, [TARGET_CONFIG]);
 
@@ -554,6 +563,7 @@ export const usePlanOperations = ({
             manualLines,
             assignmentClones,
             autoReassignEnabled,
+            rosterFillEnabled,
             planningState: planningState || null
         };
         const existingByName = savedPlans.find(p => (p.name || '').trim() === planName);
@@ -573,7 +583,7 @@ export const usePlanOperations = ({
         setCurrentPlanId(planId);
         draftPlanIdRef.current = null;
     }, [
-        savedPlans, manualLines, assignmentClones, autoReassignEnabled, draftPlanIdRef,
+        savedPlans, manualLines, assignmentClones, autoReassignEnabled, rosterFillEnabled, draftPlanIdRef,
         setRawTables, setPlanHashes, setScheduleDates, setLineTemplates, setFloaters, setWorkerRegistry,
         setManualAssignments, setSelectedDate, setSavedPlans, setCurrentPlanId, persistStateKey, savedPlansSourceRef
     ]);

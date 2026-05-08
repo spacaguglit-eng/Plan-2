@@ -8,7 +8,7 @@ import {
     isLineMatch,
     checkWorkerAvailability
 } from '../../utils';
-import { normalizePlanData, createManualSlotId } from './planUtils';
+import { normalizePlanData, createManualSlotId, isClosedManualVacancy } from './planUtils';
 
 /**
  * Строит слоты плана из данных плана
@@ -21,6 +21,7 @@ export const buildPlanSlots = (planData) => {
     const manualLines = normalized.manualLines || {};
     const workerRegistry = normalized.workerRegistry || {};
     const autoReassignEnabled = normalized.autoReassignEnabled ?? true;
+    const rosterFillEnabled = normalized.rosterFillEnabled ?? true;
 
     if (!Array.isArray(demandData) || demandData.length === 0) {
         return { slots: [], slotMap: new Map() };
@@ -130,7 +131,7 @@ export const buildPlanSlots = (planData) => {
             const positions = templateName ? templates[templateName] : [];
 
             positions.forEach(pos => {
-                const names = getRosterNames(pos, shiftNum);
+                const names = rosterFillEnabled ? getRosterNames(pos, shiftNum) : [];
                 const count = Math.max(parseInt(pos.count) || 1, names.length);
 
                 for (let i = 0; i < count; i++) {
@@ -176,7 +177,7 @@ export const buildPlanSlots = (planData) => {
                         assigned: manual || assigned,
                         lineName: templateName || activeLineName,
                         index: i,
-                        isManualVacancy: manual?.type === 'vacancy'
+                        isManualVacancy: isClosedManualVacancy(manual)
                     });
                 }
             });
@@ -204,7 +205,7 @@ export const buildPlanSlots = (planData) => {
                         assigned: manual || null,
                         lineName: manualLine.displayName || manualLine.id,
                         index: i,
-                        isManualVacancy: manual?.type === 'vacancy'
+                        isManualVacancy: isClosedManualVacancy(manual)
                     });
                 }
             });
@@ -296,6 +297,7 @@ export const useShiftsOperations = ({
     manualAssignments,
     manualLines,
     assignmentClones,
+    rosterFillEnabled = true,
     // Computed
     demandIndex,
     // Utils
@@ -412,9 +414,10 @@ export const useShiftsOperations = ({
                 if (positions.length > 0) {
                     positions.forEach((pos) => {
                         const assignedNamesStr = pos.roster && pos.roster[brigade.id];
-                        const assignedNamesList = assignedNamesStr
+                        const assignedNamesListRaw = assignedNamesStr
                             ? assignedNamesStr.split(/[,;\n/]+/).map(s => s.trim()).filter(s => s.length > 1)
                             : [];
+                        const assignedNamesList = rosterFillEnabled ? assignedNamesListRaw : [];
                         const totalSlots = Math.max(pos.count, assignedNamesList.length);
 
                         for (let i = 0; i < totalSlots; i++) {
@@ -453,7 +456,7 @@ export const useShiftsOperations = ({
                                 status,
                                 roleTitle: pos.role,
                                 slotId,
-                                isManualVacancy: manualAssignments[slotId]?.type === 'vacancy',
+                                isManualVacancy: isClosedManualVacancy(manualAssignments[slotId]),
                                 currentWorkerName,
                                 assigned: manual || assigned
                             });
@@ -498,7 +501,7 @@ export const useShiftsOperations = ({
                             status,
                             roleTitle: pos.roleTitle || 'Роль',
                             slotId,
-                            isManualVacancy: manual?.type === 'vacancy',
+                            isManualVacancy: isClosedManualVacancy(manual),
                             currentWorkerName: null,
                             assigned: manual || null
                         });
@@ -562,7 +565,7 @@ export const useShiftsOperations = ({
                 filledSlots
             };
         });
-    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, manualLines, workerRegistry, assignmentClones, createManualSlotId]);
+    }, [floaters.day, floaters.night, lineTemplates, manualAssignments, manualLines, workerRegistry, assignmentClones, createManualSlotId, rosterFillEnabled]);
 
     /**
      * Кэш смен по датам

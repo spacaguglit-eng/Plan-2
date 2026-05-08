@@ -30,6 +30,7 @@ import {
     createManualSlotId,
     buildManualLineSlotIds
 } from './modules/planUtils';
+import { buildShiftCopyPatch } from './modules/copyShiftUtils';
 import {
     buildPlanHashes,
     preAnalyzeRoster,
@@ -96,6 +97,7 @@ export const DataProvider = ({ children }) => {
         [STORAGE_KEYS.SAVED_PLANS]: 'Сохранённые планы',
         [STORAGE_KEYS.CURRENT_PLAN_ID]: 'Текущий план',
         [STORAGE_KEYS.AUTO_REASSIGN_ENABLED]: 'Автораспределение',
+        [STORAGE_KEYS.ROSTER_FILL_ENABLED]: 'Штат из матрицы',
         [STORAGE_KEYS.FACT_DATA]: 'Данные СКУД',
         [STORAGE_KEYS.FACT_DATES]: 'Даты СКУД',
     };
@@ -189,6 +191,12 @@ export const DataProvider = ({ children }) => {
         setAutoReassignEnabledState(next);
         if (!restoring) persistStateKey(STORAGE_KEYS.AUTO_REASSIGN_ENABLED, next);
     }, [autoReassignEnabled, restoring, persistStateKey]);
+    const [rosterFillEnabled, setRosterFillEnabledState] = useState(true);
+    const setRosterFillEnabled = useCallback((value) => {
+        const next = typeof value === 'function' ? value(rosterFillEnabled) : value;
+        setRosterFillEnabledState(next);
+        if (!restoring) persistStateKey(STORAGE_KEYS.ROSTER_FILL_ENABLED, next);
+    }, [rosterFillEnabled, restoring, persistStateKey]);
     const [chessDisplayLimit, setChessDisplayLimit] = useState(50);
 
     const USE_CHESS_WORKER = true;
@@ -430,6 +438,7 @@ export const DataProvider = ({ children }) => {
         manualLines,
         assignmentClones,
         autoReassignEnabled,
+        rosterFillEnabled,
         savedPlans,
         currentPlanId,
         selectedDate,
@@ -443,6 +452,7 @@ export const DataProvider = ({ children }) => {
         setManualLines,
         setAssignmentClones,
         setAutoReassignEnabled,
+        setRosterFillEnabled,
         setSavedPlans,
         setCurrentPlanId,
         setSelectedDate,
@@ -579,6 +589,7 @@ export const DataProvider = ({ children }) => {
             setManualLines: setManualLinesState,
             setAssignmentClones: setAssignmentClonesState,
             setAutoReassignEnabled: setAutoReassignEnabledState,
+            setRosterFillEnabled: setRosterFillEnabledState,
             setFactData,
             setFactDates,
             setRawTables,
@@ -1296,6 +1307,7 @@ export const DataProvider = ({ children }) => {
         manualAssignments,
         manualLines,
         assignmentClones,
+        rosterFillEnabled,
         demandIndex,
         createManualSlotId,
         updateAssignments: null // Will be set after assignmentsOperations
@@ -1401,6 +1413,76 @@ export const DataProvider = ({ children }) => {
         persistStateKey(STORAGE_KEYS.MANUAL_ASSIGNMENTS, {});
     }, [setManualAssignments, persistStateKey]);
 
+    const copyShiftCompositionToTargets = useCallback(
+        (sourceDateStr, sourceShiftId, targets) => {
+            if (isReadOnly) {
+                notify({ type: 'error', message: 'Вы вошли как гость. Редактирование недоступно.' });
+                return;
+            }
+            if (viewMode !== 'dashboard') {
+                notify({ type: 'error', message: 'Копирование доступно только в режиме «Смены».' });
+                return;
+            }
+            const raw = Array.isArray(targets) ? targets : [];
+            const list = raw
+                .map((t) => ({
+                    dateStr: t?.dateStr,
+                    shiftId: t?.shiftId != null ? String(t.shiftId) : ''
+                }))
+                .filter((t) => t.dateStr && t.shiftId);
+            const dedup = new Map();
+            list.forEach((t) => dedup.set(`${t.dateStr}::${t.shiftId}`, t));
+            const unique = [...dedup.values()].filter(
+                (t) => !(t.dateStr === sourceDateStr && t.shiftId === String(sourceShiftId))
+            );
+            if (!sourceDateStr || !sourceShiftId || unique.length === 0) {
+                notify({ type: 'error', message: 'Выберите смену-источник в фильтре и хотя бы одну цель.' });
+                return;
+            }
+            const sourceShifts = getShiftsForDate(sourceDateStr);
+            const sourceShift = sourceShifts.find((s) => String(s.id) === String(sourceShiftId));
+            if (!sourceShift) {
+                notify({ type: 'error', message: 'Смена-источник не найдена на эту дату.' });
+                return;
+            }
+            let merged = { ...manualAssignments };
+            let totalCopied = 0;
+            let totalSkipped = 0;
+            unique.forEach(({ dateStr: tgtDate, shiftId: tgtShiftId }) => {
+                const shifts = getShiftsForDate(tgtDate);
+                const targetShift = shifts.find((s) => String(s.id) === String(tgtShiftId));
+                if (!targetShift) return;
+                const { patch, copied, skipped } = buildShiftCopyPatch(
+                    sourceDateStr,
+                    tgtDate,
+                    sourceShift,
+                    targetShift,
+                    manualAssignments,
+                    workerRegistry
+                );
+                merged = { ...merged, ...patch };
+                totalCopied += copied;
+                totalSkipped += skipped;
+            });
+            if (totalCopied === 0) {
+                notify({
+                    type: 'info',
+                    message:
+                        totalSkipped > 0
+                            ? `Никого не скопировано. Нет совпадающих линий в целевых сменах или люди недоступны (пропусков: ${totalSkipped}).`
+                            : 'Нет назначений для копирования или нет совпадающих линий в выбранных сменах.'
+                });
+                return;
+            }
+            updateAssignments(merged);
+            notify({
+                type: 'success',
+                message: `Скопировано назначений: ${totalCopied}${totalSkipped > 0 ? `, пропущено (дубли/недоступны): ${totalSkipped}` : ''}`
+            });
+        },
+        [isReadOnly, viewMode, getShiftsForDate, manualAssignments, workerRegistry, updateAssignments, notify]
+    );
+
     const assignmentClonesForDisplay = pendingUpdates[STORAGE_KEYS.ASSIGNMENT_CLONES] ?? assignmentClones;
     const cloneCountsByName = useMemo(() => {
         const counts = {};
@@ -1439,8 +1521,9 @@ export const DataProvider = ({ children }) => {
         workerRegistry,
                 factData,
         manualAssignments,
-                manualLines,
-                autoReassignEnabled,
+        manualLines,
+        autoReassignEnabled,
+        rosterFillEnabled,
         assignmentClones,
         shiftsByDate,
         getShiftsForDate,
@@ -1503,6 +1586,7 @@ export const DataProvider = ({ children }) => {
         savedPlans: pendingUpdates[STORAGE_KEYS.SAVED_PLANS] ?? savedPlans,
         currentPlanId: effectivePlanId,
         autoReassignEnabled: pendingUpdates[STORAGE_KEYS.AUTO_REASSIGN_ENABLED] ?? autoReassignEnabled,
+        rosterFillEnabled: pendingUpdates[STORAGE_KEYS.ROSTER_FILL_ENABLED] ?? rosterFillEnabled,
         factData: pendingUpdates[STORAGE_KEYS.FACT_DATA] ?? factData,
         factDates: pendingUpdates[STORAGE_KEYS.FACT_DATES] ?? factDates,
         rawTables: pendingUpdates[STORAGE_KEYS.RAW_TABLES] ?? rawTables,
@@ -1521,7 +1605,7 @@ export const DataProvider = ({ children }) => {
     }, [
         pendingUpdates,
         manualAssignments, manualLines, assignmentClones, savedPlans, currentPlanId,
-        autoReassignEnabled, factData, factDates, rawTables, scheduleDates, planHashes,
+        autoReassignEnabled, rosterFillEnabled, factData, factDates, rawTables, scheduleDates, planHashes,
         lineTemplates, floaters, workerRegistry,
         allEmployees, departmentMasterList, planningState, productionResults, productionExcludedDowntimeTypes, productionLineNorms
     ]);
@@ -1600,6 +1684,7 @@ export const DataProvider = ({ children }) => {
         chessSearch, setChessSearch,
         isGlobalFill, setIsGlobalFill,
         autoReassignEnabled: display.autoReassignEnabled, setAutoReassignEnabled,
+        rosterFillEnabled: display.rosterFillEnabled, setRosterFillEnabled,
         chessDisplayLimit, setChessDisplayLimit,
         chessTableWorkerStatus,
         setSyncStatus,
@@ -1648,7 +1733,8 @@ export const DataProvider = ({ children }) => {
         applyAutoReassignForDate,
         resetAssignmentsForShift,
         resetAssignmentsForDay,
-        resetAssignmentsAll
+        resetAssignmentsAll,
+        copyShiftCompositionToTargets
     }), [
         file, loading, restoring, error, syncStatus, syncLog, showSyncLog, setShowSyncLog, remoteSnapshot, cloudStatus, pendingUpdates, isReadOnly, wipeAllData, dataChangeLog, clearDataChangeLog,
         display,
@@ -1665,6 +1751,7 @@ export const DataProvider = ({ children }) => {
         chessSearch,
         isGlobalFill,
         autoReassignEnabled,
+        rosterFillEnabled,
         chessDisplayLimit,
         chessTableWorkerStatus,
         parseExcelToPlanData,
@@ -1695,7 +1782,11 @@ export const DataProvider = ({ children }) => {
         exportScheduleByLinesToExcel,
         getLineTimelineRawData,
         persistStateKey,
-        wipeDataCategories
+        wipeDataCategories,
+        copyShiftCompositionToTargets,
+        resetAssignmentsForShift,
+        resetAssignmentsForDay,
+        resetAssignmentsAll
     ]);
 
     const contextValue = value != null ? { ...value, __DATA_PROVIDER: true } : { __DATA_PROVIDER: true };

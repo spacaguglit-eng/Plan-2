@@ -77,7 +77,8 @@ const buildCurrentStateSnapshot = (state) => ({
     lineTemplates: state.lineTemplates || {},
     manualAssignments: state.manualAssignments || {},
     manualLines: state.manualLines || {},
-    autoReassignEnabled: state.autoReassignEnabled
+    autoReassignEnabled: state.autoReassignEnabled,
+    rosterFillEnabled: state.rosterFillEnabled
 });
 
 // Глубокое копирование снимка, чтобы синхронизация не затирала наши данные
@@ -92,7 +93,8 @@ export default function BothPlansTableView() {
         lineTemplates,
         manualAssignments,
         manualLines,
-        autoReassignEnabled
+        autoReassignEnabled,
+        rosterFillEnabled
     } = useData();
 
     // Кэш снимка «Смен»: обновляем только при валидных данных, чтобы синхронизация/loadPlan не затирала таблицу
@@ -119,10 +121,11 @@ export default function BothPlansTableView() {
             lineTemplates,
             manualAssignments,
             manualLines,
-            autoReassignEnabled
+            autoReassignEnabled,
+            rosterFillEnabled
         });
         setShiftsSnapshot(cloneSnapshot(snap));
-    }, [rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled]);
+    }, [rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled, rosterFillEnabled]);
 
     const masterPlan = useMemo(() => savedPlans.find((p) => p.type === 'Master'), [savedPlans]);
 
@@ -142,11 +145,12 @@ export default function BothPlansTableView() {
             lineTemplates,
             manualAssignments,
             manualLines,
-            autoReassignEnabled
+            autoReassignEnabled,
+            rosterFillEnabled
         });
         const { slots } = buildPlanSlots(snap);
         return slots;
-    }, [buildPlanSlots, shiftsSnapshot, rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled]);
+    }, [buildPlanSlots, shiftsSnapshot, rawTables, scheduleDates, lineTemplates, manualAssignments, manualLines, autoReassignEnabled, rosterFillEnabled]);
 
     const hasMaster = Boolean(masterPlan?.data);
     const hasShiftsData = Boolean(shiftsSnapshot) || Boolean(scheduleDates?.length && rawTables?.demand?.length);
@@ -164,7 +168,8 @@ export default function BothPlansTableView() {
                 lineTemplates,
                 manualAssignments,
                 manualLines,
-                autoReassignEnabled
+                autoReassignEnabled,
+                rosterFillEnabled
             });
             lastSnapshotKeyRef.current = '';
             setShiftsSnapshot(cloneSnapshot(snap));

@@ -288,8 +288,17 @@ export const useAssignmentsOperations = ({
                 })
             });
         }
-        if (newAssignments[slotId]) delete newAssignments[slotId];
-        else newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
+        if (existing?.type === 'vacancy') {
+            delete newAssignments[slotId];
+        } else if (existing) {
+            if (slotId.includes('_manual_')) {
+                delete newAssignments[slotId];
+            } else {
+                newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
+            }
+        } else {
+            newAssignments[slotId] = { type: 'vacancy', id: `forced_vac_${Date.now()}` };
+        }
         updateAssignments(newAssignments);
     }, [manualAssignments, updateAssignments, updateCloneEntry]);
 

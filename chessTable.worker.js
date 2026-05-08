@@ -9,6 +9,8 @@ const createManualSlotId = (date, shiftId, lineId, roleTitle, index) => {
   return `${date}_${shiftId}_manual_${lineId}_${roleKey}_${index}`;
 };
 
+const isClosedManualVacancy = () => false;
+
 const getSurnameNorm = (fullName) => {
   const first = String(fullName || '').trim().split(/\s+/)[0] || '';
   return normalizeName(first);
@@ -50,7 +52,7 @@ function buildDemandIndex(demandTable) {
   return { headers, brigadesByDate };
 }
 
-function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache, autoReassignEnabled, manualLines, assignmentClones }) {
+function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, floaters, manualAssignments, workerRegistry, availabilityCache, autoReassignEnabled, rosterFillEnabled = true, manualLines, assignmentClones }) {
   if (!brigadesMap) return [];
 
     const getAvailabilityCached = (name) => {
@@ -113,9 +115,10 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
       if (positions.length > 0) {
         positions.forEach((pos) => {
           const assignedNamesStr = pos?.roster?.[brigade.id];
-          const assignedNamesList = assignedNamesStr
+          const assignedNamesListRaw = assignedNamesStr
             ? String(assignedNamesStr).split(/[,;\n/]+/).map((s) => s.trim()).filter((s) => s.length > 1)
             : [];
+          const assignedNamesList = rosterFillEnabled ? assignedNamesListRaw : [];
 
           const totalSlots = Math.max(pos.count, assignedNamesList.length);
 
@@ -141,7 +144,7 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
               status,
               roleTitle: pos.role,
               slotId,
-              isManualVacancy: manualAssignments?.[slotId]?.type === 'vacancy',
+              isManualVacancy: isClosedManualVacancy(manualAssignments?.[slotId]),
               currentWorkerName,
               assigned: manual || (status === 'filled' ? { name: currentWorkerName } : null),
             });
@@ -174,7 +177,7 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
             status,
             roleTitle: pos.roleTitle || 'Роль',
             slotId,
-            isManualVacancy: manual?.type === 'vacancy',
+            isManualVacancy: isClosedManualVacancy(manual),
             currentWorkerName: null,
             assigned: manual || null
           });
@@ -249,7 +252,7 @@ function buildShiftsFromBrigadesMap({ targetDate, brigadesMap, lineTemplates, fl
 }
 
 function buildChessTable(payload) {
-  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData, autoReassignEnabled, manualLines, assignmentClones } = payload;
+  const { scheduleDates, demand, lineTemplates, floaters, manualAssignments, workerRegistry: rawWorkerRegistry, factData, autoReassignEnabled, rosterFillEnabled = true, manualLines, assignmentClones } = payload;
   const dates = Array.isArray(scheduleDates) ? scheduleDates : [];
   if (!demand || dates.length === 0) return null;
 
@@ -274,6 +277,7 @@ function buildChessTable(payload) {
         workerRegistry,
         availabilityCache,
         autoReassignEnabled,
+        rosterFillEnabled,
         manualLines,
         assignmentClones
       })
